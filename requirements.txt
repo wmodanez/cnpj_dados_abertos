@@ -2,4 +2,6 @@ beautifulsoup4
 dask
 pandas
 requests
-SQLAlchemy==1.4.47
+SQLAlchemy
+progressbar
+psycopg2-binary
