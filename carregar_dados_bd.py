@@ -31,8 +31,8 @@ username = 'cnpj'
 password = '123456'
 host = '127.0.0.1:5434'
 
-pasta_compactados = r"dados-publicos-zip"
-pasta_saida = r"dados-publicos"  # esta pasta deve estar vazia.
+pasta_compactados = r"dados-abertos-zip"
+pasta_saida = r"dados-abertos"  # esta pasta deve estar vazia.
 
 engine = sqlalchemy.create_engine(f'postgresql://{username}:{password}@{host}/{dbname}')
 

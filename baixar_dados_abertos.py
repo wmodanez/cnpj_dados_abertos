@@ -8,7 +8,7 @@ import progressbar
 from bs4 import BeautifulSoup
 
 URL: str = 'http://200.152.38.155/CNPJ/'
-ZIP_FOLDER: str = 'dados-publicos-zip/'
+ZIP_FOLDER: str = 'dados-abertos-zip/'
 
 progress_bar: progressbar = None
 
