@@ -351,9 +351,7 @@ def main():
 
     CREATE MATERIALIZED VIEW public.cidades_go
     TABLESPACE pg_default
-    AS SELECT c.id AS codigo_ibge,
-        c.nome,
-        c.uf
+    AS SELECT c.id AS codigo_ibge, c.nome, c.uf
        FROM cidade c
       WHERE c.uf = '52'
     WITH DATA;    
@@ -383,7 +381,7 @@ def main():
         f"'{list(glob.glob(os.path.join(PASTA_SAIDA, 'K*')))[0].split('.')[2]}')")
     ENGINE.execute(
         f"insert into _referencia (referencia, valor) values ('QTDE_ESTABELECIMENTOS', "
-        f"'{ENGINE.execute('select count(*) as contagem from estabelecimento;').fetchone()[0]}')")
+        f"'{ENGINE.execute('SELECT COUNT(*) FROM estabelecimento;').fetchone()[0]}')")
     ENGINE.execute(
         f"insert into _referencia (referencia, valor) values ('QTDE_EMPRESAS', "
         f"'{ENGINE.execute('SELECT COUNT(*) FROM empresas;').fetchone()[0]}')");
