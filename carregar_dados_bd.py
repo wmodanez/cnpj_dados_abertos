@@ -202,14 +202,14 @@ def main():
     
         '''
 
-    # manutencao_tabelas(sql_tabelas)
+    manutencao_tabelas(sql_tabelas)
 
-    # carregaTabelaCodigo('.CNAECSV', 'cnae')
-    # carregaTabelaCodigo('.MOTICSV', 'motivo')
-    # carregaTabelaCodigo('.MUNICCSV', 'municipio')
-    # carregaTabelaCodigo('.NATJUCSV', 'natureza_juridica')
-    # carregaTabelaCodigo('.PAISCSV', 'pais')
-    # carregaTabelaCodigo('.QUALSCSV', 'qualificacao_socio')
+    carregaTabelaCodigo('.CNAECSV', 'cnae')
+    carregaTabelaCodigo('.MOTICSV', 'motivo')
+    carregaTabelaCodigo('.MUNICCSV', 'municipio')
+    carregaTabelaCodigo('.NATJUCSV', 'natureza_juridica')
+    carregaTabelaCodigo('.PAISCSV', 'pais')
+    carregaTabelaCodigo('.QUALSCSV', 'qualificacao_socio')
 
     colunas_estabelecimento: list = [
         'cnpj_basico', 'cnpj_ordem', 'cnpj_dv', 'matriz_filial',
@@ -357,17 +357,66 @@ def main():
     WITH DATA;    
     
     CREATE MATERIALIZED VIEW public.estabelecimento_go
-        AS SELECT es.*, em.razao_social, em.natureza_juridica, em.qualificacao_responsavel, em.porte_empresa, em.capital_social, m.descricao
-           FROM estabelecimento es
-         JOIN empresas em ON es.cnpj_basico = em.cnpj_basico
-         JOIN municipio m ON es.municipio = m.codigo
-      WHERE es.uf = 'GO'
+    TABLESPACE pg_default
+    AS SELECT es.cnpj_basico,
+        es.cnpj_ordem,
+        es.cnpj_dv,
+        es.matriz_filial,
+        es.nome_fantasia,
+        es.situacao_cadastral,
+        es.data_situacao_cadastral,
+        es.motivo_situacao_cadastral,
+        es.nome_cidade_exterior,
+        es.pais,
+        es.data_inicio_atividades,
+        es.cnae_fiscal,
+        es.cnae_fiscal_secundaria,
+        es.cep,
+        m.descricao as municipio_nome,
+        es.uf,
+        es.situacao_especial,
+        es.data_situacao_especial,
+        es.cnpj,
+        em.razao_social,
+        em.natureza_juridica,
+        em.qualificacao_responsavel,
+        em.porte_empresa,
+        em.capital_social
+       FROM estabelecimento es
+         JOIN empresas em ON es.cnpj_basico::text = em.cnpj_basico::text
+         JOIN municipio m ON es.municipio::text = m.codigo::text
+      WHERE es.uf::text = 'GO'::text
     WITH DATA;
     
     CREATE MATERIALIZED VIEW public.estabelecimento_go_ibge
-        AS SELECT eg.*, c.codigo_ibge
-           FROM estabelecimento_go eg
-         LEFT JOIN cidades_go c ON upper(c.nome) = eg.descricao
+    TABLESPACE pg_default
+    AS SELECT eg.cnpj_basico,
+        eg.cnpj_ordem,
+        eg.cnpj_dv,
+        eg.matriz_filial,
+        eg.nome_fantasia,
+        eg.situacao_cadastral,
+        eg.data_situacao_cadastral,
+        eg.motivo_situacao_cadastral,
+        eg.nome_cidade_exterior,
+        eg.pais,
+        eg.data_inicio_atividades,
+        eg.cnae_fiscal,
+        eg.cnae_fiscal_secundaria,
+        eg.cep,
+        c.codigo_ibge,
+        c.nome as nome_ibge,
+        eg.uf,
+        eg.situacao_especial,
+        eg.data_situacao_especial,
+        eg.cnpj,
+        eg.razao_social,
+        eg.natureza_juridica,
+        eg.qualificacao_responsavel,
+        eg.porte_empresa,
+        eg.capital_social
+       FROM estabelecimento_go eg
+         LEFT JOIN cidades_go c ON upper(c.nome::text) = eg.municipio_nome::text
     WITH DATA;
     '''
 
