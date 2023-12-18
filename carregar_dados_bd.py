@@ -9,10 +9,10 @@ import dask.dataframe as dd
 from datetime import datetime as dt
 
 TIPO_BANCO: str = 'postgres'
-DB_NAME: str = 'cnpj'
-USERNAME: str = 'cnpj'
-PASSWORD: str = '123456'
-HOST: str = '127.0.0.1:5432'
+DB_NAME: str = 'imb_hom'
+USERNAME: str = 'imb_hom_user'
+PASSWORD: str = 'zd8qGVfTYDVIPef57fXk'
+HOST: str = '10.6.2.169:5432'
 
 PASTA_SAIDA: str = r"dados-abertos"  # esta pasta deve estar vazia.
 
@@ -196,9 +196,9 @@ def main():
 
         '''
 
-    # extrair_arquivo()
+    extrair_arquivo()
 
-    # manutencao_tabelas(sql_tabelas)
+    manutencao_tabelas(sql_tabelas)
 
     sqls: str = '''
     
