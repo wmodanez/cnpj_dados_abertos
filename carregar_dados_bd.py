@@ -96,8 +96,8 @@ def main():
             ente_federativo_responsavel VARCHAR(50) 
         );
         
-        DROP TABLE IF EXISTS estabelecimento;
-        CREATE TABLE IF NOT EXISTS estabelecimento (
+        DROP TABLE IF EXISTS estabelecimentos;
+        CREATE TABLE IF NOT EXISTS estabelecimentos (
             cnpj_basico int4,
             cnpj_ordem VARCHAR(4),
             cnpj_dv VARCHAR(2),
@@ -225,7 +225,7 @@ def main():
     ALTER TABLE empresas ALTER COLUMN natureza_juridica TYPE int4 USING natureza_juridica::int4;
     ALTER TABLE empresas ALTER COLUMN porte_empresa TYPE int4 USING porte_empresa::int4;
 
-    ALTER TABLE public.estabelecimento RENAME TO estabelecimentos;
+    ALTER TABLE public.estabelecimentos RENAME TO estabelecimentos;
     
     ALTER TABLE estabelecimentos DROP COLUMN ddd1;
     ALTER TABLE estabelecimentos DROP COLUMN telefone1;
@@ -255,13 +255,11 @@ def main():
     ALTER TABLE estabelecimentos ALTER COLUMN codigo_situacao_cadastral TYPE int4 USING codigo_situacao_cadastral::int4;
     ALTER TABLE estabelecimentos ALTER COLUMN codigo_motivo_situacao_cadastral TYPE int4 USING 
         codigo_motivo_situacao_cadastral::int4;
-    ALTER TABLE estabelecimentos ALTER COLUMN codigo_cnae TYPE int4 USING codigo_cnae::int4;
     ALTER TABLE estabelecimentos ALTER COLUMN codigo_municipio TYPE int4 USING codigo_municipio::int4;
     ALTER TABLE estabelecimentos ALTER COLUMN data_situacao_cadastral TYPE date USING data_situacao_cadastral::date;
     ALTER TABLE estabelecimentos ALTER COLUMN data_inicio_atividades TYPE date USING data_inicio_atividades::date;
-    ALTER TABLE estabelecimentos ALTER COLUMN matriz_filial TYPE int4 USING matriz_filial::int4;
 
-    CREATE INDEX estabelecimento_cnpj_basico_idx ON estabelecimento USING btree (cnpj_basico);
+    CREATE INDEX estabelecimento_cnpj_basico_idx ON estabelecimentos USING btree (cnpj_basico);
     
     UPDATE simples SET data_opcao_simples=null WHERE data_opcao_simples = '00000000';
     UPDATE simples SET data_exclusao_simples = null WHERE data_exclusao_simples = '00000000';    
@@ -305,12 +303,12 @@ def main():
     
     DROP TABLE IF EXISTS estabelecimentos_nao_simples;
     CREATE TABLE IF NOT EXISTS estabelecimentos_nao_simples AS
-        SELECT em.cnpj_basico, es.cnpj, es.cnpj, em.razao_social, es.nome_fantasia, em.natureza_juridica, 
+        SELECT em.cnpj_basico, es.cnpj, em.razao_social, es.nome_fantasia, em.natureza_juridica, 
             es.matriz_filial, es.codigo_situacao_cadastral, es.data_situacao_cadastral, 
             es.codigo_motivo_situacao_cadastral, es.data_inicio_atividades, es.codigo_cnae, es.codigo_municipio, es.uf, 
             em.porte_empresa
             FROM empresas_nao_simples em 
-                INNER JOIN estabelecimento es ON em.cnpj_basico = es.cnpj_basico;
+                INNER JOIN estabelecimentos es ON em.cnpj_basico = es.cnpj_basico;
     
 
     DROP TABLE IF EXISTS estabelecimentos_privados;
@@ -320,7 +318,7 @@ def main():
             es.codigo_motivo_situacao_cadastral, es.data_inicio_atividades, es.codigo_cnae, es.codigo_municipio, 
             es.uf, em.porte_empresa
             FROM empresas_privadas em 
-                INNER JOIN estabelecimento es ON em.cnpj_basico = es.cnpj_basico;
+                INNER JOIN estabelecimentos es ON em.cnpj_basico = es.cnpj_basico;
         
     CREATE INDEX estabelecimentos_privados_cnpj_basico_idx ON estabelecimentos_privados (cnpj_basico);
     CREATE INDEX estabelecimentos_privados_codigo_cnae_idx ON estabelecimentos_privados (codigo_cnae);
@@ -329,37 +327,36 @@ def main():
     CREATE INDEX estabelecimentos_privados_codigo_situacao_cadastral_idx ON estabelecimentos_privados (codigo_situacao_cadastral);
     CREATE INDEX estabelecimentos_privados_data_inicio_atividades_idx ON estabelecimentos_privados (data_inicio_atividades);
     CREATE INDEX estabelecimentos_privados_data_situacao_cadastral_idx ON estabelecimentos_privados (data_situacao_cadastral);
-    CREATE INDEX estabelecimentos_privados_tipo_situacao_cadastral_idx ON estabelecimentos_privados (tipo_situacao_cadastral);
     CREATE INDEX estabelecimentos_privados_uf_idx ON estabelecimentos_privados (uf);    
 
     DROP TABLE IF EXISTS empresas_privadas_dev;
-    create table IF NOT EXISTS empresas_privadas_dev as
-    select * 
-    from empresas_privadas ep  
-    order by random()
-    limit ((select count(*) from empresas_privadas)*0.1); 
+    CREATE TABLE IF NOT EXISTS empresas_privadas_dev AS
+        SELECT * 
+        FROM empresas_privadas ep  
+        ORDER BY random()
+        LIMIT ((SELECT count(*) FROM empresas_privadas) * 0.1); 
 
     DROP TABLE IF EXISTS estabelecimentos_privados_dev;
-    create table IF NOT EXISTS estabelecimentos_privados_dev as
-    select * 
-    from estabelecimentos_privados
-    order by random()
-    limit ((select count(*) from estabelecimentos_privados)*0.1); 
+    CREATE TABLE IF NOT EXISTS estabelecimentos_privados_dev AS
+        SELECT * 
+        FROM estabelecimentos_privados
+        ORDER BY random()
+        LIMIT ((SELECT count(*) FROM estabelecimentos_privados) * 0.1); 
     
     DROP TABLE IF EXISTS simples_dev;
-    create table IF NOT EXISTS simples_dev as
-    select * 
-    from simples s  
-    order by random()
-    limit ((select count(*) from simples)*0.1); 
+    CREATE TABLE IF NOT EXISTS simples_dev AS
+        SELECT * 
+        FROM simples s  
+        ORDER BY random()
+        LIMIT ((SELECT count(*) FROM simples) * 0.1); 
  
     '''
 
-    # carregaTabelaCodigo('.CNAECSV', 'cnae')
-    # carregaTabelaCodigo('.MOTICSV', 'motivo')
-    # carregaTabelaCodigo('.NATJUCSV', 'natureza_juridica')
-    # carregaTabelaCodigo('.PAISCSV', 'pais')
-    # carregaTabelaCodigo('.QUALSCSV', 'qualificacao_socio')
+    carregaTabelaCodigo('.CNAECSV', 'cnae')
+    carregaTabelaCodigo('.MOTICSV', 'motivo')
+    carregaTabelaCodigo('.NATJUCSV', 'natureza_juridica')
+    carregaTabelaCodigo('.PAISCSV', 'pais')
+    carregaTabelaCodigo('.QUALSCSV', 'qualificacao_socio')
 
     colunas_estabelecimento: list = [
         'cnpj_basico', 'cnpj_ordem', 'cnpj_dv', 'matriz_filial',
@@ -415,32 +412,35 @@ def main():
         'data_opcao_mei',
         'data_exclusao_mei']
 
-    # carregaTipo('empresas', '.EMPRECSV', colunas_empresas)
-    # carregaTipo('estabelecimento', '.ESTABELE', colunas_estabelecimento)
-    # carregaTipo('simples', '.SIMPLES.CSV.*', colunas_simples)
-    # carregaTipo('socios', '.SOCIOCSV', colunas_socios)
+    carregaTipo('empresas', '.EMPRECSV', colunas_empresas)
+    carregaTipo('estabelecimento', '.ESTABELE', colunas_estabelecimento)
+    carregaTipo('simples', '.SIMPLES.CSV.*', colunas_simples)
+    carregaTipo('socios', '.SOCIOCSV', colunas_socios)
 
 
     otimiza_tabelas(sqls)
 
-    # %% inserir na tabela referencia_
+    # %% inserir na tabela referencia
 
-    # ENGINE.execute(f"INSERT INTO referencia (referencia, valor) VALUES ('DATA_DOWNLOAD', '{DATA_REFERENCIA}')")
-    # ENGINE.execute(
-    #     f"INSERT INTO referencia (referencia, valor) VALUES ('DATA_EXTRACAO', "
-    #     f"'{list(glob.glob(os.path.join(PASTA_SAIDA, 'K*')))[0].split('.')[2]}')")
-    # ENGINE.execute(
-    #     f"INSERT INTO referencia (referencia, valor) VALUES ('QTDE_ESTABELECIMENTOS', "
-    #     f"'{ENGINE.execute('SELECT COUNT(*) FROM estabelecimento;').fetchone()[0]}')")
-    # ENGINE.execute(
-    #     f"INSERT INTO referencia (referencia, valor) VALUES ('QTDE_EMPRESAS', "
-    #     f"'{ENGINE.execute('SELECT COUNT(*) FROM empresas;').fetchone()[0]}')");
-    # ENGINE.execute(
-    #     f"INSERT INTO referencia (referencia, valor) VALUES ('QTDE_SOCIOS', "
-    #     f"'{ENGINE.execute('SELECT COUNT(*) FROM socios;').fetchone()[0]}')");
-    # ENGINE.execute(
-    #     f"INSERT INTO referencia (referencia, valor) VALUES ('QTDE_SIMPLES', "
-    #     f"'{ENGINE.execute('SELECT COUNT(*) FROM simples;').fetchone()[0]}')");
+    ENGINE.execute(f"INSERT INTO referencia (referencia, valor) VALUES ('DATA_DOWNLOAD', '{DATA_REFERENCIA}')")
+    ENGINE.execute(
+        f"INSERT INTO referencia (referencia, valor) VALUES ('DATA_EXTRACAO', "
+        f"'{list(glob.glob(os.path.join(PASTA_SAIDA, '*K*')))[0].split('.')[2]}')")
+    ENGINE.execute(
+        f"INSERT INTO referencia (referencia, valor) VALUES ('QTDE_ESTABELECIMENTOS', "
+        f"'{ENGINE.execute('SELECT COUNT(*) FROM estabelecimentos;').fetchone()[0]}')")
+    ENGINE.execute(
+        f"INSERT INTO referencia (referencia, valor) VALUES ('QTDE_ESTABELECIMENTOS_PRIVADOS', "
+        f"'{ENGINE.execute('SELECT COUNT(*) FROM estabelecimentos_privados;').fetchone()[0]}')")
+    ENGINE.execute(
+        f"INSERT INTO referencia (referencia, valor) VALUES ('QTDE_EMPRESAS', "
+        f"'{ENGINE.execute('SELECT COUNT(*) FROM empresas;').fetchone()[0]}')");
+    ENGINE.execute(
+        f"INSERT INTO referencia (referencia, valor) VALUES ('QTDE_EMPRESAS_PRIVADAS', "
+        f"'{ENGINE.execute('SELECT COUNT(*) FROM empresas_privadas;').fetchone()[0]}')");
+    ENGINE.execute(
+        f"INSERT INTO referencia (referencia, valor) VALUES ('QTDE_SIMPLES', "
+        f"'{ENGINE.execute('SELECT COUNT(*) FROM simples;').fetchone()[0]}')");
 
     print('FIM!!!', time.asctime())
 
