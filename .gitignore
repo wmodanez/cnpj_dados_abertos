@@ -1,5 +1,5 @@
 dados-abertos/
 dados-abertos-zip/
-parquet/
-
+parquet/2*
+*.duckdb
 *.idea
