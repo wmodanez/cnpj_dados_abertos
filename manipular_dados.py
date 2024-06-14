@@ -2,24 +2,103 @@
 import datetime
 import glob
 import os
-import duckdb as duck
+import shutil
+import time
+import urllib
 import zipfile
 from multiprocessing import freeze_support
 
 import dask.dataframe as dd
+import duckdb as duck
 import numpy as np
+import progressbar
+import requests
+from bs4 import BeautifulSoup
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client
 from dotenv import load_dotenv
 
-pgBar = ProgressBar()
-pgBar.register()
+pgBarDask = ProgressBar()
+pgBarDask.register()
+
+progress_bar: progressbar = None
+
+URL: str = 'http://200.152.38.155/CNPJ/'
 
 # YYYYMM = (datetime.date.today().replace(day=1) - datetime.timedelta(days=1)).strftime('%Y%m')
 YYYYMM = (datetime.date.today()).strftime('%Y%m')
 
 
-def manipular_empresa() -> dd:
+def show_progress(block_num: int, block_size: int, total_size: int):
+    global progress_bar
+
+    if progress_bar is None:
+        progress_bar = progressbar.ProgressBar(maxval=total_size)
+        progress_bar.start()
+
+    downloaded: int = block_num * block_size
+
+    if downloaded < total_size:
+        progress_bar.update(downloaded)
+    else:
+        progress_bar.finish()
+        progress_bar = None
+
+
+def check_if_update_base(datetime_last_upload: datetime):
+    last_download: str
+    if len(os.listdir(PATH_ZIP)) == 0:
+        if float(last_download) <= datetime_last_upload:
+            return False
+        else:
+            return True
+
+
+def check_file_exists(path: str, filename: str) -> int:
+    if os.path.exists(path + filename):
+        return os.stat(path + filename).st_size
+    return 0
+
+
+def download_file(file_url: str, file_download: str, timestamp_last_modified: int):
+    urllib.request.urlretrieve(file_url, PATH_ZIP + file_download, show_progress)
+    os.utime(PATH_ZIP + file_download, (timestamp_last_modified, timestamp_last_modified))
+
+
+def check_download(link, file):
+    if str(link.get('href')).endswith('.zip') and file in str(link.get('href')):
+        file_download: str = link.get('href')
+        file_url: str = URL + file_download
+
+        if not file_download.startswith('http'):
+            local_file: int = check_file_exists(PATH_ZIP, file_download)
+            # print(requests.head(file_url).headers)
+            file_url_last_upload: list = requests.head(file_url).headers['Last-Modified'].split()
+
+            file_url_last_modified_time: str = str(file_url_last_upload[4]).split(':')
+            timestamp_last_modified: int = datetime.datetime(int(file_url_last_upload[3]),
+                                                             int(time.strptime(file_url_last_upload[2], '%b').tm_mon),
+                                                             int(file_url_last_upload[1]),
+                                                             int(file_url_last_modified_time[0]),
+                                                             int(file_url_last_modified_time[1]),
+                                                             int(file_url_last_modified_time[2])).timestamp()
+
+            print('Baixando o arquivo: ' + file_download)
+            if local_file == 0:
+                download_file(file_url, file_download, timestamp_last_modified)
+            elif local_file > 0 and local_file != int(requests.head(file_url).headers['Content-Length']):
+                download_file(file_url, file_download, timestamp_last_modified)
+            else:
+                print('O arquivo', file_download, 'esta atualizado.')
+        else:
+            print('Não foi possível baixar o arquivo: ' + file_download)
+
+
+def manipular_empresa(soup: BeautifulSoup) -> dd:
+    print('Início da manipulação das Empresas')
+
+    startTime: datetime = datetime.datetime.now()
+
     colunas_empresa: list = [
         'cnpj_basico',
         'razao_social',
@@ -38,11 +117,12 @@ def manipular_empresa() -> dd:
         'porte_empresa': 'string',
         'ente_federativo_responsavel': 'string'
     }
-    startTime: datetime = datetime.datetime.now()
+
     try:
-        tableName: str = 'empresa'
+        tableName: str = 'empresas'
+        for link in soup.find_all('a'):
+            check_download(link, tableName.capitalize())
         extrairArquivo(PATH_ZIP, PATH_UNZIP, 'Emp*.*')
-        print('Início da manipulação das Empresas')
         ddEmpresa = dd.read_csv('dados-abertos/*.EMPRECSV', sep=';', names=colunas_empresa, encoding='latin1',
                                 dtype=dtype_empresa)
 
@@ -68,7 +148,10 @@ def manipular_empresa() -> dd:
 
 
 def manipular_estabelecimento() -> dd:
+    print('Início da manipulação dos Estabelecimentos')
+
     startTime: datetime = datetime.datetime.now()
+
     colunas_estabelecimento: list = [
         'cnpj_basico',
         'cnpj_ordem',
@@ -134,9 +217,12 @@ def manipular_estabelecimento() -> dd:
         'correio_eletronico': 'string',
         'situacao_especial': 'string'
     }
+
     try:
+        tableName = 'estabelecimentos'
+        for link in soup.find_all('a'):
+            check_download(link, tableName.capitalize())
         extrairArquivo(PATH_ZIP, PATH_UNZIP, '*Est*')
-        print('Início da manipulação dos Estabelecimentos')
         ddEstabelecimento = dd.read_csv('dados-abertos/*.ESTABELE', sep=';',
                                         names=colunas_estabelecimento, encoding='latin1', dtype=dtype_estabelecimento)
 
@@ -169,10 +255,10 @@ def manipular_estabelecimento() -> dd:
         ddEstabelecimento = ddEstabelecimento.set_index('cnpj_basico')
         print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - startTime))
 
-        createParquet(ddEstabelecimento, 'estabelecimento')
+        createParquet(ddEstabelecimento, tableName)
 
         ddEstabelecimentoGO = ddEstabelecimento[ddEstabelecimento['uf'] == 'GO']
-        createParquet(ddEstabelecimentoGO, 'estabelecimento_go')
+        createParquet(ddEstabelecimentoGO, 'estabelecimentos_go')
 
         return ddEstabelecimento, ddEstabelecimentoGO
 
@@ -184,7 +270,10 @@ def manipular_estabelecimento() -> dd:
 
 
 def manipular_simples() -> dd:
+    print('Início da manipulação do Simples')
+
     startTime: datetime = datetime.datetime.now()
+
     colunas_simples: list = [
         'cnpj_basico',
         'opcao_simples',
@@ -202,10 +291,13 @@ def manipular_simples() -> dd:
         'opcao_mei': 'string',
         'data_opcao_mei': 'string',
         'data_exclusao_mei': 'string'}
+
     try:
+        tableName: str = 'simples'
+        for link in soup.find_all('a'):
+            check_download(link, tableName.capitalize())
         extrairArquivo(PATH_ZIP, PATH_UNZIP, '*Sim*')
 
-        print('Início da manipulação do Simples')
         ddSimples = dd.read_csv('dados-abertos/*SIMPLES*', sep=';', names=colunas_simples, encoding='latin1',
                                 dtype=dtype_simples, na_filter=None)
 
@@ -225,7 +317,7 @@ def manipular_simples() -> dd:
 
         print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - interTimer))
 
-        createParquet(ddSimples, 'simples')
+        createParquet(ddSimples, tableName)
 
         return ddSimples
     except Exception as e:
@@ -236,7 +328,10 @@ def manipular_simples() -> dd:
 
 
 def manipular_socio() -> dd:
+    print('Início da manipulação dos Sócios')
+
     startTime: datetime = datetime.datetime.now()
+
     colunas_socio: list = [
         'cnpj_basico',
         'identificador_socio',
@@ -264,10 +359,13 @@ def manipular_socio() -> dd:
         'qualificacao_representante_legal': 'string',
         'faixa_etaria': 'string'
     }
+
     try:
+        tableName: str = 'socios'
+        for link in soup.find_all('a'):
+            check_download(link, tableName.capitalize())
         extrairArquivo(PATH_ZIP, PATH_UNZIP, '*Soc*')
 
-        print('Início da manipulação dos Sócios')
         ddSocio = dd.read_csv('dados-abertos/*SOCIO*', sep=';', names=colunas_socio, encoding='latin1',
                               dtype=dtype_socio, na_filter=None)
 
@@ -279,7 +377,7 @@ def manipular_socio() -> dd:
         ddSocio['faixa_etaria'] = ddSocio.faixa_etaria.astype('int')
         print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - interTimer))
 
-        createParquet(ddSocio, 'socio')
+        createParquet(ddSocio, tableName)
 
         return ddSocio
     except Exception as e:
@@ -317,15 +415,16 @@ def deleteFile(folderDelete: str, fileName: str = '*'):
 def create_db_parquet():
     print('Início da criação das tabelas parquet')
     startTime: datetime = datetime.datetime.now()
-    conn = duck.connect(f'parquet/cnpj.duckdb', config={'threads': 4})
+    conn = duck.connect(FILE_DB_PARQUET, config={'threads': 4})
 
-    listTabela = ['empresa', 'estabelecimento', 'estabelecimento_go', 'simples', 'socio']
+    listTabela = ['empresas', 'estabelecimentos', 'estabelecimentos_go', 'simples', 'socios']
     for tabela in listTabela:
-        path_parquet = PATH_PARQUET + '/' + YYYYMM + '/' + tabela + '/*.parquet'
+        path_parquet = PATH_PARQUET + YYYYMM + '/' + tabela + '/*.parquet'
         add_table_parquet(conn, tabela, path_parquet)
+        shutil.rmtree(os.path.dirname(path_parquet))
     listTabelaFixa = ['cnae', 'motivo', 'municipio']
     for tabela in listTabelaFixa:
-        path_parquet = PATH_PARQUET + '/base/' + tabela + '.parquet'
+        path_parquet = PATH_PARQUET + 'base/' + tabela + '.parquet'
         add_table_parquet(conn, tabela, path_parquet)
     print('Tempo total de carga das tabelas:', str(datetime.datetime.now() - startTime))
 
@@ -341,7 +440,8 @@ def add_table_parquet(conn: duck.connect(), table: str, pathParquet: str):
 
 
 if __name__ == '__main__':
-    env = 'hom'
+    startTime = datetime.datetime.now()
+    env = 'local'
     load_dotenv('.env.local')
 
     if env == 'hom':
@@ -352,13 +452,17 @@ if __name__ == '__main__':
     PATH_ZIP: str = os.getenv('PATH_ZIP')
     PATH_UNZIP: str = os.getenv('PATH_UNZIP')
     PATH_PARQUET: str = os.getenv('PATH_PARQUET')
+    FILE_DB_PARQUET: str = os.getenv('FILE_DB_PARQUET')
 
     freeze_support()
     client = Client()
     print(client)
 
-    manipular_empresa()
+    soup: BeautifulSoup = BeautifulSoup(requests.get(URL).text, 'html.parser')
+
+    manipular_empresa(soup)
     manipular_estabelecimento()
     manipular_simples()
     manipular_socio()
     create_db_parquet()
+    print(f'Tempo total:', str(datetime.datetime.now() - startTime))
