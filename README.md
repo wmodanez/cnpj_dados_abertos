@@ -1,59 +1,58 @@
-# cnpj-mysql
-Script em python para carregar os arquivos de cnpj dos dados públicos da Receita Federal em MYSQL e POSTGRESQL. O código é compatível com o layout das tabelas disponibilizadas pela Receita Federal a partir de 2021.
+# cnpj-parquet
+Este projeto é um fork do projeto (https://github.com/rictom/cnpj-mysql), porém algumas melhorias foram implementadas
+agora apenas um script em python é responsável por baixar os arquivos de cnpj dos dados públicos da Receita Federal 
+salvar em formato **formato parquet** que apresenta um ganho substâncial em questão de performance sobre um SGBD normal.<br>
+O código é compatível com o layout das tabelas disponibilizadas pela Receita Federal a partir de 2021.
 
-## Dados públicos de cnpj no site da Receita:
-Os arquivos csv zipados com os dados de CNPJs estão disponíveis em https://dados.gov.br/dados/conjuntos-dados/cadastro-nacional-da-pessoa-juridica---cnpj ou https://dadosabertos.rfb.gov.br/CNPJ/ (http://200.152.38.155/CNPJ/).<br><br>
+## Dados públicos de CNPJ no site da Receita:
+Os arquivos csv zipados com os dados de CNPJs estão disponíveis em (http://200.152.38.155/CNPJ/).
 
 
 ## Pré-requisitos:
-Python 3.8;<br>
-Bibliotecas pandas, dask, sqlalchemy. Para mysql instalar a biblioteca pymysql. Para postgres usar psycopg2.<br>
-Para instalar a biblioteca, use o comando<br>
-pip install pymysql<br>
-Para postgres, instale psycopg2 (recomenda-se psycopg2-binary para instalação mais simples)<br>
-pip install psycopg2-binary (testado no Ubuntu).<br>
+Python 3.10;<br>
+O arquivo requirements.txt contém todas as dependências do projeto, para instalar utilize o código abaixo: <br>
+```
+pip install -r requirements.txt
+```
 
 ## Utilizando o script:
-Obtenha uma relação dos arquivos disponíveis pelo comando no Anaconda prompt:<br>
-<b>python dados_cnpj_lista_url.py</b><br>
+O comando abaixo faz todo o trabalho:<br>
 
-Para baixar os arquivos, use o comando:<br>
-<b>python dados_cnpj_baixa.py</b><br><br>
-Isso copiará os arquivos para a pasta "dados-publicos-zip".<br>
-Se o download estiverm muito lento, sugiro utilizar um gerenciador de downloads.<br>
+```
+python manipular_dados.py
+```
 
-Crie uma pasta com o nome "dados-publicos". Esta pasta deve estar vazia.<br>
+### Os seguintes passos serão executados pelo script:
+<ol>
+    <li>Os arquivos serão baixados do site da Receita Federal para a pasta dados-abertos-zip;</li>
+    <ol>
+        <li>Esta versão baixa apenas as tabelas que sofrem alteração regularmente (Empresa, Estabelecimento, Simples, 
+            Socio) e cada uma terá seus arquivos baixados e manipulados no momento em que for sendo trabalhada;</li>
+        <li>Para as demais tabelas o projeto já tem os arquivos parquet criados e armazenados na pasta parquet/base</li>
+            <ol>
+                <li>O arquivo com as CNAEs foi substituído por um com os dados completos não somente a subclasse;</li>
+                <li>O arquivo de municípios foi substituído por um contendo os dados completos do IBGE, onde foi incluído 
+                    também o georeferenciamento dos municípios. Foi feita a relação para os códigos utilizados na tabela 
+                    Estabelecimento</li>
+            </ol>
+    </ol>
+    <li>Os arquivos serão descompactados na pasta dados-abertos;</li>
+    <li>Será feita a manipulação dos dados;</li>
+    <li>Serão criados os arquivos parquet na pasta parquet/YYYMM, onde: YYYYMM é o ano e mês que o script esta sendo 
+        executado; </li>
+    <li>Os arquivos descompactados serão removidos;</li>
+    <li>Um arquivo chamado cnpj.duckdb será criado e nele ficarão todas as tabelas criadas anteriormente em parquet;</li>
+    <li>Por fim os arquivos parquet criados serão apagados.</li>
+</ol>
 
-No servidor MYSQL ou POSTGRES, crie um database, por exemplo, cnpj.<br>
-Especifique os parâmetros no começo do script:<br>
-dbname = 'cnpj'<br>
-username = 'root'<br>
-password = ''<br>
-host = '127.0.0.1'<br>
+#### Obs.: Esta versão faz a verificação se os arquivos que estão sendo baixados da RF já estão na máquina de destino e se eles são os mais recentes ou não antes de tentar baixar.
 
-Para iniciar esse script, em um console digite<br>
-python dados_cnpj_mysql.py<br>
-ou<br>
-python dados_cnpj_postgres.py<br>
+Esta versão utiliza bibliotecas como **Dask** para o tratamento dos dados, execução com paralelismo e criação dos arquivos
+parquet. Usa também o **DuckDB** para reunir esses arquivos parquet em um só arquivo que pode ser acessado via DuckDB ou DBeaver.
 
-A execução durou cerca de 5hs em um notebook i7 de 8a geração com Windows 10 no script para mysql.
-No caso do postgres, fiz teste só com uma amostra em Linux (Ubuntu 20.4).
-Se a execução deste script demorar muito, uma opção é usar o projeto em https://github.com/rictom/cnpj-sqlite para gerar o arquivo em sqlite e usar uma ferramenta como o pgloader ou o DBeaver para converter depois em postgres.
-Este colega usou o pgloader com um bom desempenho: https://github.com/rictom/cnpj-mysql/issues/5
-
-## Outras referências:
-
-Para trabalhar com os dados de cnpj no formato SQLITE, use o meu projeto (https://github.com/rictom/cnpj-sqlite).<br>
-A criação do arquivo sqlite é muita mais rápida que o carregamento da base em Mysql ou Postgres.<br>
-O projeto (https://github.com/rictom/rede-cnpj) utiliza os dados públicos de CNPJ para visualização de relacionamentos entre empresas e sócios.<br>
+Sem levar em consideração a baixa dos arquivos toda execução durou cerca de 23 minutos em um notebook i5 de 9a geração com <br>
+Windows 11 e o dask configurado da seguinte forma: processes=3 threads=6, memory=31.78 GiB e o duckdb com threads=4.
 
 ## Histórico de versões
-versão 0.2 (janeiro/2022)
-- aceita sqlalchemy>=2.0;
-  
-versão 0.2 (julho/2022)
-- alterações menores no sql, para funcionar também em postgres;
-- versão para postgres.
-
-versão 0.1 (novembro/2021)
+versão 1.0 (julho/2024)
 - primeira versão
