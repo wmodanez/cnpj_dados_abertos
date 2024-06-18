@@ -1,4 +1,4 @@
-# cnpj-parquet
+# cnpj-dados-abertos
 Este projeto é impirado no projeto (https://github.com/rictom/cnpj-mysql), porém algumas melhorias foram implementadas
 agora apenas um script em python é responsável por baixar os arquivos de cnpj dos dados públicos da Receita Federal 
 salvar em formato **formato parquet** que apresenta um ganho substâncial em questão de performance sobre um SGBD normal.<br>
