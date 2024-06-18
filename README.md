@@ -1,5 +1,5 @@
 # cnpj-parquet
-Este projeto é um fork do projeto (https://github.com/rictom/cnpj-mysql), porém algumas melhorias foram implementadas
+Este projeto é impirado no projeto (https://github.com/rictom/cnpj-mysql), porém algumas melhorias foram implementadas
 agora apenas um script em python é responsável por baixar os arquivos de cnpj dos dados públicos da Receita Federal 
 salvar em formato **formato parquet** que apresenta um ganho substâncial em questão de performance sobre um SGBD normal.<br>
 O código é compatível com o layout das tabelas disponibilizadas pela Receita Federal a partir de 2021.
@@ -28,12 +28,12 @@ python manipular_dados.py
     <ol>
         <li>Esta versão baixa apenas as tabelas que sofrem alteração regularmente (Empresa, Estabelecimento, Simples, 
             Socio) e cada uma terá seus arquivos baixados e manipulados no momento em que for sendo trabalhada;</li>
-        <li>Para as demais tabelas o projeto já tem os arquivos parquet criados e armazenados na pasta parquet/base</li>
+        <li>Para as demais tabelas o projeto já tem os arquivos parquet criados e armazenados na pasta parquet;/base</li>
             <ol>
                 <li>O arquivo com as CNAEs foi substituído por um com os dados completos não somente a subclasse;</li>
                 <li>O arquivo de municípios foi substituído por um contendo os dados completos do IBGE, onde foi incluído 
                     também o georeferenciamento dos municípios. Foi feita a relação para os códigos utilizados na tabela 
-                    Estabelecimento</li>
+                    Estabelecimento;</li>
             </ol>
     </ol>
     <li>Os arquivos serão descompactados na pasta dados-abertos;</li>
