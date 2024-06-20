@@ -29,6 +29,10 @@ URL: str = 'http://200.152.38.155/CNPJ/'
 YYYYMM = (datetime.date.today()).strftime('%Y%m')
 
 
+def check_basic_folders(folder:str):
+    if not os.path.exists(os.path.join(folder)):
+        os.makedirs(folder)
+
 def show_progress(block_num: int, block_size: int, total_size: int):
     global progress_bar
 
@@ -443,6 +447,7 @@ def add_table_parquet(conn: duck.connect(), table: str, path_parquet: str):
 
 
 if __name__ == '__main__':
+
     start_time: datetime = datetime.datetime.now()
     env: str = 'local'
     load_dotenv('.env.local')
@@ -456,6 +461,10 @@ if __name__ == '__main__':
     PATH_UNZIP: str = os.getenv('PATH_UNZIP')
     PATH_PARQUET: str = os.getenv('PATH_PARQUET')
     FILE_DB_PARQUET: str = os.getenv('FILE_DB_PARQUET')
+
+    list_folders: list = [PATH_ZIP, PATH_UNZIP, PATH_PARQUET]
+    for folder in list_folders:
+        check_basic_folders(folder)
 
     freeze_support()
 
