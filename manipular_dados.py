@@ -15,11 +15,11 @@ import progressbar
 import requests
 from bs4 import BeautifulSoup
 from dask.diagnostics import ProgressBar
-from dask.distributed import Client
+from dask.distributed import Client, LocalCluster
 from dotenv import load_dotenv
 
-pgBarDask = ProgressBar()
-pgBarDask.register()
+pg_bar_dask = ProgressBar()
+pg_bar_dask.register()
 
 progress_bar: progressbar = None
 
@@ -94,10 +94,10 @@ def check_download(link, file):
             print('Não foi possível baixar o arquivo: ' + file_download)
 
 
-def manipular_empresa(soup: BeautifulSoup) -> dd:
+def manipular_empresa() -> dd:
     print('Início da manipulação das Empresas')
 
-    startTime: datetime = datetime.datetime.now()
+    inter_time: datetime = datetime.datetime.now()
 
     colunas_empresa: list = [
         'cnpj_basico',
@@ -119,38 +119,40 @@ def manipular_empresa(soup: BeautifulSoup) -> dd:
     }
 
     try:
-        tableName: str = 'empresas'
+        table_name: str = 'empresas'
         for link in soup.find_all('a'):
-            check_download(link, tableName.capitalize())
-        extrairArquivo(PATH_ZIP, PATH_UNZIP, 'Emp*.*')
-        ddEmpresa = dd.read_csv('dados-abertos/*.EMPRECSV', sep=';', names=colunas_empresa, encoding='latin1',
+            check_download(link, table_name.capitalize())
+
+        file_extractor(PATH_ZIP, PATH_UNZIP, 'Emp*.*')
+
+        dd_empresa: dd = dd.read_csv('dados-abertos/*.EMPRECSV', sep=';', names=colunas_empresa, encoding='latin1',
                                 dtype=dtype_empresa)
 
-        interTimer = datetime.datetime.now()
-        ddEmpresa = ddEmpresa.set_index('cnpj_basico')
-        print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - interTimer))
+        inter_timer: datetime = datetime.datetime.now()
+        dd_empresa = dd_empresa.set_index('cnpj_basico')
+        print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - inter_timer))
 
-        createParquet(ddEmpresa, tableName)
+        create_parquet(dd_empresa, table_name)
 
         # Tratamento para criar as empresas privadas
-        ddEmpresaPrivada = ddEmpresa[ddEmpresa['natureza_juridica'].between(2046, 2348)]
-        ddEmpresaPrivada = ddEmpresaPrivada.drop('qualificacao_responsavel', axis=1)
-        ddEmpresaPrivada = ddEmpresaPrivada.drop('ente_federativo_responsavel', axis=1)
+        dd_empresa_privada: dd = dd_empresa[dd_empresa['natureza_juridica'].between(2046, 2348)]
+        dd_empresa_privada = dd_empresa_privada.drop('qualificacao_responsavel', axis=1)
+        dd_empresa_privada = dd_empresa_privada.drop('ente_federativo_responsavel', axis=1)
 
     except Exception as e:
         print(f'Error: {e}')
 
-        createParquet(ddEmpresaPrivada, 'empresa_privada')
+        create_parquet(dd_empresa_privada, 'empresa_privada')
 
     finally:
-        deleteFile(PATH_UNZIP)
-        print('Tempo total de manipulação das Empresas:', str(datetime.datetime.now() - startTime))
+        file_delete(PATH_UNZIP)
+        print('Tempo total de manipulação das Empresas:', str(datetime.datetime.now() - inter_time))
 
 
 def manipular_estabelecimento() -> dd:
     print('Início da manipulação dos Estabelecimentos')
 
-    startTime: datetime = datetime.datetime.now()
+    inter_time: datetime = datetime.datetime.now()
 
     colunas_estabelecimento: list = [
         'cnpj_basico',
@@ -219,60 +221,61 @@ def manipular_estabelecimento() -> dd:
     }
 
     try:
-        tableName = 'estabelecimentos'
+        table_name: str = 'estabelecimentos'
         for link in soup.find_all('a'):
-            check_download(link, tableName.capitalize())
-        extrairArquivo(PATH_ZIP, PATH_UNZIP, '*Est*')
-        ddEstabelecimento = dd.read_csv('dados-abertos/*.ESTABELE', sep=';',
+            check_download(link, table_name.capitalize())
+        file_extractor(PATH_ZIP, PATH_UNZIP, '*Est*')
+
+        dd_estabelecimento: dd = dd.read_csv('dados-abertos/*.ESTABELE', sep=';',
                                         names=colunas_estabelecimento, encoding='latin1', dtype=dtype_estabelecimento)
 
-        listDroppedColumns: list = ['cnpj_ordem', 'cnpj_dv', 'tipo_logradouro', 'logradouro', 'numero', 'complemento',
+        list_dropped_columns: list = ['cnpj_ordem', 'cnpj_dv', 'tipo_logradouro', 'logradouro', 'numero', 'complemento',
                                     'bairro', 'ddd1', 'telefone1', 'ddd2', 'telefone2', 'ddd_fax', 'fax', 'pais',
                                     'correio_eletronico', 'situacao_especial', 'data_situacao_especial',
                                     'nome_cidade_exterior']
 
-        ddEstabelecimento['cnpj'] = ddEstabelecimento['cnpj_basico'] + ddEstabelecimento['cnpj_ordem'] + \
-                                    ddEstabelecimento['cnpj_dv']
-        ddEstabelecimento['cnpj'] = ddEstabelecimento.cnpj.astype(np.int64)
+        dd_estabelecimento['cnpj'] = dd_estabelecimento['cnpj_basico'] + dd_estabelecimento['cnpj_ordem'] + \
+                                    dd_estabelecimento['cnpj_dv']
+        dd_estabelecimento['cnpj'] = dd_estabelecimento.cnpj.astype(np.int64)
 
-        ddEstabelecimento = ddEstabelecimento.drop(columns=listDroppedColumns, axis=1)
-        ddEstabelecimento['cnpj_basico'] = ddEstabelecimento.cnpj_basico.astype(np.int64)
+        dd_estabelecimento = dd_estabelecimento.drop(columns=list_dropped_columns, axis=1)
+        dd_estabelecimento['cnpj_basico'] = dd_estabelecimento.cnpj_basico.astype(np.int64)
 
-        ddEstabelecimento['data_situacao_cadastral'] = ddEstabelecimento.data_situacao_cadastral.replace('0', None)
-        ddEstabelecimento['data_situacao_cadastral'] = ddEstabelecimento.data_situacao_cadastral.astype("M8[us]")
-        ddEstabelecimento['data_inicio_atividades'] = ddEstabelecimento.data_inicio_atividades.astype("M8[us]")
+        dd_estabelecimento['data_situacao_cadastral'] = dd_estabelecimento.data_situacao_cadastral.replace('0', None)
+        dd_estabelecimento['data_situacao_cadastral'] = dd_estabelecimento.data_situacao_cadastral.astype("M8[us]")
+        dd_estabelecimento['data_inicio_atividades'] = dd_estabelecimento.data_inicio_atividades.astype("M8[us]")
 
-        ddEstabelecimento = ddEstabelecimento.assign(tipo_situacao_cadastral=None)
-        ddEstabelecimento['tipo_situacao_cadastral'] = ddEstabelecimento['tipo_situacao_cadastral'].mask(
-            ddEstabelecimento.codigo_situacao_cadastral == 2, 1)
-        ddEstabelecimento['tipo_situacao_cadastral'] = ddEstabelecimento['tipo_situacao_cadastral'].mask(
-            ddEstabelecimento.codigo_situacao_cadastral != 2, 2)
-        ddEstabelecimento['tipo_situacao_cadastral'] = ddEstabelecimento['tipo_situacao_cadastral'].mask(
-            (ddEstabelecimento.codigo_situacao_cadastral == 8) & (
-                    ddEstabelecimento.codigo_motivo_situacao_cadastral == 1), 3)
-        ddEstabelecimento['tipo_situacao_cadastral'] = ddEstabelecimento.tipo_situacao_cadastral.astype('int')
+        dd_estabelecimento = dd_estabelecimento.assign(tipo_situacao_cadastral=None)
+        dd_estabelecimento['tipo_situacao_cadastral'] = dd_estabelecimento['tipo_situacao_cadastral'].mask(
+            dd_estabelecimento.codigo_situacao_cadastral == 2, 1)
+        dd_estabelecimento['tipo_situacao_cadastral'] = dd_estabelecimento['tipo_situacao_cadastral'].mask(
+            dd_estabelecimento.codigo_situacao_cadastral != 2, 2)
+        dd_estabelecimento['tipo_situacao_cadastral'] = dd_estabelecimento['tipo_situacao_cadastral'].mask(
+            (dd_estabelecimento.codigo_situacao_cadastral == 8) & (
+                    dd_estabelecimento.codigo_motivo_situacao_cadastral == 1), 3)
+        dd_estabelecimento['tipo_situacao_cadastral'] = dd_estabelecimento.tipo_situacao_cadastral.astype('int')
 
-        ddEstabelecimento = ddEstabelecimento.set_index('cnpj_basico')
-        print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - startTime))
+        dd_estabelecimento = dd_estabelecimento.set_index('cnpj_basico')
+        print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - inter_time))
 
-        createParquet(ddEstabelecimento, tableName)
+        create_parquet(dd_estabelecimento, table_name)
 
-        ddEstabelecimentoGO = ddEstabelecimento[ddEstabelecimento['uf'] == 'GO']
-        createParquet(ddEstabelecimentoGO, 'estabelecimentos_go')
+        dd_estabelecimento_go: dd = dd_estabelecimento[dd_estabelecimento['uf'] == 'GO']
+        create_parquet(dd_estabelecimento_go, 'estabelecimentos_go')
 
-        return ddEstabelecimento, ddEstabelecimentoGO
+        return dd_estabelecimento, dd_estabelecimento_go
 
     except Exception as e:
         print(f'Error: {e}')
     finally:
-        deleteFile(PATH_UNZIP)
-        print('Tempo total de manipulação dos Estabelecimentos:', str(datetime.datetime.now() - startTime))
+        file_delete(PATH_UNZIP)
+        print('Tempo total de manipulação dos Estabelecimentos:', str(datetime.datetime.now() - inter_time))
 
 
 def manipular_simples() -> dd:
     print('Início da manipulação do Simples')
 
-    startTime: datetime = datetime.datetime.now()
+    start_time: datetime = datetime.datetime.now()
 
     colunas_simples: list = [
         'cnpj_basico',
@@ -293,44 +296,44 @@ def manipular_simples() -> dd:
         'data_exclusao_mei': 'string'}
 
     try:
-        tableName: str = 'simples'
+        table_name: str = 'simples'
         for link in soup.find_all('a'):
-            check_download(link, tableName.capitalize())
-        extrairArquivo(PATH_ZIP, PATH_UNZIP, '*Sim*')
+            check_download(link, table_name.capitalize())
+        file_extractor(PATH_ZIP, PATH_UNZIP, '*Sim*')
 
-        ddSimples = dd.read_csv('dados-abertos/*SIMPLES*', sep=';', names=colunas_simples, encoding='latin1',
+        dd_simples: dd = dd.read_csv('dados-abertos/*SIMPLES*', sep=';', names=colunas_simples, encoding='latin1',
                                 dtype=dtype_simples, na_filter=None)
 
-        ddSimples = ddSimples.set_index('cnpj_basico')
+        dd_simples = dd_simples.set_index('cnpj_basico')
 
-        interTimer = datetime.datetime.now()
-        ddSimples['data_opcao_simples'] = ddSimples.data_opcao_simples.replace('00000000', np.NaN)
-        ddSimples['data_exclusao_simples'] = ddSimples.data_exclusao_simples.replace('00000000', np.NaN)
-        ddSimples['data_opcao_mei'] = ddSimples.data_opcao_mei.replace('00000000', np.NaN)
-        ddSimples['data_exclusao_mei'] = ddSimples.data_exclusao_mei.replace('00000000', np.NaN)
+        inter_timer: datetime = datetime.datetime.now()
+        dd_simples['data_opcao_simples'] = dd_simples.data_opcao_simples.replace('00000000', np.NaN)
+        dd_simples['data_exclusao_simples'] = dd_simples.data_exclusao_simples.replace('00000000', np.NaN)
+        dd_simples['data_opcao_mei'] = dd_simples.data_opcao_mei.replace('00000000', np.NaN)
+        dd_simples['data_exclusao_mei'] = dd_simples.data_exclusao_mei.replace('00000000', np.NaN)
 
-        ddSimples['opcao_simples'] = ddSimples.opcao_simples.replace('N', '0').replace('S', '1')
-        ddSimples['opcao_simples'] = ddSimples.opcao_simples.astype('int')
+        dd_simples['opcao_simples'] = dd_simples.opcao_simples.replace('N', '0').replace('S', '1')
+        dd_simples['opcao_simples'] = dd_simples.opcao_simples.astype('int')
 
-        ddSimples['opcao_mei'] = ddSimples.opcao_mei.replace('N', '0').replace('S', '1')
-        ddSimples['opcao_mei'] = ddSimples.opcao_mei.astype('int')
+        dd_simples['opcao_mei'] = dd_simples.opcao_mei.replace('N', '0').replace('S', '1')
+        dd_simples['opcao_mei'] = dd_simples.opcao_mei.astype('int')
 
-        print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - interTimer))
+        print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - inter_timer))
 
-        createParquet(ddSimples, tableName)
+        create_parquet(dd_simples, table_name)
 
-        return ddSimples
+        return dd_simples
     except Exception as e:
         print(f'Error: {e}')
     finally:
-        deleteFile(PATH_UNZIP)
-        print('Tempo total de trabalho com o Simples:', str(datetime.datetime.now() - startTime))
+        file_delete(PATH_UNZIP)
+        print('Tempo total de trabalho com o Simples:', str(datetime.datetime.now() - start_time))
 
 
 def manipular_socio() -> dd:
     print('Início da manipulação dos Sócios')
 
-    startTime: datetime = datetime.datetime.now()
+    start_time: datetime = datetime.datetime.now()
 
     colunas_socio: list = [
         'cnpj_basico',
@@ -361,87 +364,87 @@ def manipular_socio() -> dd:
     }
 
     try:
-        tableName: str = 'socios'
+        table_name: str = 'socios'
         for link in soup.find_all('a'):
-            check_download(link, tableName.capitalize())
-        extrairArquivo(PATH_ZIP, PATH_UNZIP, '*Soc*')
+            check_download(link, table_name.capitalize())
+        file_extractor(PATH_ZIP, PATH_UNZIP, '*Soc*')
 
-        ddSocio = dd.read_csv('dados-abertos/*SOCIO*', sep=';', names=colunas_socio, encoding='latin1',
+        dd_socio: dd = dd.read_csv('dados-abertos/*SOCIO*', sep=';', names=colunas_socio, encoding='latin1',
                               dtype=dtype_socio, na_filter=None)
 
-        interTimer = datetime.datetime.now()
-        ddSocio['cnpj_basico'] = ddSocio.cnpj_basico.astype('int')
-        ddSocio['identificador_socio'] = ddSocio.identificador_socio.astype('int')
-        ddSocio['qualificacao_socio'] = ddSocio.qualificacao_socio.astype('int')
-        ddSocio['qualificacao_representante_legal'] = ddSocio.qualificacao_representante_legal.astype('int')
-        ddSocio['faixa_etaria'] = ddSocio.faixa_etaria.astype('int')
-        print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - interTimer))
+        inter_timer: datetime = datetime.datetime.now()
+        dd_socio['cnpj_basico'] = dd_socio.cnpj_basico.astype('int')
+        dd_socio['identificador_socio'] = dd_socio.identificador_socio.astype('int')
+        dd_socio['qualificacao_socio'] = dd_socio.qualificacao_socio.astype('int')
+        dd_socio['qualificacao_representante_legal'] = dd_socio.qualificacao_representante_legal.astype('int')
+        dd_socio['faixa_etaria'] = dd_socio.faixa_etaria.astype('int')
+        print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - inter_timer))
 
-        createParquet(ddSocio, tableName)
+        create_parquet(dd_socio, table_name)
 
-        return ddSocio
+        return dd_socio
     except Exception as e:
         print(f'Error: {e}')
     finally:
-        deleteFile(PATH_UNZIP)
-        print('Tempo total de trabalho com os Sócios:', str(datetime.datetime.now() - startTime))
+        file_delete(PATH_UNZIP)
+        print('Tempo total de trabalho com os Sócios:', str(datetime.datetime.now() - start_time))
 
 
-def createParquet(daskDataframe: dd, tableName: str):
-    interTimer = datetime.datetime.now()
+def create_parquet(dask_dataframe: dd, table_name: str):
+    inter_timer: datetime = datetime.datetime.now()
     try:
-        daskDataframe.to_parquet(PATH_PARQUET + '\\' + YYYYMM + '\\' + tableName, engine='pyarrow',
-                                 write_metadata_file=True, overwrite=True,
-                                 name_function=lambda x: f'{YYYYMM}_{tableName}{x}.parquet')
-        print(f'Tempo de criação dos arquivos parquet ({tableName}):', str(datetime.datetime.now() - interTimer))
+        dask_dataframe.to_parquet(PATH_PARQUET + '\\' + YYYYMM + '\\' + table_name, engine='pyarrow',
+                                  write_metadata_file=True, overwrite=True,
+                                  name_function=lambda x: f'{YYYYMM}_{table_name}{x}.parquet')
+        print(f'Tempo de criação dos arquivos parquet ({table_name}):', str(datetime.datetime.now() - inter_timer))
     except Exception as e:
         raise
 
 
-def extrairArquivo(folderOri: str, folderDest: str, fileName: str = '*.*'):
-    zipFileList: list = list(glob.glob(os.path.join(folderOri, fileName)))
-    for arq in zipFileList:
+def file_extractor(folder_ori: str, folder_dest: str, filename: str = '*.*'):
+    zip_file_list: list = list(glob.glob(os.path.join(folder_ori, filename)))
+    for arq in zip_file_list:
         print('Unpacking ' + arq)
         with zipfile.ZipFile(arq, 'r') as zip_ref:
-            zip_ref.extractall(folderDest)
+            zip_ref.extractall(folder_dest)
 
 
-def deleteFile(folderDelete: str, fileName: str = '*'):
-    fileList: list = list(glob.glob(os.path.join(folderDelete, fileName)))
-    for arq in fileList:
+def file_delete(folder: str, filename: str = '*'):
+    file_list: list = list(glob.glob(os.path.join(folder, filename)))
+    for arq in file_list:
         os.remove(arq)
 
 
 def create_db_parquet():
     print('Início da criação das tabelas parquet')
-    startTime: datetime = datetime.datetime.now()
-    conn = duck.connect(FILE_DB_PARQUET, config={'threads': 4})
+    inter_time: datetime = datetime.datetime.now()
+    conn: duck.connect() = duck.connect(FILE_DB_PARQUET, config={'threads': 4})
 
-    listTabela = ['empresas', 'estabelecimentos', 'estabelecimentos_go', 'simples', 'socios']
-    for tabela in listTabela:
-        path_parquet = PATH_PARQUET + YYYYMM + '/' + tabela + '/*.parquet'
+    list_tabela: list = ['empresas', 'estabelecimentos', 'estabelecimentos_go', 'simples', 'socios']
+    for tabela in list_tabela:
+        path_parquet: str = PATH_PARQUET + YYYYMM + '/' + tabela + '/*.parquet'
         add_table_parquet(conn, tabela, path_parquet)
         shutil.rmtree(os.path.dirname(path_parquet))
-    listTabelaFixa = ['cnae', 'motivo', 'municipio']
-    for tabela in listTabelaFixa:
+    list_tabela_fixa: list = ['cnae', 'motivo', 'municipio']
+    for tabela in list_tabela_fixa:
         path_parquet = PATH_PARQUET + 'base/' + tabela + '.parquet'
         add_table_parquet(conn, tabela, path_parquet)
-    print('Tempo total de carga das tabelas:', str(datetime.datetime.now() - startTime))
+    print('Tempo total de carga das tabelas:', str(datetime.datetime.now() - inter_time))
 
 
-def add_table_parquet(conn: duck.connect(), table: str, pathParquet: str):
-    interTimer = datetime.datetime.now()
-    sql = f'''
+def add_table_parquet(conn: duck.connect(), table: str, path_parquet: str):
+    inter_timer: datetime = datetime.datetime.now()
+    sql: str = f'''
         CREATE OR REPLACE TABLE {table} AS 
-            (SELECT * FROM '{pathParquet}')
+            (SELECT * FROM '{path_parquet}')
     '''
     conn.execute(sql)
-    print(f'Tempo de carregamento da tabela {table}:', str(datetime.datetime.now() - interTimer))
+    print(f'Tempo de carregamento da tabela {table}:', str(datetime.datetime.now() - inter_timer))
 
 
 if __name__ == '__main__':
-    startTime = datetime.datetime.now()
-    env = 'local'
+    start_time: datetime = datetime.datetime.now()
+    env: str = 'local'
     load_dotenv('.env.local')
 
     if env == 'hom':
@@ -455,14 +458,19 @@ if __name__ == '__main__':
     FILE_DB_PARQUET: str = os.getenv('FILE_DB_PARQUET')
 
     freeze_support()
-    client = Client()
+
+    cluster: LocalCluster = LocalCluster(n_workers=4, threads_per_worker=1, memory_limit='7GB', dashboard_address=':1977')
+    cluster
+
+    client: Client = Client(cluster)
     print(client)
 
     soup: BeautifulSoup = BeautifulSoup(requests.get(URL).text, 'html.parser')
 
-    manipular_empresa(soup)
+    manipular_empresa()
     manipular_estabelecimento()
     manipular_simples()
     manipular_socio()
     create_db_parquet()
-    print(f'Tempo total:', str(datetime.datetime.now() - startTime))
+    print(f'Tempo total:', str(datetime.datetime.now() - start_time))
+    client.shutdown()
