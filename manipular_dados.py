@@ -103,7 +103,7 @@ def check_download(link, file) -> bool:
         return True
 
 
-def manipular_empresa():
+def manipular_empresa() -> bool:
     print('Início da manipulação das Empresas')
 
     inter_time: datetime = datetime.datetime.now()
@@ -131,7 +131,7 @@ def manipular_empresa():
         table_name: str = 'empresas'
         for link in [x for x in soup.find_all('a') if str(x.get('href')).endswith('.zip')]:
             if not check_download(link, table_name.capitalize()):
-                return None
+                return False
 
         file_extractor(PATH_ZIP, PATH_UNZIP, 'Emp*.*')
 
@@ -144,22 +144,27 @@ def manipular_empresa():
 
         create_parquet(dd_empresa, table_name)
 
-        # Tratamento para criar as empresas privadas
-        dd_empresa_privada: dd = dd_empresa[dd_empresa['natureza_juridica'].between(2046, 2348)]
-        dd_empresa_privada = dd_empresa_privada.drop('qualificacao_responsavel', axis=1)
-        dd_empresa_privada = dd_empresa_privada.drop('ente_federativo_responsavel', axis=1)
+        try:
+            # Tratamento para criar as empresas privadas
+            dd_empresa_privada: dd = dd_empresa[dd_empresa['natureza_juridica'].between(2046, 2348)]
+            dd_empresa_privada = dd_empresa_privada.drop('qualificacao_responsavel', axis=1)
+            dd_empresa_privada = dd_empresa_privada.drop('ente_federativo_responsavel', axis=1)
+
+            create_parquet(dd_empresa_privada, 'empresa_privada')
+        except Exception as e:
+            print(f'Error: {e}')
+            return False
 
     except Exception as e:
         print(f'Error: {e}')
+        return False
 
-        create_parquet(dd_empresa_privada, 'empresa_privada')
-
-    finally:
-        file_delete(PATH_UNZIP)
-        print('Tempo total de manipulação das Empresas:', str(datetime.datetime.now() - inter_time))
+    file_delete(PATH_UNZIP)
+    print('Tempo total de manipulação das Empresas:', str(datetime.datetime.now() - inter_time))
+    return True
 
 
-def manipular_estabelecimento():
+def manipular_estabelecimento() -> bool:
     print('Início da manipulação dos Estabelecimentos')
 
     inter_time: datetime = datetime.datetime.now()
@@ -234,7 +239,8 @@ def manipular_estabelecimento():
         table_name: str = 'estabelecimentos'
         for link in [x for x in soup.find_all('a') if str(x.get('href')).endswith('.zip')]:
             if not check_download(link, table_name.capitalize()):
-                return None
+                return False
+
         file_extractor(PATH_ZIP, PATH_UNZIP, '*Est*')
 
         dd_estabelecimento: dd = dd.read_csv('dados-abertos/*.ESTABELE', sep=';',
@@ -272,17 +278,22 @@ def manipular_estabelecimento():
 
         create_parquet(dd_estabelecimento, table_name)
 
-        dd_estabelecimento_go: dd = dd_estabelecimento[dd_estabelecimento['uf'] == 'GO']
-        create_parquet(dd_estabelecimento_go, 'estabelecimentos_go')
+        try:
+            dd_estabelecimento_go: dd = dd_estabelecimento[dd_estabelecimento['uf'] == 'GO']
+            create_parquet(dd_estabelecimento_go, 'estabelecimentos_go')
+        except Exception as e:
+            print(f'Error: {e}')
+            return False
 
     except Exception as e:
         print(f'Error: {e}')
-    finally:
-        file_delete(PATH_UNZIP)
-        print('Tempo total de manipulação dos Estabelecimentos:', str(datetime.datetime.now() - inter_time))
+        return False
 
+    file_delete(PATH_UNZIP)
+    print('Tempo total de manipulação dos Estabelecimentos:', str(datetime.datetime.now() - inter_time))
+    return True
 
-def manipular_simples():
+def manipular_simples() -> bool:
     print('Início da manipulação do Simples')
 
     start_time: datetime = datetime.datetime.now()
@@ -309,7 +320,8 @@ def manipular_simples():
         table_name: str = 'simples'
         for link in [x for x in soup.find_all('a') if str(x.get('href')).endswith('.zip')]:
             if not check_download(link, table_name.capitalize()):
-                return None
+                return False
+
         file_extractor(PATH_ZIP, PATH_UNZIP, '*Sim*')
 
         dd_simples: dd = dd.read_csv('dados-abertos/*SIMPLES*', sep=';', names=colunas_simples, encoding='latin1',
@@ -335,12 +347,13 @@ def manipular_simples():
 
     except Exception as e:
         print(f'Error: {e}')
-    finally:
-        file_delete(PATH_UNZIP)
-        print('Tempo total de trabalho com o Simples:', str(datetime.datetime.now() - start_time))
+        return False
 
+    file_delete(PATH_UNZIP)
+    print('Tempo total de trabalho com o Simples:', str(datetime.datetime.now() - start_time))
+    return True
 
-def manipular_socio():
+def manipular_socio() -> bool:
     print('Início da manipulação dos Sócios')
 
     start_time: datetime = datetime.datetime.now()
@@ -377,7 +390,8 @@ def manipular_socio():
         table_name: str = 'socios'
         for link in [x for x in soup.find_all('a') if str(x.get('href')).endswith('.zip')]:
             if not check_download(link, table_name.capitalize()):
-                return None
+                return False
+
         file_extractor(PATH_ZIP, PATH_UNZIP, '*Soc*')
 
         dd_socio: dd = dd.read_csv('dados-abertos/*SOCIO*', sep=';', names=colunas_socio, encoding='latin1',
@@ -395,9 +409,11 @@ def manipular_socio():
 
     except Exception as e:
         print(f'Error: {e}')
-    finally:
-        file_delete(PATH_UNZIP)
-        print('Tempo total de trabalho com os Sócios:', str(datetime.datetime.now() - start_time))
+        return False
+
+    file_delete(PATH_UNZIP)
+    print('Tempo total de trabalho com os Sócios:', str(datetime.datetime.now() - start_time))
+    return True
 
 
 def create_parquet(dask_dataframe: dd, table_name: str):
@@ -465,6 +481,7 @@ def add_table_parquet(conn: duck.connect(), table: str, path_parquet: str):
 
 if __name__ == '__main__':
 
+    print(f'Início da execução dia: {datetime.datetime.now():%d/%m/%Y} às {datetime.datetime.now():%H:%M:%S}')
     start_time: datetime = datetime.datetime.now()
     load_dotenv('.env.local')
 
@@ -489,10 +506,14 @@ if __name__ == '__main__':
 
     soup: BeautifulSoup = BeautifulSoup(requests.get(URL).text, 'html.parser')
 
-    manipular_empresa()
-    manipular_estabelecimento()
-    manipular_simples()
-    manipular_socio()
-    create_db_parquet()
+    is_create_db_parquet: bool = False
+
+    if manipular_empresa(): is_create = True
+    if manipular_estabelecimento(): is_create = True
+    if manipular_simples(): is_create = True
+    if manipular_socio(): is_create = True
+
+    if is_create: create_db_parquet()
+
     print(f'Tempo total:', str(datetime.datetime.now() - start_time))
     client.shutdown()
