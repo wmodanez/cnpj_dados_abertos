@@ -53,6 +53,15 @@ parquet. Usa também o **DuckDB** para reunir esses arquivos parquet em um só a
 Sem levar em consideração a baixa dos arquivos toda execução durou cerca de 23 minutos em um notebook i5 de 9a geração com <br>
 Windows 11 e o dask configurado da seguinte forma: processes=3 threads=6, memory=31.78 GiB e o duckdb com threads=4.
 
+## Implementações futuras
+* Download dos arquivos em paralelo
+
 ## Histórico de versões
-versão 1.0 (julho/2024)
+versão 1.2.0 (julho/2024)
+- Implementação da possibilidade de recomeço do download interrompido de um arquivo. 
+
+versão 1.1.0 (julho/2024)
+- Padronização PEP8, inclusão da verificação das pastas básicas para o projeto e atualização das dependências
+
+versão 1.0.0 (julho/2024)
 - primeira versão
