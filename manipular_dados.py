@@ -4,14 +4,15 @@ import glob
 import os
 import shutil
 import time
-import urllib
 import zipfile
 from multiprocessing import freeze_support
+from sys import stderr as STREAM
 
 import dask.dataframe as dd
 import duckdb as duck
 import numpy as np
 import progressbar
+import pycurl
 import requests
 from bs4 import BeautifulSoup
 from dask.diagnostics import ProgressBar
@@ -26,7 +27,9 @@ progress_bar: progressbar = None
 URL: str = 'http://200.152.38.155/CNPJ/'
 
 # YYYYMM = (datetime.date.today().replace(day=1) - datetime.timedelta(days=1)).strftime('%Y%m')
-YYYYMM = (datetime.date.today()).strftime('%Y%m')
+YYYYMM: str = (datetime.date.today()).strftime('%Y%m')
+
+KB: int = 1024
 
 
 def check_basic_folders(folder: str):
@@ -34,20 +37,12 @@ def check_basic_folders(folder: str):
         os.makedirs(folder)
 
 
-def show_progress(block_num: int, block_size: int, total_size: int):
-    global progress_bar
-
-    if progress_bar is None:
-        progress_bar = progressbar.ProgressBar(maxval=total_size)
-        progress_bar.start()
-
-    downloaded: int = block_num * block_size
-
-    if downloaded < total_size:
-        progress_bar.update(downloaded)
-    else:
-        progress_bar.finish()
-        progress_bar = None
+def progress(download_t, download_d, upload_t, upload_d):
+    STREAM.write('Downloading: {}/{} kiB ({}%)\r'.format(str(int(download_d / KB)), str(int(download_t / KB)),
+                                                         str(int(
+                                                             download_d / download_t * 100) if download_t > 0 else 0)
+                                                         ))
+    STREAM.flush()
 
 
 def check_if_update_base(datetime_last_upload: datetime):
@@ -59,15 +54,10 @@ def check_if_update_base(datetime_last_upload: datetime):
             return True
 
 
-def check_file_exists(path: str, filename: str) -> int:
+def get_info_file(path: str, filename: str) -> int:
     if os.path.exists(path + filename):
-        return os.stat(path + filename).st_size
+        return os.stat(path + filename).st_size, os.stat(path + filename).st_mtime
     return 0
-
-
-def download_file(file_url: str, file_download: str, timestamp_last_modified: int):
-    urllib.request.urlretrieve(file_url, PATH_ZIP + file_download, show_progress)
-    os.utime(PATH_ZIP + file_download, (timestamp_last_modified, timestamp_last_modified))
 
 
 def check_download(link, file) -> bool:
@@ -76,27 +66,57 @@ def check_download(link, file) -> bool:
         file_url: str = URL + file_download
 
         if not file_download.startswith('http'):
-            local_file: int = check_file_exists(PATH_ZIP, file_download)
-            # print(requests.head(file_url).headers)
-            file_url_last_upload: list = requests.head(file_url).headers['Last-Modified'].split()
+            response = requests.head(file_url)
 
-            file_url_last_modified_time: str = str(file_url_last_upload[4]).split(':')
-            timestamp_last_modified: int = datetime.datetime(int(file_url_last_upload[3]),
-                                                             int(time.strptime(file_url_last_upload[2], '%b').tm_mon),
-                                                             int(file_url_last_upload[1]),
-                                                             int(file_url_last_modified_time[0]),
-                                                             int(file_url_last_modified_time[1]),
-                                                             int(file_url_last_modified_time[2])).timestamp()
+            if response.status_code != 200:
+                print(f'Erro ao tentar baixar {file_download} - Status Code: {response.status_code}')
+                return False
+
+            file_remote_last_modified: list = response.headers['Last-Modified'].split()
+
+            file_remote_last_modified_time: str = str(file_remote_last_modified[4]).split(':')
+            timestamp_last_modified: int = datetime.datetime(int(file_remote_last_modified[3]),
+                                                             int(time.strptime(file_remote_last_modified[2],
+                                                                               '%b').tm_mon),
+                                                             int(file_remote_last_modified[1]),
+                                                             int(file_remote_last_modified_time[0]),
+                                                             int(file_remote_last_modified_time[1]),
+                                                             int(file_remote_last_modified_time[2])).timestamp()
+            curl = pycurl.Curl()
+            curl.setopt(pycurl.URL, file_url)
+            curl.setopt(pycurl.FOLLOWLOCATION, 1)
+            curl.setopt(pycurl.MAXREDIRS, 5)
+
+            file_local_size, file_local_last_modified = get_info_file(PATH_ZIP, file_download)
+
+            file_local = PATH_ZIP + file_download
 
             print('Baixando o arquivo: ' + file_download)
-            if local_file == 0:
-                download_file(file_url, file_download, timestamp_last_modified)
-            elif local_file > 0 and local_file != int(requests.head(file_url).headers['Content-Length']):
-                download_file(file_url, file_download, timestamp_last_modified)
-                return True
-            else:
-                print('Os arquivos estão atualizados.')
-                return True
+            if file_local_size == 0:
+                f = open(file_local, "wb")
+            elif file_local_size > 0:
+                if file_local_last_modified >= timestamp_last_modified:
+                    if file_local_size != int(response.headers['Content-Length']):
+                        f = open(file_local, "ab")
+                        curl.setopt(pycurl.RESUME_FROM, file_local_size)
+                    else:
+                        print(f'Arquivo {file_download} já está atualizado.')
+                        return True
+                else:
+                    f = open(file_local, "wb")
+
+            curl.setopt(pycurl.WRITEDATA, f)
+
+            curl.setopt(pycurl.NOPROGRESS, False)
+            curl.setopt(pycurl.XFERINFOFUNCTION, progress)
+            try:
+                curl.perform()
+                curl.close()
+                os.utime(file_local, (timestamp_last_modified, timestamp_last_modified))
+            except Exception:
+                print('Não foi possível baixar o arquivo: ' + file_download)
+                pass
+            return True
         else:
             print('Não foi possível baixar o arquivo: ' + file_download)
     else:
@@ -131,7 +151,7 @@ def manipular_empresa() -> bool:
         table_name: str = 'empresas'
         for link in [x for x in soup.find_all('a') if str(x.get('href')).endswith('.zip')]:
             if not check_download(link, table_name.capitalize()):
-                return False
+                return None
 
         file_extractor(PATH_ZIP, PATH_UNZIP, 'Emp*.*')
 
@@ -239,7 +259,7 @@ def manipular_estabelecimento() -> bool:
         table_name: str = 'estabelecimentos'
         for link in [x for x in soup.find_all('a') if str(x.get('href')).endswith('.zip')]:
             if not check_download(link, table_name.capitalize()):
-                return False
+                return None
 
         file_extractor(PATH_ZIP, PATH_UNZIP, '*Est*')
 
@@ -293,6 +313,7 @@ def manipular_estabelecimento() -> bool:
     print('Tempo total de manipulação dos Estabelecimentos:', str(datetime.datetime.now() - inter_time))
     return True
 
+
 def manipular_simples() -> bool:
     print('Início da manipulação do Simples')
 
@@ -320,7 +341,7 @@ def manipular_simples() -> bool:
         table_name: str = 'simples'
         for link in [x for x in soup.find_all('a') if str(x.get('href')).endswith('.zip')]:
             if not check_download(link, table_name.capitalize()):
-                return False
+                return None
 
         file_extractor(PATH_ZIP, PATH_UNZIP, '*Sim*')
 
@@ -352,6 +373,7 @@ def manipular_simples() -> bool:
     file_delete(PATH_UNZIP)
     print('Tempo total de trabalho com o Simples:', str(datetime.datetime.now() - start_time))
     return True
+
 
 def manipular_socio() -> bool:
     print('Início da manipulação dos Sócios')
@@ -390,7 +412,7 @@ def manipular_socio() -> bool:
         table_name: str = 'socios'
         for link in [x for x in soup.find_all('a') if str(x.get('href')).endswith('.zip')]:
             if not check_download(link, table_name.capitalize()):
-                return False
+                return None
 
         file_extractor(PATH_ZIP, PATH_UNZIP, '*Soc*')
 
