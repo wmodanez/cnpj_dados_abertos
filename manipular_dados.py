@@ -3,6 +3,7 @@ import datetime
 import glob
 import os
 import shutil
+import sys
 import time
 import zipfile
 from multiprocessing import freeze_support
@@ -45,15 +46,6 @@ def progress(download_t, download_d, upload_t, upload_d):
     STREAM.flush()
 
 
-def check_if_update_base(datetime_last_upload: datetime):
-    last_download: str
-    if len(os.listdir(PATH_ZIP)) == 0:
-        if float(last_download) <= datetime_last_upload:
-            return False
-        else:
-            return True
-
-
 def get_info_file(path: str, filename: str) -> int:
     if os.path.exists(path + filename):
         return os.stat(path + filename).st_size, os.stat(path + filename).st_mtime
@@ -86,6 +78,8 @@ def check_download(link, file) -> bool:
             curl.setopt(pycurl.URL, file_url)
             curl.setopt(pycurl.FOLLOWLOCATION, 1)
             curl.setopt(pycurl.MAXREDIRS, 5)
+            curl.setopt(pycurl.NOPROGRESS, False)
+            curl.setopt(pycurl.XFERINFOFUNCTION, progress)
 
             file_local_size, file_local_last_modified = get_info_file(PATH_ZIP, file_download)
 
@@ -104,18 +98,18 @@ def check_download(link, file) -> bool:
                         return True
                 else:
                     f = open(file_local, "wb")
-
             curl.setopt(pycurl.WRITEDATA, f)
 
-            curl.setopt(pycurl.NOPROGRESS, False)
-            curl.setopt(pycurl.XFERINFOFUNCTION, progress)
             try:
                 curl.perform()
-                curl.close()
-                os.utime(file_local, (timestamp_last_modified, timestamp_last_modified))
             except Exception:
                 print('Não foi possível baixar o arquivo: ' + file_download)
                 pass
+            finally:
+                curl.close()
+                f.close()
+                os.utime(file_local, (timestamp_last_modified, timestamp_last_modified))
+                sys.stdout.flush()
             return True
         else:
             print('Não foi possível baixar o arquivo: ' + file_download)
@@ -530,12 +524,17 @@ if __name__ == '__main__':
 
     is_create_db_parquet: bool = False
 
-    if manipular_empresa(): is_create = True
-    if manipular_estabelecimento(): is_create = True
-    if manipular_simples(): is_create = True
-    if manipular_socio(): is_create = True
+    if manipular_empresa():
+        is_create_db_parquet = True
+    if manipular_estabelecimento():
+        is_create_db_parquet = True
+    if manipular_simples():
+        is_create_db_parquet = True
+    if manipular_socio():
+        is_create_db_parquet = True
 
-    if is_create: create_db_parquet()
+    if is_create_db_parquet:
+        create_db_parquet()
 
     print(f'Tempo total:', str(datetime.datetime.now() - start_time))
     client.shutdown()
