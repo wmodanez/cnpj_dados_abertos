@@ -54,14 +54,41 @@ Sem levar em consideração a baixa dos arquivos toda execução durou cerca de 
 Windows 11 e o dask configurado da seguinte forma: processes=3 threads=6, memory=31.78 GiB e o duckdb com threads=4.
 
 ## Implementações futuras
+* Geração do arquivo com os logs da aplicação
 * Download dos arquivos em paralelo
 
 ## Histórico de versões
-versão 1.2.0 (julho/2024)
-- Implementação da possibilidade de recomeço do download interrompido de um arquivo. 
-
-versão 1.1.0 (julho/2024)
-- Padronização PEP8, inclusão da verificação das pastas básicas para o projeto e atualização das dependências
-
-versão 1.0.0 (julho/2024)
-- primeira versão
+<table><thead>
+  <tr>
+    <th>Versão</th>
+    <th>Data</th>
+    <th>Descrição</th>
+  </tr></thead>
+<tbody>
+  <tr>
+    <td>1.2.2</td>
+    <td>26/07/2024</td>
+    <td>Correção do nome da variável que permitia ou não a criação do arquivo parquet final</td>
+  </tr>
+  <tr>
+    <td>1.2.1</td>
+    <td>24/07/2024</td>
+    <td>Update README.md</td>
+  </tr>
+  <tr>
+    <td>1.2.0</td>
+    <td>24/07/2024</td>
+    <td>Implementação da possibilidade de recomeço do download interrompido de um arquivo</td>
+  </tr>
+  <tr>
+    <td>1.1.0</td>
+    <td>20/06/2024</td>
+    <td>Padronização PEP8, inclusão da verificação das pastas básicas para o projeto e atualização das dependências</td>
+  </tr>
+  <tr>
+    <td>1.0.0</td>
+    <td>14/06/2024</td>
+    <td>Versão inicial</td>
+  </tr>
+</tbody>
+</table>
