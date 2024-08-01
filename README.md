@@ -78,11 +78,16 @@ Na versão 1.3.0 foi criado o arquivo docker para facilitar a utilização da ap
   </tr></thead>
 <tbody>
   <tr>
+    <td>1.3.1</td>
+    <td>01/08/2024</td>
+    <td>Inclusão do arquivo Dockerfile</td>
+  </tr>
+  <tr>
+  <tr>
     <td>1.3.0</td>
     <td>01/08/2024</td>
     <td>Criação do arquivo Dockerfile</td>
   </tr>
-  <tr>
     <td>1.2.3</td>
     <td>01/08/2024</td>
     <td>Atualização das dependências</td>
