@@ -1,7 +1,9 @@
-beautifulsoup4
-dask~=2024.5.2
+beautifulsoup4~=4.12.3
+dask~=2024.6.1
 dask-expr~=1.1.2
 duckdb~=1.0.0
-numpy
-progressbar
+numpy~=2.0.0
+progressbar~=2.5
 python-dotenv~=1.0.1
+requests~=2.32.3
+pycurl~=7.45.3
