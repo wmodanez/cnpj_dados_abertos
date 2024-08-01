@@ -19,7 +19,7 @@ pip install -r requirements.txt
 O comando abaixo faz todo o trabalho:<br>
 
 ```
-python manipular_dados.py
+python3 manipular_dados.py
 ```
 
 ### Os seguintes passos serão executados pelo script:
@@ -53,6 +53,18 @@ parquet. Usa também o **DuckDB** para reunir esses arquivos parquet em um só a
 Sem levar em consideração a baixa dos arquivos toda execução durou cerca de 23 minutos em um notebook i5 de 9a geração com <br>
 Windows 11 e o dask configurado da seguinte forma: processes=3 threads=6, memory=31.78 GiB e o duckdb com threads=4.
 
+## Dockerfile
+Na versão 1.3.0 foi criado o arquivo docker para facilitar a utilização da aplicação, para executála siga os seguintes passos:
+* Execute o comando abaixo para criação da imagem com o projeto:
+
+```sudo docker build . -t cnpj```
+* Execute o comando abaixo para criação de um container
+
+```sudo docker run -it temp```
+* Execute o comando abaixo para executar a aplicação.
+
+```python3 maniupular_dados.py```
+
 ## Implementações futuras
 * Geração do arquivo com os logs da aplicação
 * Download dos arquivos em paralelo
@@ -65,6 +77,16 @@ Windows 11 e o dask configurado da seguinte forma: processes=3 threads=6, memory
     <th>Descrição</th>
   </tr></thead>
 <tbody>
+  <tr>
+    <td>1.3.0</td>
+    <td>01/08/2024</td>
+    <td>Criação do arquivo Dockerfile</td>
+  </tr>
+  <tr>
+    <td>1.2.3</td>
+    <td>01/08/2024</td>
+    <td>Atualização das dependências</td>
+  </tr>
   <tr>
     <td>1.2.2</td>
     <td>26/07/2024</td>
