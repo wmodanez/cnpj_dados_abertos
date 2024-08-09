@@ -153,7 +153,6 @@ def manipular_empresa() -> bool:
                                      dtype=dtype_empresa)
 
         inter_timer: datetime = datetime.datetime.now()
-        dd_empresa = dd_empresa.set_index('cnpj_basico')
         print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - inter_timer))
 
         create_parquet(dd_empresa, table_name)
@@ -220,7 +219,6 @@ def manipular_estabelecimento() -> bool:
         'cnpj_basico': 'string',
         'cnpj_ordem': 'string',
         'cnpj_dv': 'string',
-        'cnpj': 'string',
         'matriz_filial': 'int',
         'nome_fantasia': 'string',
         'codigo_situacao_cadastral': 'int',
@@ -246,7 +244,8 @@ def manipular_estabelecimento() -> bool:
         'ddd_fax': 'string',
         'fax': 'string',
         'correio_eletronico': 'string',
-        'situacao_especial': 'string'
+        'situacao_especial': 'string',
+        'data_situacao_especial': 'string'
     }
 
     try:
@@ -287,7 +286,6 @@ def manipular_estabelecimento() -> bool:
                     dd_estabelecimento.codigo_motivo_situacao_cadastral == 1), 3)
         dd_estabelecimento['tipo_situacao_cadastral'] = dd_estabelecimento.tipo_situacao_cadastral.astype('int')
 
-        dd_estabelecimento = dd_estabelecimento.set_index('cnpj_basico')
         print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - inter_time))
 
         create_parquet(dd_estabelecimento, table_name)
@@ -341,8 +339,6 @@ def manipular_simples() -> bool:
 
         dd_simples: dd = dd.read_csv('dados-abertos/*SIMPLES*', sep=';', names=colunas_simples, encoding='latin1',
                                      dtype=dtype_simples, na_filter=None)
-
-        dd_simples = dd_simples.set_index('cnpj_basico')
 
         inter_timer: datetime = datetime.datetime.now()
         dd_simples['data_opcao_simples'] = dd_simples.data_opcao_simples.replace('00000000', np.nan)
@@ -436,7 +432,7 @@ def create_parquet(dask_dataframe: dd, table_name: str):
     inter_timer: datetime = datetime.datetime.now()
     try:
         dask_dataframe.to_parquet(PATH_PARQUET + '\\' + YYYYMM + '\\' + table_name, engine='pyarrow',
-                                  write_metadata_file=True, overwrite=True,
+                                  write_metadata_file=True, overwrite=True, write_index=False,
                                   name_function=lambda x: f'{YYYYMM}_{table_name}{x}.parquet')
         print(f'Tempo de criação dos arquivos parquet ({table_name}):', str(datetime.datetime.now() - inter_timer))
     except Exception as e:
