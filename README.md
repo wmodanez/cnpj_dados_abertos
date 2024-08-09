@@ -77,6 +77,12 @@ Na versão 1.3.0 foi criado o arquivo docker para facilitar a utilização da ap
     <th>Descrição</th>
   </tr></thead>
 <tbody>
+    <tr>
+    <td>1.3.2</td>
+    <td>09/08/2024</td>
+    <td>Remoção da indexação feita no campo cnpj_basico</td>
+  </tr>
+  <tr>
   <tr>
     <td>1.3.1</td>
     <td>01/08/2024</td>
