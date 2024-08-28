@@ -25,8 +25,6 @@ pg_bar_dask.register()
 
 progress_bar: progressbar = None
 
-URL: str = 'http://200.152.38.155/CNPJ/'
-
 # YYYYMM = (datetime.date.today().replace(day=1) - datetime.timedelta(days=1)).strftime('%Y%m')
 YYYYMM: str = (datetime.date.today()).strftime('%Y%m')
 
@@ -497,6 +495,7 @@ if __name__ == '__main__':
     start_time: datetime = datetime.datetime.now()
     load_dotenv('.env.local')
 
+    URL: str = os.getenv('URL_ORIGIN')
     PATH_ZIP: str = os.getenv('PATH_ZIP')
     PATH_UNZIP: str = os.getenv('PATH_UNZIP')
     PATH_PARQUET: str = os.getenv('PATH_PARQUET')
@@ -516,6 +515,13 @@ if __name__ == '__main__':
     client: Client = Client(cluster)
     print(client)
 
+    soup: BeautifulSoup = BeautifulSoup(requests.get(URL).text, 'html.parser')
+    list_folders = []
+    for element in soup.find_all('a'):
+        if '-' in element.get('href'):
+            # list_folders.append(re.sub('\\W+','', element.get('href')))
+            list_folders.append(element.get('href'))
+    URL += max(list_folders)
     soup: BeautifulSoup = BeautifulSoup(requests.get(URL).text, 'html.parser')
 
     is_create_db_parquet: bool = False
