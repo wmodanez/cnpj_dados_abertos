@@ -47,7 +47,7 @@ def progress(download_t, download_d, upload_t, upload_d):
 def get_info_file(path: str, filename: str) -> int:
     if os.path.exists(path + filename):
         return os.stat(path + filename).st_size, os.stat(path + filename).st_mtime
-    return 0
+    return 0, 0
 
 
 def check_download(link, file) -> bool:
@@ -340,9 +340,16 @@ def manipular_simples() -> bool:
 
         inter_timer: datetime = datetime.datetime.now()
         dd_simples['data_opcao_simples'] = dd_simples.data_opcao_simples.replace('00000000', np.nan)
+        dd_simples['data_opcao_simples'] = dd_simples.data_opcao_simples.astype("M8[us]")
+
         dd_simples['data_exclusao_simples'] = dd_simples.data_exclusao_simples.replace('00000000', np.nan)
+        dd_simples['data_exclusao_simples'] = dd_simples.data_exclusao_simples.astype("M8[us]")
+
         dd_simples['data_opcao_mei'] = dd_simples.data_opcao_mei.replace('00000000', np.nan)
+        dd_simples['data_opcao_mei'] = dd_simples.data_opcao_mei.astype("M8[us]")
+
         dd_simples['data_exclusao_mei'] = dd_simples.data_exclusao_mei.replace('00000000', np.nan)
+        dd_simples['data_exclusao_mei'] = dd_simples.data_exclusao_mei.astype("M8[us]")
 
         dd_simples['opcao_simples'] = dd_simples.opcao_simples.replace('N', '0').replace('S', '1')
         dd_simples['opcao_simples'] = dd_simples.opcao_simples.astype('int')
@@ -519,7 +526,6 @@ if __name__ == '__main__':
     list_folders = []
     for element in soup.find_all('a'):
         if '-' in element.get('href'):
-            # list_folders.append(re.sub('\\W+','', element.get('href')))
             list_folders.append(element.get('href'))
     URL += max(list_folders)
     soup: BeautifulSoup = BeautifulSoup(requests.get(URL).text, 'html.parser')
