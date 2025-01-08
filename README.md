@@ -60,7 +60,7 @@ Na versão 1.3.0 foi criado o arquivo docker para facilitar a utilização da ap
 ```sudo docker build . -t cnpj```
 * Execute o comando abaixo para criação de um container
 
-```sudo docker run -it temp```
+```sudo docker run -it cnpj```
 * Execute o comando abaixo para executar a aplicação.
 
 ```python3 maniupular_dados.py```
