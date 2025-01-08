@@ -54,7 +54,7 @@ Sem levar em consideração a baixa dos arquivos toda execução durou cerca de 
 Windows 11 e o dask configurado da seguinte forma: processes=3 threads=6, memory=31.78 GiB e o duckdb com threads=4.
 
 ## Dockerfile
-Na versão 1.3.0 foi criado o arquivo docker para facilitar a utilização da aplicação, para executála siga os seguintes passos:
+Na versão 1.3.0 foi criado o arquivo docker para facilitar a utilização da aplicação, para executá-la siga os seguintes passos:
 * Execute o comando abaixo para criação da imagem com o projeto:
 
 ```sudo docker build . -t cnpj```
@@ -84,7 +84,6 @@ Na versão 1.3.0 foi criado o arquivo docker para facilitar a utilização da ap
 nova URL dos dados abertos.</td>
   </tr>
     <tr>
-    <tr>
     <td>1.3.3</td>
     <td>28/08/2024</td>
     <td>Alteração para atender a nova forma de organização dos dados no site do dados abertos</td>
@@ -94,12 +93,10 @@ nova URL dos dados abertos.</td>
     <td>Remoção da indexação feita no campo cnpj_basico</td>
   </tr>
   <tr>
-  <tr>
     <td>1.3.1</td>
     <td>01/08/2024</td>
     <td>Inclusão do arquivo Dockerfile</td>
   </tr>
-  <tr>
   <tr>
     <td>1.3.0</td>
     <td>01/08/2024</td>
