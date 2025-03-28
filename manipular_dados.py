@@ -7,6 +7,7 @@ import sys
 import time
 import zipfile
 import eventlet
+import logging
 from multiprocessing import freeze_support
 from sys import stderr as STREAM
 
@@ -20,6 +21,35 @@ from bs4 import BeautifulSoup
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, LocalCluster
 from dotenv import load_dotenv
+
+# Configuração do logging
+def setup_logging():
+    # Cria o diretório de logs se não existir
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    
+    # Nome do arquivo de log com data
+    log_filename = f'logs/cnpj_process_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    
+    # Configuração do formato do log
+    log_format = '%(asctime)s - %(levelname)s - %(message)s'
+    date_format = '%Y-%m-%d %H:%M:%S'
+    
+    # Configuração do logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format=log_format,
+        datefmt=date_format,
+        handlers=[
+            logging.FileHandler(log_filename, encoding='utf-8'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    return logging.getLogger(__name__)
+
+# Inicializa o logger
+logger = setup_logging()
 
 pg_bar_dask = ProgressBar()
 pg_bar_dask.register()
@@ -57,61 +87,72 @@ def check_download(link, file) -> bool:
         file_url: str = URL + file_download
 
         if not file_download.startswith('http'):
-            response = requests.head(file_url)
+            try:
+                response = requests.head(file_url)
 
-            if response.status_code != 200:
-                print(f'Erro ao tentar baixar {file_download} - Status Code: {response.status_code}')
-                return False
+                if response.status_code != 200:
+                    logger.error(f'Erro ao tentar baixar {file_download} - Status Code: {response.status_code}')
+                    return False
 
-            file_remote_last_modified: list = response.headers['Last-Modified'].split()
+                file_remote_last_modified: list = response.headers['Last-Modified'].split()
 
-            file_remote_last_modified_time: str = str(file_remote_last_modified[4]).split(':')
-            timestamp_last_modified: int = datetime.datetime(int(file_remote_last_modified[3]),
+                file_remote_last_modified_time: str = str(file_remote_last_modified[4]).split(':')
+                timestamp_last_modified: int = datetime.datetime(int(file_remote_last_modified[3]),
                                                              int(time.strptime(file_remote_last_modified[2],
                                                                                '%b').tm_mon),
                                                              int(file_remote_last_modified[1]),
                                                              int(file_remote_last_modified_time[0]),
                                                              int(file_remote_last_modified_time[1]),
                                                              int(file_remote_last_modified_time[2])).timestamp()
-            curl = pycurl.Curl()
-            curl.setopt(pycurl.URL, file_url)
-            curl.setopt(pycurl.FOLLOWLOCATION, 1)
-            curl.setopt(pycurl.MAXREDIRS, 5)
-            curl.setopt(pycurl.NOPROGRESS, False)
-            curl.setopt(pycurl.XFERINFOFUNCTION, progress)
+                
+                curl = pycurl.Curl()
+                curl.setopt(pycurl.URL, file_url)
+                curl.setopt(pycurl.FOLLOWLOCATION, 1)
+                curl.setopt(pycurl.MAXREDIRS, 5)
+                curl.setopt(pycurl.NOPROGRESS, False)
+                curl.setopt(pycurl.XFERINFOFUNCTION, progress)
 
-            file_local_size, file_local_last_modified = get_info_file(PATH_ZIP, file_download)
+                file_local_size, file_local_last_modified = get_info_file(PATH_ZIP, file_download)
+                file_local = PATH_ZIP + file_download
 
-            file_local = PATH_ZIP + file_download
-
-            print('Baixando o arquivo: ' + file_download)
-            if file_local_size == 0:
-                f = open(file_local, "wb")
-            elif file_local_size > 0:
-                if file_local_last_modified >= timestamp_last_modified:
-                    if file_local_size != int(response.headers['Content-Length']):
-                        f = open(file_local, "ab")
-                        curl.setopt(pycurl.RESUME_FROM, file_local_size)
-                    else:
-                        print(f'Arquivo {file_download} já está atualizado.')
-                        return True
-                else:
+                logger.info(f'Iniciando download do arquivo: {file_download}')
+                
+                if file_local_size == 0:
                     f = open(file_local, "wb")
-            curl.setopt(pycurl.WRITEDATA, f)
+                elif file_local_size > 0:
+                    if file_local_last_modified >= timestamp_last_modified:
+                        if file_local_size != int(response.headers['Content-Length']):
+                            f = open(file_local, "ab")
+                            curl.setopt(pycurl.RESUME_FROM, file_local_size)
+                        else:
+                            logger.info(f'Arquivo {file_download} já está atualizado.')
+                            return True
+                    else:
+                        f = open(file_local, "wb")
+                
+                curl.setopt(pycurl.WRITEDATA, f)
 
-            try:
-                curl.perform()
-            except Exception:
-                print('Não foi possível baixar o arquivo: ' + file_download)
-                pass
-            finally:
-                curl.close()
-                f.close()
-                os.utime(file_local, (timestamp_last_modified, timestamp_last_modified))
-                sys.stdout.flush()
-            return True
+                try:
+                    curl.perform()
+                    logger.info(f'Download concluído com sucesso: {file_download}')
+                except Exception as e:
+                    logger.error(f'Erro durante o download do arquivo {file_download}: {str(e)}')
+                    return False
+                finally:
+                    curl.close()
+                    f.close()
+                    os.utime(file_local, (timestamp_last_modified, timestamp_last_modified))
+                    sys.stdout.flush()
+                return True
+            except requests.exceptions.RequestException as e:
+                logger.error(f'Erro na requisição HTTP para {file_download}: {str(e)}')
+                return False
+            except Exception as e:
+                logger.error(f'Erro inesperado ao processar {file_download}: {str(e)}')
+                return False
         else:
-            print('Não foi possível baixar o arquivo: ' + file_download)
+            logger.error(f'URL inválida para download: {file_download}')
+            return False
     else:
         return True
 
@@ -460,41 +501,89 @@ def file_delete(folder: str, filename: str = '*'):
 
 
 def create_duckdb_file():
-    print('Início da criação das tabelas parquet')
+    logger.info('Início da criação das tabelas parquet')
     inter_time: datetime = datetime.datetime.now()
+    
+    # Verifica se o diretório de destino existe e tem permissões
     try:
-        os.remove(PATH_PARQUET + FILE_DB_PARQUET)
-    except FileNotFoundError:
-        pass
-
-    conn: duck.connect() = duck.connect(PATH_PARQUET + FILE_DB_PARQUET, config={'threads': 4})
-
-    list_tabela: list = ['empresas', 'estabelecimentos', 'estabelecimentos_go', 'simples', 'socios']
-    for tabela in list_tabela:
-        path_parquet: str = PATH_PARQUET + YYYYMM + '/' + tabela + '/*.parquet'
-        add_table_parquet(conn, tabela, path_parquet)
-        # shutil.rmtree(os.path.dirname(path_parquet))
-    list_tabela_fixa: list = ['cnae', 'motivo', 'municipio']
-    for tabela in list_tabela_fixa:
-        path_parquet = PATH_PARQUET + 'base/' + tabela + '.parquet'
-        add_table_parquet(conn, tabela, path_parquet)
-    print('Tempo total de carga das tabelas:', str(datetime.datetime.now() - inter_time))
-
-    try:
-        shutil.copyfile(PATH_PARQUET + FILE_DB_PARQUET, PATH_REMOTE_PARQUET + FILE_DB_PARQUET)
-        print('Tempo gasto para cópia do arquivo para destino:', str(datetime.datetime.now() - inter_time))
+        if not os.path.exists(PATH_REMOTE_PARQUET):
+            logger.info(f'Criando diretório de destino: {PATH_REMOTE_PARQUET}')
+            os.makedirs(PATH_REMOTE_PARQUET, exist_ok=True)
+    except PermissionError:
+        logger.error(f'Erro: Sem permissão para criar/acessar o diretório {PATH_REMOTE_PARQUET}')
+        return
     except Exception as e:
-        print(f'Error ao copiar o arquivo: {e}')
+        logger.error(f'Erro ao verificar diretório de destino: {str(e)}')
+        return
+
+    # Remove arquivo existente se houver
+    try:
+        if os.path.exists(PATH_PARQUET + FILE_DB_PARQUET):
+            logger.info(f'Removendo arquivo existente: {PATH_PARQUET + FILE_DB_PARQUET}')
+            os.remove(PATH_PARQUET + FILE_DB_PARQUET)
+    except Exception as e:
+        logger.warning(f'Não foi possível remover arquivo existente: {str(e)}')
+
+    try:
+        logger.info('Iniciando conexão com DuckDB')
+        conn: duck.connect() = duck.connect(PATH_PARQUET + FILE_DB_PARQUET, config={'threads': 4})
+
+        list_tabela: list = ['empresas', 'estabelecimentos', 'estabelecimentos_go', 'simples', 'socios']
+        for tabela in list_tabela:
+            path_parquet: str = PATH_PARQUET + YYYYMM + '/' + tabela + '/*.parquet'
+            logger.info(f'Processando tabela: {tabela}')
+            add_table_parquet(conn, tabela, path_parquet)
+
+        list_tabela_fixa: list = ['cnae', 'motivo', 'municipio']
+        for tabela in list_tabela_fixa:
+            path_parquet = PATH_PARQUET + 'base/' + tabela + '.parquet'
+            logger.info(f'Processando tabela fixa: {tabela}')
+            add_table_parquet(conn, tabela, path_parquet)
+        
+        logger.info(f'Tempo total de carga das tabelas: {str(datetime.datetime.now() - inter_time)}')
+
+        # Tenta copiar o arquivo para o destino remoto
+        try:
+            # Verifica se o arquivo de origem existe
+            if not os.path.exists(PATH_PARQUET + FILE_DB_PARQUET):
+                logger.error(f'Arquivo de origem não encontrado: {PATH_PARQUET + FILE_DB_PARQUET}')
+                return
+
+            # Tenta copiar o arquivo
+            logger.info(f'Iniciando cópia do arquivo para: {PATH_REMOTE_PARQUET + FILE_DB_PARQUET}')
+            shutil.copy2(PATH_PARQUET + FILE_DB_PARQUET, PATH_REMOTE_PARQUET + FILE_DB_PARQUET)
+            logger.info('Arquivo copiado com sucesso')
+            logger.info(f'Tempo gasto para cópia do arquivo: {str(datetime.datetime.now() - inter_time)}')
+            
+        except PermissionError:
+            logger.error(f'Erro: Sem permissão para copiar arquivo para {PATH_REMOTE_PARQUET}')
+        except Exception as e:
+            logger.error(f'Erro ao copiar o arquivo: {str(e)}')
+
+    except Exception as e:
+        logger.error(f'Erro ao criar banco de dados: {str(e)}')
+    finally:
+        try:
+            conn.close()
+            logger.info('Conexão com DuckDB fechada')
+        except Exception as e:
+            logger.warning(f'Erro ao fechar conexão: {str(e)}')
 
 
 def add_table_parquet(conn: duck.connect(), table: str, path_parquet: str):
     inter_timer: datetime = datetime.datetime.now()
-    sql: str = f'''
-        CREATE OR REPLACE TABLE {table} AS 
-            (SELECT * FROM '{path_parquet}')
-    '''
-    conn.execute(sql)
-    print(f'Tempo de carregamento da tabela {table}:', str(datetime.datetime.now() - inter_timer))
+    try:
+        logger.info(f'Iniciando carregamento da tabela {table}')
+        sql: str = f'''
+            CREATE OR REPLACE TABLE {table} AS 
+                (SELECT * FROM '{path_parquet}')
+        '''
+        conn.execute(sql)
+        logger.info(f'Tabela {table} carregada com sucesso')
+        logger.info(f'Tempo de carregamento da tabela {table}: {str(datetime.datetime.now() - inter_timer)}')
+    except Exception as e:
+        logger.error(f'Erro ao carregar tabela {table}: {str(e)}')
+        raise
 
 
 if __name__ == '__main__':
