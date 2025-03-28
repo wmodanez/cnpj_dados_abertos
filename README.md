@@ -1,135 +1,172 @@
-# cnpj-dados-abertos
-Este projeto é impirado no projeto (https://github.com/rictom/cnpj-mysql), porém algumas melhorias foram implementadas
-agora apenas um script em python é responsável por baixar os arquivos de cnpj dos dados públicos da Receita Federal 
-salvar em **formato parquet** que apresenta um ganho substâncial em questão de performance sobre um SGBD normal.<br>
-O código é compatível com o layout das tabelas disponibilizadas pela Receita Federal a partir de 2021.
+# Processador de Dados CNPJ 🏢
 
-## Dados públicos de CNPJ no site da Receita:
-Os arquivos csv zipados com os dados de CNPJs estão disponíveis em (http://200.152.38.155/CNPJ/).
+Este projeto automatiza o download, processamento e armazenamento dos dados públicos de CNPJ disponibilizados pela Receita Federal. Ele foi desenvolvido para ser eficiente, resiliente e fácil de usar.
 
+## 📋 Fluxo do Processo
 
-## Pré-requisitos:
-Python 3.10;<br>
-O arquivo requirements.txt contém todas as dependências do projeto, para instalar utilize o código abaixo: <br>
+```mermaid
+graph TD
+    A[Início] --> B[Configuração do Ambiente]
+    B --> C[Inicialização do Dask]
+    
+    C --> D[Identificação de Arquivos]
+    D --> E[Download Paralelo]
+    
+    E --> F{Verificação de Falhas}
+    F -->|Falha| G[Retry Automático]
+    G --> E
+    F -->|Sucesso| H[Extração de ZIPs]
+    
+    H --> I[Processamento com Dask]
+    I --> J[Geração de Parquet]
+    
+    J --> K[Criação do DuckDB]
+    K --> L[Cópia para Remoto]
+    L --> M[Fim]
+
+    subgraph "Download e Verificação"
+        E
+        F
+        G
+    end
+
+    subgraph "Processamento"
+        H
+        I
+        J
+    end
+
+    subgraph "Armazenamento"
+        K
+        L
+    end
+
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style M fill:#f9f,stroke:#333,stroke-width:2px
+    style F fill:#ff9,stroke:#333,stroke-width:2px
 ```
+
+## ✨ Características
+
+- **Download Paralelo**: Baixa múltiplos arquivos simultaneamente
+- **Resiliência**: Sistema de retry automático em caso de falhas
+- **Processamento Eficiente**: Utiliza Dask para processamento paralelo
+- **Armazenamento Otimizado**: Dados em formato Parquet e DuckDB
+- **Logging Detalhado**: Rastreamento completo das operações
+- **Configurável**: Fácil adaptação às necessidades específicas
+
+## 🚀 Como Usar
+
+### Pré-requisitos
+
+- Python 3.8 ou superior
+- Espaço em disco suficiente para os arquivos
+- Conexão com internet estável
+
+### Instalação
+
+1. **Clone o repositório**
+```bash
+git clone https://github.com/seu-usuario/cnpj.git
+cd cnpj
+```
+
+2. **Crie um ambiente virtual**
+```bash
+# Windows
+python -m venv venv
+venv\Scripts\activate
+
+# Linux/Mac
+python3 -m venv venv
+source venv/bin/activate
+```
+
+3. **Instale as dependências**
+```bash
 pip install -r requirements.txt
 ```
 
-## Utilizando o script:
-O comando abaixo faz todo o trabalho:<br>
+4. **Configure o ambiente**
+   - Copie o arquivo `.env.local.example` para `.env.local`
+   - Ajuste as configurações conforme necessário:
+```env
+# URL base dos dados da Receita Federal
+URL_ORIGIN=https://dados.rfb.gov.br/CNPJ/
 
+# Diretórios para download e processamento
+PATH_ZIP=./download/      # Arquivos ZIP baixados
+PATH_UNZIP=./unzip/      # Arquivos extraídos
+PATH_PARQUET=./parquet/  # Arquivos Parquet processados
+
+# Configurações do banco de dados
+FILE_DB_PARQUET=cnpj.duckdb
+PATH_REMOTE_PARQUET=//servidor/compartilhado/
 ```
-python3 manipular_dados.py
+
+### Execução
+
+```bash
+python main.py
 ```
 
-### Os seguintes passos serão executados pelo script:
-<ol>
-    <li>Os arquivos serão baixados do site da Receita Federal para a pasta dados-abertos-zip;</li>
-    <ol>
-        <li>Esta versão baixa apenas as tabelas que sofrem alteração regularmente (Empresa, Estabelecimento, Simples, 
-            Socio) e cada uma terá seus arquivos baixados e manipulados no momento em que for sendo trabalhada;</li>
-        <li>Para as demais tabelas o projeto já tem os arquivos parquet criados e armazenados na pasta parquet;/base</li>
-            <ol>
-                <li>O arquivo com as CNAEs foi substituído por um com os dados completos não somente a subclasse;</li>
-                <li>O arquivo de municípios foi substituído por um contendo os dados completos do IBGE, onde foi incluído 
-                    também o georeferenciamento dos municípios. Foi feita a relação para os códigos utilizados na tabela 
-                    Estabelecimento;</li>
-            </ol>
-    </ol>
-    <li>Os arquivos serão descompactados na pasta dados-abertos;</li>
-    <li>Será feita a manipulação dos dados;</li>
-    <li>Serão criados os arquivos parquet na pasta parquet/YYYMM, onde: YYYYMM é o ano e mês que o script esta sendo 
-        executado; </li>
-    <li>Os arquivos descompactados serão removidos;</li>
-    <li>Um arquivo chamado cnpj.duckdb será criado e nele ficarão todas as tabelas criadas anteriormente em parquet;</li>
-    <li>Por fim os arquivos parquet criados serão apagados.</li>
-</ol>
+## 📊 O que o Script Faz
 
-#### Obs.: Esta versão faz a verificação se os arquivos que estão sendo baixados da RF já estão na máquina de destino e se eles são os mais recentes ou não antes de tentar baixar.
+1. **Download dos Dados**
+   - Identifica os arquivos mais recentes
+   - Baixa em paralelo com retry automático
+   - Verifica integridade dos arquivos
 
-Esta versão utiliza bibliotecas como **Dask** para o tratamento dos dados, execução com paralelismo e criação dos arquivos
-parquet. Usa também o **DuckDB** para reunir esses arquivos parquet em um só arquivo que pode ser acessado via DuckDB ou DBeaver.
+2. **Processamento**
+   - Extrai arquivos ZIP
+   - Processa dados com Dask
+   - Gera arquivos Parquet otimizados
 
-Sem levar em consideração a baixa dos arquivos toda execução durou cerca de 23 minutos em um notebook i5 de 9a geração com <br>
-Windows 11 e o dask configurado da seguinte forma: processes=3 threads=6, memory=31.78 GiB e o duckdb com threads=4.
+3. **Armazenamento**
+   - Cria banco de dados DuckDB
+   - Organiza dados em tabelas
+   - Copia para local remoto
 
-## Dockerfile
-Na versão 1.3.0 foi criado o arquivo docker para facilitar a utilização da aplicação, para executá-la siga os seguintes passos:
-* Execute o comando abaixo para criação da imagem com o projeto:
+## 📝 Logs e Monitoramento
 
-```sudo docker build . -t cnpj```
-* Execute o comando abaixo para criação de um container
+- Logs são gerados em `logs/cnpj_process_YYYYMMDD_HHMMSS.log`
+- Dashboard Dask disponível em `http://localhost:8787`
+- Progresso de downloads exibido em tempo real
 
-```sudo docker run -it cnpj```
-* Execute o comando abaixo para executar a aplicação.
+## ⚙️ Configurações
 
-```python3 maniupular_dados.py```
+O arquivo `config.py` permite ajustar:
 
-## Implementações futuras
-* Geração do arquivo com os logs da aplicação
-* Download dos arquivos em paralelo
+- **Processamento**
+  - Número de workers Dask
+  - Threads por worker
+  - Limite de memória
 
-## Histórico de versões
-<table><thead>
-  <tr>
-    <th>Versão</th>
-    <th>Data</th>
-    <th>Descrição</th>
-  </tr></thead>
-<tbody>
-    <tr>
-    <td>1.3.4</td>
-    <td>07/01/2025</td>
-    <td>Correção para que os campos do tipo data no Simples sejam salvos dessa forma em formato parquet e 
-nova URL dos dados abertos.</td>
-  </tr>
-    <tr>
-    <td>1.3.3</td>
-    <td>28/08/2024</td>
-    <td>Alteração para atender a nova forma de organização dos dados no site do dados abertos</td>
-  </tr>
-    <td>1.3.2</td>
-    <td>09/08/2024</td>
-    <td>Remoção da indexação feita no campo cnpj_basico</td>
-  </tr>
-  <tr>
-    <td>1.3.1</td>
-    <td>01/08/2024</td>
-    <td>Inclusão do arquivo Dockerfile</td>
-  </tr>
-  <tr>
-    <td>1.3.0</td>
-    <td>01/08/2024</td>
-    <td>Criação do arquivo Dockerfile</td>
-  </tr>
-    <td>1.2.3</td>
-    <td>01/08/2024</td>
-    <td>Atualização das dependências</td>
-  </tr>
-  <tr>
-    <td>1.2.2</td>
-    <td>26/07/2024</td>
-    <td>Correção do nome da variável que permitia ou não a criação do arquivo parquet final</td>
-  </tr>
-  <tr>
-    <td>1.2.1</td>
-    <td>24/07/2024</td>
-    <td>Update README.md</td>
-  </tr>
-  <tr>
-    <td>1.2.0</td>
-    <td>24/07/2024</td>
-    <td>Implementação da possibilidade de recomeço do download interrompido de um arquivo</td>
-  </tr>
-  <tr>
-    <td>1.1.0</td>
-    <td>20/06/2024</td>
-    <td>Padronização PEP8, inclusão da verificação das pastas básicas para o projeto e atualização das dependências</td>
-  </tr>
-  <tr>
-    <td>1.0.0</td>
-    <td>14/06/2024</td>
-    <td>Versão inicial</td>
-  </tr>
-</tbody>
-</table>
+- **Arquivos**
+  - Encoding
+  - Separador
+  - Tipos de dados
+
+- **Banco de Dados**
+  - Número de threads
+  - Configurações de compressão
+
+## 🤝 Contribuindo
+
+Contribuições são bem-vindas! Por favor:
+
+1. Faça um fork do projeto
+2. Crie uma branch para sua feature
+3. Faça commit das mudanças
+4. Push para a branch
+5. Abra um Pull Request
+
+## 📄 Licença
+
+Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalhes.
+
+## ⚠️ Notas
+
+- O processamento pode levar algumas horas dependendo do hardware
+- Certifique-se de ter espaço suficiente em disco
+- Em caso de falhas, o sistema tentará novamente automaticamente
