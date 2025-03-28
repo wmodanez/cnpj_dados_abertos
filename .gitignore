@@ -23,6 +23,7 @@ wheels/
 # Virtual Environment
 venv/
 env/
+.venv/
 ENV/
 
 # IDE
@@ -41,3 +42,6 @@ unzip/
 parquet/
 .env.local
 *.duckdb
+.ipynb_checkpoints/
+dados-abertos/
+dados-abertos-zip/
