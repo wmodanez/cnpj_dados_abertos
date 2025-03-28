@@ -6,6 +6,7 @@ import shutil
 import sys
 import time
 import zipfile
+import eventlet
 from multiprocessing import freeze_support
 from sys import stderr as STREAM
 
@@ -458,7 +459,7 @@ def file_delete(folder: str, filename: str = '*'):
         os.remove(arq)
 
 
-def create_db_parquet():
+def create_duckdb_file():
     print('Início da criação das tabelas parquet')
     inter_time: datetime = datetime.datetime.now()
     try:
@@ -538,11 +539,11 @@ if __name__ == '__main__':
         is_create_db_parquet = True
     if manipular_simples():
         is_create_db_parquet = True
-    if manipular_socio():
-        is_create_db_parquet = True
+#    if manipular_socio():
+#        is_create_db_parquet = True
 
     if is_create_db_parquet:
-        create_db_parquet()
+        create_duckdb_file()
 
     print(f'Tempo total:', str(datetime.datetime.now() - start_time))
     client.shutdown()
