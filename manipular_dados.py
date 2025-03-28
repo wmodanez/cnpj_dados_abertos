@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 from dask.diagnostics import ProgressBar
 from dask.distributed import Client, LocalCluster
 from dotenv import load_dotenv
+from config import config
 
 # Configuração do logging
 def setup_logging():
@@ -68,10 +69,11 @@ def check_basic_folders(folder: str):
 
 
 def progress(download_t, download_d, upload_t, upload_d):
-    STREAM.write('Downloading: {}/{} kiB ({}%)\r'.format(str(int(download_d / KB)), str(int(download_t / KB)),
-                                                         str(int(
-                                                             download_d / download_t * 100) if download_t > 0 else 0)
-                                                         ))
+    STREAM.write('Downloading: {}/{} kiB ({}%)\r'.format(
+        str(int(download_d / config.file.KB)), 
+        str(int(download_t / config.file.KB)),
+        str(int(download_d / download_t * 100) if download_t > 0 else 0)
+    ))
     STREAM.flush()
 
 
@@ -158,28 +160,8 @@ def check_download(link, file) -> bool:
 
 
 def manipular_empresa() -> bool:
-    print('Início da manipulação das Empresas')
-
+    logger.info('Início da manipulação das Empresas')
     inter_time: datetime = datetime.datetime.now()
-
-    colunas_empresa: list = [
-        'cnpj_basico',
-        'razao_social',
-        'natureza_juridica',
-        'qualificacao_responsavel',
-        'capital_social',
-        'porte_empresa',
-        'ente_federativo_responsavel']
-
-    dtype_empresa: dict = {
-        'cnpj_basico': 'int',
-        'razao_social': 'string',
-        'natureza_juridica': 'int',
-        'qualificacao_responsavel': 'string',
-        'capital_social': 'string',
-        'porte_empresa': 'string',
-        'ente_federativo_responsavel': 'string'
-    }
 
     try:
         table_name: str = 'empresas'
@@ -189,11 +171,16 @@ def manipular_empresa() -> bool:
 
         file_extractor(PATH_ZIP, PATH_UNZIP, 'Emp*.*')
 
-        dd_empresa: dd = dd.read_csv('dados-abertos/*.EMPRECSV', sep=';', names=colunas_empresa, encoding='latin1',
-                                     dtype=dtype_empresa)
+        dd_empresa: dd = dd.read_csv(
+            'dados-abertos/*.EMPRECSV', 
+            sep=config.file.separator, 
+            names=config.empresa_columns, 
+            encoding=config.file.encoding,
+            dtype=config.empresa_dtypes
+        )
 
         inter_timer: datetime = datetime.datetime.now()
-        print('Tempo de manipulação dos dados:', str(datetime.datetime.now() - inter_timer))
+        logger.info(f'Tempo de manipulação dos dados: {str(datetime.datetime.now() - inter_timer)}')
 
         create_parquet(dd_empresa, table_name)
 
@@ -205,15 +192,15 @@ def manipular_empresa() -> bool:
 
             create_parquet(dd_empresa_privada, 'empresa_privada')
         except Exception as e:
-            print(f'Error: {e}')
+            logger.error(f'Erro ao processar empresas privadas: {str(e)}')
             return False
 
     except Exception as e:
-        print(f'Error: {e}')
+        logger.error(f'Erro ao manipular empresas: {str(e)}')
         return False
 
     file_delete(PATH_UNZIP)
-    print('Tempo total de manipulação das Empresas:', str(datetime.datetime.now() - inter_time))
+    logger.info(f'Tempo total de manipulação das Empresas: {str(datetime.datetime.now() - inter_time)}')
     return True
 
 
@@ -526,7 +513,10 @@ def create_duckdb_file():
 
     try:
         logger.info('Iniciando conexão com DuckDB')
-        conn: duck.connect() = duck.connect(PATH_PARQUET + FILE_DB_PARQUET, config={'threads': 4})
+        conn: duck.connect() = duck.connect(
+            PATH_PARQUET + FILE_DB_PARQUET, 
+            config={'threads': config.database.threads}
+        )
 
         list_tabela: list = ['empresas', 'estabelecimentos', 'estabelecimentos_go', 'simples', 'socios']
         for tabela in list_tabela:
@@ -587,8 +577,7 @@ def add_table_parquet(conn: duck.connect(), table: str, path_parquet: str):
 
 
 if __name__ == '__main__':
-
-    print(f'Início da execução dia: {datetime.datetime.now():%d/%m/%Y} às {datetime.datetime.now():%H:%M:%S}')
+    logger.info(f'Início da execução dia: {datetime.datetime.now():%d/%m/%Y} às {datetime.datetime.now():%H:%M:%S}')
     start_time: datetime = datetime.datetime.now()
     load_dotenv('.env.local')
 
@@ -605,12 +594,16 @@ if __name__ == '__main__':
 
     freeze_support()
 
-    cluster: LocalCluster = LocalCluster(n_workers=4, threads_per_worker=1, memory_limit='7GB',
-                                         dashboard_address=':1977')
+    cluster: LocalCluster = LocalCluster(
+        n_workers=config.dask.n_workers,
+        threads_per_worker=config.dask.threads_per_worker,
+        memory_limit=config.dask.memory_limit,
+        dashboard_address=config.dask.dashboard_address
+    )
     cluster
 
     client: Client = Client(cluster)
-    print(client)
+    logger.info(f'Cliente Dask inicializado: {client}')
 
     soup: BeautifulSoup = BeautifulSoup(requests.get(URL).text, 'html.parser')
     list_folders = []
@@ -634,5 +627,5 @@ if __name__ == '__main__':
     if is_create_db_parquet:
         create_duckdb_file()
 
-    print(f'Tempo total:', str(datetime.datetime.now() - start_time))
+    logger.info(f'Tempo total: {str(datetime.datetime.now() - start_time)}')
     client.shutdown()
