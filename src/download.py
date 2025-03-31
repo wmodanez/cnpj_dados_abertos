@@ -5,9 +5,10 @@ import time
 import logging
 import pycurl
 import requests
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 from concurrent.futures import ThreadPoolExecutor
 from config import config
+from .utils.colors import Colors
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +16,68 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # segundos
 
-def progress(download_t: float, download_d: float, upload_t: float, upload_d: float) -> None:
-    """Exibe o progresso do download."""
-    sys.stdout.write('Downloading: {}/{} kiB ({}%)\r'.format(
-        str(int(download_d / config.file.KB)), 
-        str(int(download_t / config.file.KB)),
-        str(int(download_d / download_t * 100) if download_t > 0 else 0)
-    ))
+# Dicionário para controlar a posição de cada download na tela
+download_positions: Dict[str, int] = {}
+current_position = 0
+
+def move_cursor(position: int) -> None:
+    """Move o cursor para uma posição específica."""
+    sys.stdout.write(f"\033[{position};0H")
     sys.stdout.flush()
+
+def clear_line() -> None:
+    """Limpa a linha atual."""
+    sys.stdout.write("\033[K")
+    sys.stdout.flush()
+
+def setup_progress_display(files: List[Tuple[str, str, str, str]]) -> None:
+    """Configura a exibição do progresso para múltiplos downloads."""
+    global current_position
+    
+    # Limpa o terminal
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
+    
+    # Imprime cabeçalho
+    print(f"{Colors.BLUE}Iniciando downloads em paralelo...{Colors.END}")
+    print(f"{Colors.BLUE}{'=' * 80}{Colors.END}")
+    
+    # Inicializa posições para cada arquivo
+    for i, file_info in enumerate(files):
+        file_name = file_info[0]
+        download_positions[file_name] = i + 3  # +3 para deixar espaço para o cabeçalho
+        print(f"{Colors.CYAN}Aguardando início do download: {file_name}{Colors.END}")
+    
+    current_position = len(files) + 3
+    print(f"{Colors.BLUE}{'=' * 80}{Colors.END}")
+    
+    # Move o cursor para a posição após a última linha
+    move_cursor(current_position)
+
+def progress(file_name: str, download_t: float, download_d: float, upload_t: float, upload_d: float) -> None:
+    """Exibe o progresso do download."""
+    if download_t > 0 and file_name in download_positions:
+        progress = (download_d / download_t) * 100
+        downloaded_mb = download_d / 1024 / 1024
+        total_mb = download_t / 1024 / 1024
+        
+        # Salva a posição atual do cursor
+        current = current_position
+        
+        # Move para a linha do arquivo
+        move_cursor(download_positions[file_name])
+        clear_line()
+        
+        # Mostra o progresso
+        if progress < 100:
+            color = Colors.CYAN
+        else:
+            color = Colors.GREEN
+        sys.stdout.write(f"{color}Baixando {file_name}: {progress:.1f}% ({downloaded_mb:.1f}MB/{total_mb:.1f}MB){Colors.END}")
+        
+        # Retorna o cursor para a posição original
+        move_cursor(current)
+        sys.stdout.flush()
 
 def get_info_file(path: str, filename: str) -> Tuple[int, int]:
     """Obtém informações do arquivo local."""
@@ -38,7 +93,10 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
         # Verifica o arquivo remoto
         response = requests.head(file_url, timeout=30)
         if response.status_code != 200:
-            logger.error(f'Erro ao tentar baixar {file_download} - Status Code: {response.status_code}')
+            move_cursor(download_positions[file_download])
+            clear_line()
+            sys.stdout.write(f"{Colors.RED}Erro ao tentar baixar {file_download} - Status Code: {response.status_code}{Colors.END}")
+            move_cursor(current_position)
             return False
 
         # Obtém informações do arquivo remoto
@@ -60,7 +118,7 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
         curl.setopt(pycurl.FOLLOWLOCATION, 1)
         curl.setopt(pycurl.MAXREDIRS, 5)
         curl.setopt(pycurl.NOPROGRESS, False)
-        curl.setopt(pycurl.XFERINFOFUNCTION, progress)
+        curl.setopt(pycurl.XFERINFOFUNCTION, lambda *args: progress(file_download, *args))
         curl.setopt(pycurl.CONNECTTIMEOUT, 30)
         curl.setopt(pycurl.LOW_SPEED_TIME, 300)
         curl.setopt(pycurl.LOW_SPEED_LIMIT, 1)
@@ -68,8 +126,6 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
         # Verifica arquivo local
         file_local_size, file_local_last_modified = get_info_file(path_zip, file_download)
         file_local = path_zip + file_download
-
-        logger.info(f'Iniciando download do arquivo: {file_download}')
         
         # Abre arquivo para download
         if file_local_size == 0:
@@ -80,7 +136,10 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
                     f = open(file_local, "ab")
                     curl.setopt(pycurl.RESUME_FROM, file_local_size)
                 else:
-                    logger.info(f'Arquivo {file_download} já está atualizado.')
+                    move_cursor(download_positions[file_download])
+                    clear_line()
+                    sys.stdout.write(f"{Colors.GREEN}Arquivo {file_download} já está atualizado.{Colors.END}")
+                    move_cursor(current_position)
                     return True
             else:
                 f = open(file_local, "wb")
@@ -89,14 +148,19 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
 
         try:
             curl.perform()
-            logger.info(f'Download concluído com sucesso: {file_download}')
+            move_cursor(download_positions[file_download])
+            clear_line()
+            sys.stdout.write(f"{Colors.GREEN}Download concluído com sucesso: {file_download}{Colors.END}")
+            move_cursor(current_position)
             return True
         except Exception as e:
-            logger.error(f'Erro durante o download do arquivo {file_download}: {str(e)}')
+            move_cursor(download_positions[file_download])
+            clear_line()
+            sys.stdout.write(f"{Colors.RED}Erro durante o download do arquivo {file_download}: {str(e)}{Colors.END}")
             if retry_count < MAX_RETRIES:
-                logger.info(f'Tentativa {retry_count + 1} de {MAX_RETRIES} para {file_download}')
-                time.sleep(RETRY_DELAY)  # Aguarda antes de tentar novamente
+                time.sleep(RETRY_DELAY)
                 return download_file(file_info, retry_count + 1)
+            move_cursor(current_position)
             return False
         finally:
             curl.close()
@@ -104,18 +168,22 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
             os.utime(file_local, (timestamp_last_modified, timestamp_last_modified))
             sys.stdout.flush()
     except requests.exceptions.RequestException as e:
-        logger.error(f'Erro na requisição HTTP para {file_download}: {str(e)}')
+        move_cursor(download_positions[file_download])
+        clear_line()
+        sys.stdout.write(f"{Colors.RED}Erro na requisição HTTP para {file_download}: {str(e)}{Colors.END}")
         if retry_count < MAX_RETRIES:
-            logger.info(f'Tentativa {retry_count + 1} de {MAX_RETRIES} para {file_download}')
             time.sleep(RETRY_DELAY)
             return download_file(file_info, retry_count + 1)
+        move_cursor(current_position)
         return False
     except Exception as e:
-        logger.error(f'Erro inesperado ao processar {file_download}: {str(e)}')
+        move_cursor(download_positions[file_download])
+        clear_line()
+        sys.stdout.write(f"{Colors.RED}Erro inesperado ao processar {file_download}: {str(e)}{Colors.END}")
         if retry_count < MAX_RETRIES:
-            logger.info(f'Tentativa {retry_count + 1} de {MAX_RETRIES} para {file_download}')
             time.sleep(RETRY_DELAY)
             return download_file(file_info, retry_count + 1)
+        move_cursor(current_position)
         return False
 
 def check_download(link, file: str, url: str, path_zip: str) -> bool:
@@ -127,13 +195,19 @@ def check_download(link, file: str, url: str, path_zip: str) -> bool:
         if not file_download.startswith('http'):
             return True
         else:
-            logger.error(f'URL inválida para download: {file_download}')
+            logger.error(f'{Colors.RED}URL inválida para download: {file_download}{Colors.END}')
             return False
     else:
         return True
 
 def download_files_parallel(soup, file: str, url: str, path_zip: str) -> bool:
     """Realiza o download paralelo dos arquivos com retry."""
+    global download_positions, current_position
+    
+    # Reseta as variáveis globais
+    download_positions = {}
+    current_position = 0
+    
     # Lista para armazenar informações dos arquivos a serem baixados
     files_to_download: List[Tuple[str, str, str, str]] = []
     
@@ -147,16 +221,22 @@ def download_files_parallel(soup, file: str, url: str, path_zip: str) -> bool:
     if not files_to_download:
         return True
     
+    # Configura a exibição do progresso
+    setup_progress_display(files_to_download)
+    
     # Realiza downloads em paralelo
     with ThreadPoolExecutor(max_workers=config.dask.n_workers) as executor:
         results = list(executor.map(download_file, files_to_download))
     
+    # Move o cursor para depois da área de progresso
+    move_cursor(current_position + 1)
+    
     # Verifica se todos os downloads foram bem sucedidos
     failed_downloads = [f for f, r in zip(files_to_download, results) if not r]
     if failed_downloads:
-        logger.error(f'Falha ao baixar {len(failed_downloads)} arquivos após {MAX_RETRIES} tentativas')
+        print(f"{Colors.RED}Falha ao baixar {len(failed_downloads)} arquivos após {MAX_RETRIES} tentativas{Colors.END}")
         for file_info in failed_downloads:
-            logger.error(f'Arquivo com falha: {file_info[0]}')
+            print(f"{Colors.RED}Arquivo com falha: {file_info[0]}{Colors.END}")
         return False
     
     return True 

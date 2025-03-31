@@ -36,6 +36,9 @@ ENV/
 logs/
 *.log
 
+*.ipynb
+*.zip
+
 # Project specific
 download/
 unzip/
@@ -45,3 +48,4 @@ parquet/
 .ipynb_checkpoints/
 dados-abertos/
 dados-abertos-zip/
+src/Entity/

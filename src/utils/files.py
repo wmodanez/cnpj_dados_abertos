@@ -1,3 +1,6 @@
+"""
+Funções relacionadas à manipulação de arquivos.
+"""
 import os
 import glob
 import zipfile
@@ -7,12 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 from config import config
 
 logger = logging.getLogger(__name__)
-
-def check_basic_folders(folder: str) -> None:
-    """Verifica e cria pastas básicas se não existirem."""
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-        logger.info(f'Diretório criado: {folder}')
 
 def file_extractor(folder_ori: str, folder_dest: str, filename: str = '*.*') -> None:
     """Extrai arquivos ZIP usando processamento paralelo."""
