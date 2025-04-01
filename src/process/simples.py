@@ -3,7 +3,7 @@ import logging
 import dask.dataframe as dd
 import pandas as pd
 from config import config
-from ..utils import file_extractor, file_delete
+from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size
 from ..download import download_files_parallel
 from ..utils.logging import setup_logging, Colors
 import os
@@ -26,6 +26,14 @@ def process_simples(soup, url: str, path_zip: str, path_unzip: str, path_parquet
     logger.info('='*50)
     logger.info('Iniciando processamento do SIMPLES NACIONAL')
     logger.info('='*50)
+    
+    # Verifica espaço em disco para o diretório de trabalho
+    # Requisito mínimo: 3GB para trabalhar com segurança (simples é menor)
+    has_space, available_mb = check_disk_space(path_unzip, 3000)
+    if not has_space:
+        logger.error(f"Espaço em disco insuficiente para processar os dados. Disponível: {available_mb:.2f}MB, necessário: 3000MB")
+        return False
+    logger.info(f"Verificação de espaço em disco concluída: {available_mb:.2f}MB disponível")
     
     # Faz o download dos arquivos em paralelo
     logger.info('Iniciando downloads em paralelo...')
@@ -61,6 +69,16 @@ def process_simples(soup, url: str, path_zip: str, path_unzip: str, path_parquet
         for zip_file in zip_files:
             zip_path = os.path.join(path_zip, zip_file)
             logger.info(f'Processando arquivo ZIP: {zip_file}')
+            
+            # Estima o tamanho que o arquivo ocupará quando descompactado
+            estimated_size_mb = estimate_zip_extracted_size(zip_path)
+            logger.info(f"Tamanho estimado após descompactação: {estimated_size_mb:.2f}MB")
+            
+            # Verifica se há espaço suficiente para descompactar este arquivo
+            has_space, available_mb = check_disk_space(path_unzip, estimated_size_mb * 1.2)  # 20% de margem extra
+            if not has_space:
+                logger.error(f"Espaço insuficiente para descompactar {zip_file}. Disponível: {available_mb:.2f}MB, necessário: {estimated_size_mb * 1.2:.2f}MB")
+                continue
             
             # Limpa o diretório de descompactação antes de começar
             try:
@@ -182,6 +200,15 @@ def process_simples(soup, url: str, path_zip: str, path_unzip: str, path_parquet
         if all_dfs:
             logger.info('Concatenando todos os DataFrames...')
             try:
+                # Verifica espaço para criação do arquivo parquet
+                # Estima o tamanho como 50% do tamanho dos DataFrames em memória (compressão)
+                parquet_size_estimate = sum([df.memory_usage(deep=True).sum().compute() for df in all_dfs]) * 0.5 / (1024 * 1024)
+                has_space, available_mb = check_disk_space(path_parquet, parquet_size_estimate)
+                
+                if not has_space:
+                    logger.error(f"Espaço insuficiente para criar arquivo parquet. Disponível: {available_mb:.2f}MB, estimado: {parquet_size_estimate:.2f}MB")
+                    return False
+                
                 dd_simples = dd.concat(all_dfs)
                 
                 # Renomeia as colunas
