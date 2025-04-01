@@ -33,10 +33,27 @@ class DatabaseConfig:
     threads: int = 4
 
 @dataclass
+class CacheConfig:
+    """Configurações relacionadas ao cache de downloads."""
+    # Diretório onde será armazenado o arquivo de cache
+    cache_dir: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
+    # Nome do arquivo de cache
+    cache_file: str = 'download_cache.json'
+    # Caminho completo do arquivo de cache
+    cache_path: str = field(init=False)
+    # Flag para habilitar ou desabilitar o cache
+    enabled: bool = True
+    
+    def __post_init__(self):
+        """Inicializa campos que dependem de outros campos."""
+        self.cache_path = os.path.join(self.cache_dir, self.cache_file)
+
+@dataclass
 class Config:
     dask: DaskConfig = field(default_factory=DaskConfig)
     file: FileConfig = field(default_factory=FileConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
     
     # Configurações de colunas e tipos de dados
     empresa_columns: List[str] = field(default_factory=lambda: [

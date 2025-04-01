@@ -9,7 +9,7 @@ from typing import Tuple, List, Dict
 from concurrent.futures import ThreadPoolExecutor
 from config import config, IGNORED_FILES
 from .utils.colors import Colors
-from .utils import check_internet_connection
+from .utils import check_internet_connection, DownloadCache
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,9 @@ RETRY_DELAY = 5  # segundos
 # Dicionário para controlar a posição de cada download na tela
 download_positions: Dict[str, int] = {}
 current_position = 0
+
+# Inicializa o cache de downloads
+download_cache = DownloadCache(config.cache.cache_path)
 
 def move_cursor(position: int) -> None:
     """Move o cursor para uma posição específica."""
@@ -116,17 +119,35 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
             return False
 
         # Obtém informações do arquivo remoto
+        remote_size = int(response.headers.get('Content-Length', 0))
         file_remote_last_modified: list = response.headers['Last-Modified'].split()
         file_remote_last_modified_time: str = str(file_remote_last_modified[4]).split(':')
         
-        timestamp_last_modified: int = datetime.datetime(
+        timestamp_last_modified: int = int(datetime.datetime(
             int(file_remote_last_modified[3]),
             int(time.strptime(file_remote_last_modified[2], '%b').tm_mon),
             int(file_remote_last_modified[1]),
             int(file_remote_last_modified_time[0]),
             int(file_remote_last_modified_time[1]),
             int(file_remote_last_modified_time[2])
-        ).timestamp()
+        ).timestamp())
+        
+        # Verifica se o arquivo já está em cache
+        if config.cache.enabled and download_cache.is_file_cached(file_download, remote_size, timestamp_last_modified):
+            move_cursor(download_positions[file_download])
+            clear_line()
+            sys.stdout.write(f"{Colors.GREEN}Arquivo {file_download} já está em cache e atualizado.{Colors.END}")
+            move_cursor(current_position)
+            
+            # Verifica se o arquivo existe no sistema de arquivos
+            file_local = os.path.join(path_zip, file_download)
+            if os.path.exists(file_local) and os.path.getsize(file_local) == remote_size:
+                # Arquivo já existe e está atualizado
+                return True
+            else:
+                # Arquivo está em cache mas não existe no disco ou está corrompido
+                # Vamos continuar o download
+                sys.stdout.write(f"{Colors.YELLOW}Arquivo em cache mas não encontrado no disco. Baixando novamente...{Colors.END}")
         
         # Configura o cURL
         curl = pycurl.Curl()
@@ -141,14 +162,14 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
 
         # Verifica arquivo local
         file_local_size, file_local_last_modified = get_info_file(path_zip, file_download)
-        file_local = path_zip + file_download
+        file_local = os.path.join(path_zip, file_download)
         
         # Abre arquivo para download
         if file_local_size == 0:
             f = open(file_local, "wb")
         elif file_local_size > 0:
             if file_local_last_modified >= timestamp_last_modified:
-                if file_local_size != int(response.headers['Content-Length']):
+                if file_local_size != remote_size:
                     f = open(file_local, "ab")
                     curl.setopt(pycurl.RESUME_FROM, file_local_size)
                 else:
@@ -156,6 +177,11 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
                     clear_line()
                     sys.stdout.write(f"{Colors.GREEN}Arquivo {file_download} já está atualizado.{Colors.END}")
                     move_cursor(current_position)
+                    
+                    # Atualiza o cache
+                    if config.cache.enabled:
+                        download_cache.update_file_cache(file_download, remote_size, timestamp_last_modified)
+                    
                     return True
             else:
                 f = open(file_local, "wb")
@@ -168,6 +194,11 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
             clear_line()
             sys.stdout.write(f"{Colors.GREEN}Download concluído com sucesso: {file_download}{Colors.END}")
             move_cursor(current_position)
+            
+            # Atualiza o cache após download bem-sucedido
+            if config.cache.enabled:
+                download_cache.update_file_cache(file_download, remote_size, timestamp_last_modified)
+            
             return True
         except pycurl.error as e:
             # Captura erros específicos do pycurl
@@ -182,6 +213,10 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
                 sys.stdout.write(f"{Colors.RED}Erro de conexão durante o download do arquivo {file_download}: {error_msg}{Colors.END}")
             else:
                 sys.stdout.write(f"{Colors.RED}Erro durante o download do arquivo {file_download}: {error_msg}{Colors.END}")
+            
+            # Remove do cache em caso de erro
+            if config.cache.enabled:
+                download_cache.remove_file_from_cache(file_download)
                 
             if retry_count < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
@@ -192,6 +227,11 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
             move_cursor(download_positions[file_download])
             clear_line()
             sys.stdout.write(f"{Colors.RED}Erro inesperado durante o download do arquivo {file_download}: {str(e)}{Colors.END}")
+            
+            # Remove do cache em caso de erro
+            if config.cache.enabled:
+                download_cache.remove_file_from_cache(file_download)
+                
             if retry_count < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
                 return download_file(file_info, retry_count + 1)
@@ -260,6 +300,14 @@ def download_files_parallel(soup, file: str, url: str, path_zip: str) -> bool:
     # Reseta as variáveis globais
     download_positions = {}
     current_position = 0
+    
+    # Inicializa o cache se estiver habilitado
+    if config.cache.enabled:
+        logger.info(f"{Colors.BLUE}Cache de downloads habilitado. Utilizando arquivo: {config.cache.cache_path}{Colors.END}")
+        cached_files = download_cache.get_cached_files()
+        logger.info(f"{Colors.BLUE}Encontrados {len(cached_files)} arquivos em cache.{Colors.END}")
+    else:
+        logger.info(f"{Colors.YELLOW}Cache de downloads desabilitado.{Colors.END}")
     
     # Lista para armazenar informações dos arquivos a serem baixados
     files_to_download: List[Tuple[str, str, str, str]] = []
