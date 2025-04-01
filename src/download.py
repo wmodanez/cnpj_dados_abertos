@@ -9,6 +9,7 @@ from typing import Tuple, List, Dict
 from concurrent.futures import ThreadPoolExecutor
 from config import config, IGNORED_FILES
 from .utils.colors import Colors
+from .utils import check_internet_connection
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,21 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
     file_download, file_url, path_zip, file_name = file_info
     
     try:
+        # Se for uma tentativa de retry, verifica a conexão com a internet novamente
+        if retry_count > 0:
+            move_cursor(download_positions[file_download])
+            clear_line()
+            sys.stdout.write(f"{Colors.YELLOW}Verificando conexão antes de tentar novamente: {file_download} (tentativa {retry_count}/{MAX_RETRIES}){Colors.END}")
+            move_cursor(current_position)
+            
+            internet_ok, _ = check_internet_connection(timeout=3, max_retries=1)
+            if not internet_ok:
+                move_cursor(download_positions[file_download])
+                clear_line()
+                sys.stdout.write(f"{Colors.RED}Conexão com a internet instável. Aguardando {RETRY_DELAY} segundos antes de tentar novamente...{Colors.END}")
+                move_cursor(current_position)
+                time.sleep(RETRY_DELAY)
+        
         # Verifica o arquivo remoto
         response = requests.head(file_url, timeout=30)
         if response.status_code != 200:
@@ -153,10 +169,29 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
             sys.stdout.write(f"{Colors.GREEN}Download concluído com sucesso: {file_download}{Colors.END}")
             move_cursor(current_position)
             return True
+        except pycurl.error as e:
+            # Captura erros específicos do pycurl
+            error_code, error_msg = e.args
+            move_cursor(download_positions[file_download])
+            clear_line()
+            
+            # Determina se o erro está relacionado à conexão
+            connection_related = any(keyword in str(error_msg).lower() for keyword in ['timeout', 'connection', 'network', 'reset', 'refused'])
+            
+            if connection_related:
+                sys.stdout.write(f"{Colors.RED}Erro de conexão durante o download do arquivo {file_download}: {error_msg}{Colors.END}")
+            else:
+                sys.stdout.write(f"{Colors.RED}Erro durante o download do arquivo {file_download}: {error_msg}{Colors.END}")
+                
+            if retry_count < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
+                return download_file(file_info, retry_count + 1)
+            move_cursor(current_position)
+            return False
         except Exception as e:
             move_cursor(download_positions[file_download])
             clear_line()
-            sys.stdout.write(f"{Colors.RED}Erro durante o download do arquivo {file_download}: {str(e)}{Colors.END}")
+            sys.stdout.write(f"{Colors.RED}Erro inesperado durante o download do arquivo {file_download}: {str(e)}{Colors.END}")
             if retry_count < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
                 return download_file(file_info, retry_count + 1)
@@ -170,7 +205,15 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
     except requests.exceptions.RequestException as e:
         move_cursor(download_positions[file_download])
         clear_line()
-        sys.stdout.write(f"{Colors.RED}Erro na requisição HTTP para {file_download}: {str(e)}{Colors.END}")
+        
+        # Determina se é um erro relacionado à conexão
+        connection_related = any(keyword in str(e).lower() for keyword in ['timeout', 'connection', 'network', 'reset', 'refused'])
+        
+        if connection_related:
+            sys.stdout.write(f"{Colors.RED}Erro de conexão na requisição para {file_download}: {str(e)}{Colors.END}")
+        else:
+            sys.stdout.write(f"{Colors.RED}Erro na requisição HTTP para {file_download}: {str(e)}{Colors.END}")
+            
         if retry_count < MAX_RETRIES:
             time.sleep(RETRY_DELAY)
             return download_file(file_info, retry_count + 1)
@@ -204,6 +247,15 @@ def check_download(link, file: str, url: str, path_zip: str) -> bool:
 def download_files_parallel(soup, file: str, url: str, path_zip: str) -> bool:
     """Realiza o download paralelo dos arquivos com retry."""
     global download_positions, current_position
+    
+    logger.info(f"Verificando conexão com a internet antes de iniciar o download...")
+    internet_ok, message = check_internet_connection()
+    if not internet_ok:
+        logger.error(f"{Colors.RED}Falha na conexão com a internet: {message}{Colors.END}")
+        logger.error(f"{Colors.RED}Não é possível continuar com o download. Verifique sua conexão e tente novamente.{Colors.END}")
+        return False
+    
+    logger.info(f"{Colors.GREEN}Conexão com a internet verificada com sucesso: {message}{Colors.END}")
     
     # Reseta as variáveis globais
     download_positions = {}
@@ -248,14 +300,13 @@ def download_files_parallel(soup, file: str, url: str, path_zip: str) -> bool:
         results = list(executor.map(download_file, files_to_download))
     
     # Move o cursor para depois da área de progresso
-    move_cursor(current_position + 1)
+    sys.stdout.write("\n" * 2)
     
-    # Verifica se todos os downloads foram bem sucedidos
-    failed_downloads = [f for f, r in zip(files_to_download, results) if not r]
-    if failed_downloads:
-        print(f"{Colors.RED}Falha ao baixar {len(failed_downloads)} arquivos após {MAX_RETRIES} tentativas{Colors.END}")
-        for file_info in failed_downloads:
-            print(f"{Colors.RED}Arquivo com falha: {file_info[0]}{Colors.END}")
-        return False
-    
-    return True 
+    # Verifica todos os resultados
+    if all(results):
+        logger.info(f"{Colors.GREEN}Todos os arquivos foram baixados com sucesso!{Colors.END}")
+        return True
+    else:
+        failed_count = results.count(False)
+        logger.error(f"{Colors.RED}Falha ao baixar {failed_count} arquivos.{Colors.END}")
+        return False 

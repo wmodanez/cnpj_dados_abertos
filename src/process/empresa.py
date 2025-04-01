@@ -3,7 +3,7 @@ import logging
 import dask.dataframe as dd
 import pandas as pd
 from config import config
-from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size
+from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size, check_internet_connection
 from ..download import download_files_parallel
 from ..utils.logging import setup_logging, Colors
 import os
@@ -26,6 +26,15 @@ def process_empresa(soup, url: str, path_zip: str, path_unzip: str, path_parquet
     logger.info('='*50)
     logger.info('Iniciando processamento de EMPRESAS')
     logger.info('='*50)
+    
+    # Verifica conexão com a internet antes de prosseguir
+    logger.info('Verificando conexão com a internet...')
+    internet_ok, message = check_internet_connection()
+    if not internet_ok:
+        logger.error(f'Falha na conexão com a internet: {message}')
+        logger.error('Não é possível continuar o processamento sem conexão com a internet.')
+        return False
+    logger.info(f'Conexão com a internet verificada com sucesso: {message}')
     
     # Verifica espaço em disco para o diretório de trabalho
     # Requisito mínimo: 5GB para trabalhar com segurança
