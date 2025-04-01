@@ -124,6 +124,180 @@ flowchart TD
 - **Logging Detalhado**: Rastreamento completo das operações
 - **Configurável**: Fácil adaptação às necessidades específicas
 
+## 📋 Sugestões de Otimização
+
+O fluxo de processamento pode ser aprimorado conforme o diagrama e sugestões a seguir:
+
+```mermaid
+---
+config:
+   look: handDrawn
+   theme: neutral
+   layout: elk
+   elk:
+      direction: DOWN
+      nodeSpacing: 70
+      rankSpacing: 100
+      mergeEdges: false
+      spacing: 70
+      layeringStrategy: NETWORK_SIMPLEX
+      nodePlacementStrategy: BRANDES_KOEPF
+      algorithm: layered
+      layered:
+        alignedLayout: true
+        nodePlacement: SIMPLE
+
+---
+flowchart TD
+    %% Etapa 1: Inicialização e Verificação
+    A[Início] --> B[Configuração do ambiente]
+    B --> C[Inicialização do Spark]
+    C --> D[Verificação de novas versões de dados CNPJ]
+    D --> D1{Novos dados CNPJ disponíveis?}
+    D1 -->|Não| P1[Encerramento do Spark]
+    P1 --> Z[Fim]
+    
+    %% Etapa 2: Preparação com Cache
+    D1 -->|Sim| E[Consulta ao cache de metadados]
+    E --> E1{É necessário download completo?}
+    E1 -->|Sim| F1[Download paralelo com asyncio]
+    E1 -->|Não| F2[Download seletivo de arquivos]
+    F1 --> G[Descompactação paralela]
+    F2 --> G
+    G --> H[Atualização do cache]
+    
+    %% Etapa 3: Loop de Processamento com PySpark
+    H --> T[Loop por tipos de dados]
+    T --> I[Leitura e transformação com PySpark]
+    
+    %% Conexão direta para validação
+    I --> J[Validação com ferramentas do Spark]
+    J --> J1{Dados OK?}
+    J1 -->|Não| J2[Correção com transformações Spark]
+    J2 --> J
+    J1 -->|Sim| K[Armazenamento em Parquet otimizado]
+    K --> T1{Mais tipos de dados?}
+    T1 -->|Sim| T
+    
+    %% Etapa 4: Consolidação e Finalização
+    T1 -->|Não| L[Verificação dos arquivos Parquet com Spark]
+    L --> L1{Parquets completos?}
+    L1 -->|Não| P1
+    L1 -->|Sim| M[Criação de views no DuckDB via Spark-DuckDB]
+    M --> P1
+    
+    %% Estilos mais claros
+    classDef processo fill:#d1e7dd,stroke:#0d6832,stroke-width:1px
+    classDef novo fill:#a3cfbb,stroke:#0d6832,stroke-width:2px
+    classDef decisao fill:#fff3cd,stroke:#856404,stroke-width:1px
+    classDef inicio fill:#cfe2ff,stroke:#084298,stroke-width:1px
+    classDef fim fill:#f8d7da,stroke:#842029,stroke-width:1px
+    classDef loop fill:#e0cffc,stroke:#6f42c1,stroke-width:1px
+    classDef spark fill:#f9d5e5,stroke:#862e9c,stroke-width:1px
+    
+    class A,B inicio
+    class D1,J1,T1,L1 decisao
+    class F1,F2,G,J2,M novo
+    class E,H processo
+    class C,I,J,K,L,P1 spark
+    class T loop
+    class Z fim
+```
+
+### 1. Paralelização e Desempenho
+
+#### Downloads Assíncronos
+- Implementar downloads paralelos com `asyncio` e `aiohttp`
+- Redução de 60-80% no tempo de download total
+- Funciona em conjunto com o cache de metadados
+
+#### Descompactação em Paralelo
+- Usar `concurrent.futures` para extrair múltiplos arquivos simultaneamente
+- Redução significativa no tempo de extração
+
+#### Cache de Metadados
+- Implementar cache de metadados (SQLite ou arquivo JSON)
+- Evitar reprocessamento desnecessário, processando apenas o que mudou
+
+### 2. Modernização das Ferramentas
+
+#### Migração para PySpark
+- Implementar PySpark como ferramenta principal de processamento
+- Melhor otimizador de consultas
+- Ecossistema mais maduro e ampla comunidade
+- Integração nativa com diversas ferramentas de big data
+
+#### Formato de Armazenamento Otimizado
+- Parquet otimizado via PySpark com compressão e estatísticas avançadas
+- Melhor compressão dos dados
+- Leitura mais rápida com estatísticas de coluna
+
+#### Validação de Dados Integrada
+- Utilizar as ferramentas nativas do Spark para validação
+- Schema enforcement do Spark
+- Regras de qualidade via Spark SQL
+- Tratamento integrado de dados inválidos
+
+### 3. Resiliência e Monitoramento
+
+#### Checkpoints de Recuperação
+- Utilizar o sistema de checkpoints nativo do Spark
+- Capacidade de retomar de falhas sem reprocessamento completo
+
+#### Sistema de Monitoramento
+- Utilizar a interface web do Spark e integrá-la com ferramentas de observabilidade
+- Prometheus/Grafana para visualização
+
+#### Tratamento Avançado de Erros
+- Aproveitar o mecanismo de validação do Spark para identificar e corrigir erros
+- Correção iterativa durante o processamento
+
+### 4. Arquitetura Geral
+
+#### Pipeline Modular
+- Arquitetura em etapas independentes
+- Facilidade de manutenção e possibilidade de executar apenas partes específicas
+
+#### Integração Direta com DuckDB
+- Utilizar conectores entre Spark e DuckDB para criação de views diretamente
+- Processo mais direto e eficiente de disponibilização dos dados para análise
+
+## 📊 Comparação de Tecnologias
+
+| Aspecto | Atual | Sugestão | Benefício |
+|---------|-------|----------|-----------|
+| Processamento Distribuído | Dask | PySpark | Melhor otimização, pipeline integrado |
+| Formato de Armazenamento | Parquet via Dask | Parquet otimizado via Spark | Melhor compressão e desempenho de leitura |
+| Download de Arquivos | PyCurl sequencial | asyncio/aiohttp paralelo | Redução de 60-80% no tempo de download |
+| Descompactação | zipfile sequencial | concurrent.futures paralelo | Redução significativa no tempo de extração |
+| Validação de Dados | Mínima | Ferramentas nativas do Spark | Validação integrada ao processamento |
+| Recuperação de Falhas | Inexistente | Sistema de checkpoints do Spark | Continuidade em caso de interrupções |
+| Monitoramento | Logs básicos | Interface web do Spark + métricas | Melhor observabilidade |
+
+## 📅 Plano de Implementação Progressiva
+
+Para implementar estas melhorias de forma gradual e segura:
+
+### Fase 1: Otimizações Imediatas (1-2 semanas)
+- Implementar downloads paralelos com asyncio
+- Adicionar descompactação em paralelo
+- Implementar cache básico de metadados
+
+### Fase 2: Migração para PySpark (2-3 semanas)
+- Configurar ambiente Spark
+- Adaptar scripts de processamento para PySpark
+- Implementar validação de dados com ferramentas do Spark
+
+### Fase 3: Otimização de Fluxo (2-3 semanas)
+- Implementar o loop de processamento com validação e correção
+- Adicionar sistema de checkpoints
+- Otimizar armazenamento Parquet
+
+### Fase 4: Refinamentos Finais (1-2 semanas)
+- Implementar integração otimizada com DuckDB
+- Configurar monitoramento e métricas
+- Testes de desempenho e ajustes finais
+
 ## 🚀 Como Usar
 
 ### Pré-requisitos
