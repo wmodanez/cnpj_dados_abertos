@@ -9,7 +9,6 @@ O atual pipeline de processamento de dados de CNPJs segue um fluxo estruturado, 
 ```mermaid
 ---
 config:
-   look: handDrawn
    theme: neutral
    layout: elk
    elk:
@@ -21,6 +20,12 @@ config:
       algorithm: layered
       layered:
         alignedLayout: true
+   flowchart:
+      useMaxWidth: true
+      curve: basis
+      defaultRenderer: elk
+      htmlLabels: true
+      animate: true
 
 ---
 flowchart TD
@@ -70,6 +75,9 @@ flowchart TD
     class C,F,G,H,I,J,K,O,R ferramenta
     class B,D,P process
     class E,L,N,S decision
+    
+    %% Animação das setas
+    linkStyle default stroke:#00AA00,stroke-width:2px,color:green,animation:flowing 1.5s linear infinite,stroke-dasharray:5,2,3,2
 ```
 
 ### Etapas do Fluxo Atual
@@ -131,7 +139,6 @@ O fluxo de processamento pode ser aprimorado conforme o diagrama e sugestões a 
 ```mermaid
 ---
 config:
-   look: handDrawn
    theme: neutral
    layout: elk
    elk:
@@ -146,6 +153,12 @@ config:
       layered:
         alignedLayout: true
         nodePlacement: SIMPLE
+   flowchart:
+      useMaxWidth: true
+      curve: basis
+      defaultRenderer: elk
+      htmlLabels: true
+      animate: true
 
 ---
 flowchart TD
@@ -202,6 +215,9 @@ flowchart TD
     class C,I,J,K,L,P1 spark
     class T loop
     class Z fim
+    
+    %% Animação das setas
+    linkStyle default stroke:#00AA00,stroke-width:2px,color:green,animation:flowing 2s ease infinite,stroke-dasharray:5,2,3,2
 ```
 
 ### 1. Paralelização e Desempenho
