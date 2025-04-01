@@ -1,14 +1,24 @@
 import datetime
 import logging
 import dask.dataframe as dd
+import pandas as pd
 from config import config
 from ..utils import file_extractor, file_delete
 from ..download import download_files_parallel
 from ..utils.logging import setup_logging, Colors
 import os
 import zipfile
+import csv
+import io
 
 logger = logging.getLogger(__name__)
+
+def create_parquet(df, table_name, path_parquet):
+    """Converte um DataFrame para formato parquet."""
+    yyyymm = datetime.date.today().strftime('%Y%m')
+    output_dir = os.path.join(path_parquet, yyyymm, table_name)
+    os.makedirs(output_dir, exist_ok=True)
+    df.to_parquet(output_dir, write_index=False)
 
 def process_socio(soup, url: str, path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa os dados de sócios."""
@@ -24,80 +34,207 @@ def process_socio(soup, url: str, path_zip: str, path_unzip: str, path_parquet: 
         return False
     logger.info('Downloads concluídos com sucesso')
     
-    # Descompacta os arquivos
-    logger.info('Iniciando descompactação...')
-    try:
-        for file_name in os.listdir(path_zip):
-            if file_name.startswith('Socio') and file_name.endswith('.zip'):
-                file_path = os.path.join(path_zip, file_name)
-                with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                    zip_ref.extractall(path_unzip)
-        logger.info('Descompactação concluída com sucesso')
-    except Exception as e:
-        logger.error(f'Erro ao descompactar arquivos: {str(e)}')
-        return False
+    # Processa um arquivo ZIP por vez
+    logger.info('Iniciando processamento de arquivos...')
+    success = False
     
-    # Processa os dados
-    logger.info('Iniciando processamento dos dados...')
     try:
-        # Lê todos os arquivos CSV
-        csv_files = [f for f in os.listdir(path_unzip) if f.startswith('Socio') and f.endswith('.csv')]
-        if not csv_files:
-            logger.error('Nenhum arquivo CSV encontrado após descompactação')
+        # Lista todos os arquivos ZIP de sócios
+        try:
+            zip_files = [f for f in os.listdir(path_zip) if f.startswith('Socio') and f.endswith('.zip')]
+            if not zip_files:
+                logger.error('Nenhum arquivo ZIP encontrado')
+                return False
+        except FileNotFoundError as e:
+            logger.error(f'Diretório de arquivos ZIP não encontrado: {str(e)}')
             return False
+        except PermissionError as e:
+            logger.error(f'Sem permissão para acessar o diretório de arquivos ZIP: {str(e)}')
+            return False
+        except Exception as e:
+            logger.error(f'Erro inesperado ao listar arquivos ZIP: {str(e)}')
+            return False
+        
+        all_dfs = []
+        
+        # Processa cada arquivo ZIP individualmente
+        for zip_file in zip_files:
+            zip_path = os.path.join(path_zip, zip_file)
+            logger.info(f'Processando arquivo ZIP: {zip_file}')
             
-        # Concatena todos os DataFrames
-        dfs = []
-        for csv_file in csv_files:
-            df = dd.read_csv(
-                os.path.join(path_unzip, csv_file),
-                dtype={
-                    'cnpj_basico': 'object',
-                    'identificador_socio': 'object',
-                    'nome_socio': 'object',
-                    'cnpj_cpf_socio': 'object',
-                    'codigo_qualificacao_socio': 'object',
-                    'percentual_capital_social': 'object',
-                    'data_entrada_sociedade': 'object',
-                    'codigo_pais': 'object',
-                    'nome_pais_socio': 'object',
-                    'cpf_representante_legal': 'object',
-                    'nome_representante_legal': 'object',
-                    'codigo_qualificacao_representante_legal': 'object'
-                }
-            )
-            dfs.append(df)
+            # Limpa o diretório de descompactação antes de começar
+            try:
+                file_delete(path_unzip)
+            except PermissionError as e:
+                logger.error(f'Sem permissão para limpar diretório de descompactação: {str(e)}')
+                continue
+            except Exception as e:
+                logger.error(f'Erro inesperado ao limpar diretório de descompactação: {str(e)}')
+                continue
+            
+            # Descompacta apenas este arquivo ZIP
+            try:
+                logger.info(f'Descompactando arquivo: {zip_path}')
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(path_unzip)
+                logger.info('Descompactação concluída com sucesso')
+            except zipfile.BadZipFile as e:
+                logger.error(f'Arquivo ZIP corrompido ou inválido {zip_path}: {str(e)}')
+                continue
+            except zipfile.LargeZipFile as e:
+                logger.error(f'Arquivo ZIP muito grande para processamento {zip_path}: {str(e)}')
+                continue
+            except PermissionError as e:
+                logger.error(f'Sem permissão para extrair arquivo ZIP {zip_path}: {str(e)}')
+                continue
+            except MemoryError as e:
+                logger.error(f'Memória insuficiente para extrair arquivo ZIP {zip_path}: {str(e)}')
+                continue
+            except Exception as e:
+                logger.error(f'Erro inesperado ao descompactar arquivo {zip_path}: {str(e)}')
+                continue
+            
+            # Processa os dados deste arquivo
+            try:
+                # Encontra arquivos CSV descompactados
+                try:
+                    csv_files = [f for f in os.listdir(path_unzip) if f.startswith('Socio') and f.endswith('.csv')]
+                    if not csv_files:
+                        logger.warning(f'Nenhum arquivo CSV encontrado após descompactar {zip_file}')
+                        continue
+                except FileNotFoundError as e:
+                    logger.error(f'Diretório de descompactação não encontrado: {str(e)}')
+                    continue
+                except PermissionError as e:
+                    logger.error(f'Sem permissão para acessar o diretório de descompactação: {str(e)}')
+                    continue
+                except Exception as e:
+                    logger.error(f'Erro inesperado ao listar arquivos CSV: {str(e)}')
+                    continue
+                
+                # Lê e processa cada arquivo CSV deste ZIP
+                for csv_file in csv_files:
+                    csv_path = os.path.join(path_unzip, csv_file)
+                    logger.info(f'Processando arquivo CSV: {csv_file}')
+                    
+                    # Verifica integridade do CSV antes de processá-lo
+                    try:
+                        # Tenta ler as primeiras linhas para verificar integridade
+                        with open(csv_path, 'r', encoding='utf-8') as f:
+                            reader = csv.reader(f)
+                            for _ in range(5):
+                                next(reader, None)
+                    except UnicodeDecodeError as e:
+                        logger.error(f'Erro de codificação no arquivo {csv_file}: {str(e)}')
+                        continue
+                    except csv.Error as e:
+                        logger.error(f'Erro de formato CSV no arquivo {csv_file}: {str(e)}')
+                        continue
+                    except Exception as e:
+                        logger.error(f'Erro ao verificar integridade do arquivo {csv_file}: {str(e)}')
+                        continue
+                    
+                    try:
+                        df = dd.read_csv(
+                            csv_path,
+                            dtype={
+                                'cnpj_basico': 'object',
+                                'identificador_socio': 'object',
+                                'nome_socio': 'object',
+                                'cnpj_cpf_socio': 'object',
+                                'qualificacao_socio': 'object',
+                                'data_entrada_sociedade': 'object',
+                                'pais': 'object',
+                                'representante_legal': 'object',
+                                'nome_representante': 'object',
+                                'qualificacao_representante': 'object',
+                                'faixa_etaria': 'object'
+                            }
+                        )
+                        all_dfs.append(df)
+                    except pd.errors.EmptyDataError as e:
+                        logger.error(f'Arquivo CSV vazio {csv_file}: {str(e)}')
+                        continue
+                    except pd.errors.ParserError as e:
+                        logger.error(f'Erro de parse no arquivo CSV {csv_file}: {str(e)}')
+                        continue
+                    except MemoryError as e:
+                        logger.error(f'Memória insuficiente para processar arquivo CSV {csv_file}: {str(e)}')
+                        continue
+                    except Exception as e:
+                        logger.error(f'Erro inesperado ao processar arquivo CSV {csv_file}: {str(e)}')
+                        continue
+                
+                # Limpa os arquivos temporários após processamento
+                try:
+                    file_delete(path_unzip)
+                    logger.info(f'Arquivos temporários de {zip_file} removidos')
+                except Exception as e:
+                    logger.warning(f'Não foi possível remover arquivos temporários de {zip_file}: {str(e)}')
+                
+                success = True
+                
+            except Exception as e:
+                logger.error(f'Erro inesperado ao processar dados do arquivo {zip_file}: {str(e)}')
+                # Mesmo em caso de erro, limpa os arquivos temporários
+                try:
+                    file_delete(path_unzip)
+                except Exception as clean_error:
+                    logger.warning(f'Não foi possível limpar arquivos temporários após erro: {str(clean_error)}')
         
-        dd_socio = dd.concat(dfs)
+        # Se temos DataFrames para processar, concatena todos e cria o parquet
+        if all_dfs:
+            logger.info('Concatenando todos os DataFrames...')
+            try:
+                dd_socio = dd.concat(all_dfs)
+                
+                # Renomeia as colunas
+                dd_socio = dd_socio.rename(columns={
+                    'cnpj_basico': 'cnpj',
+                    'identificador_socio': 'identificador_socio',
+                    'nome_socio': 'nome_socio',
+                    'cnpj_cpf_socio': 'cnpj_cpf_socio',
+                    'qualificacao_socio': 'qualificacao_socio',
+                    'data_entrada_sociedade': 'data_entrada_sociedade',
+                    'pais': 'pais',
+                    'representante_legal': 'representante_legal',
+                    'nome_representante': 'nome_representante',
+                    'qualificacao_representante': 'qualificacao_representante',
+                    'faixa_etaria': 'faixa_etaria'
+                })
+                
+                # Converte para parquet
+                table_name = 'socio'
+                logger.info(f'Criando arquivo parquet {table_name}...')
+                try:
+                    create_parquet(dd_socio, table_name, path_parquet)
+                    logger.info('Processamento concluído com sucesso')
+                    success = True
+                except PermissionError as e:
+                    logger.error(f'Sem permissão para criar arquivo parquet: {str(e)}')
+                    success = False
+                except IOError as e:
+                    logger.error(f'Erro de I/O ao criar arquivo parquet: {str(e)}')
+                    success = False
+                except Exception as e:
+                    logger.error(f'Erro inesperado ao criar arquivo parquet: {str(e)}')
+                    success = False
+            except MemoryError as e:
+                logger.error(f'Memória insuficiente para concatenar DataFrames: {str(e)}')
+                success = False
+            except Exception as e:
+                logger.error(f'Erro inesperado ao concatenar DataFrames: {str(e)}')
+                success = False
+        else:
+            logger.error('Nenhum dado foi processado com sucesso')
         
-        # Renomeia as colunas
-        dd_socio = dd_socio.rename(columns={
-            'cnpj_basico': 'cnpj',
-            'identificador_socio': 'tipo',
-            'nome_socio': 'nome',
-            'cnpj_cpf_socio': 'documento',
-            'codigo_qualificacao_socio': 'qualificacao',
-            'percentual_capital_social': 'capital',
-            'data_entrada_sociedade': 'data_entrada',
-            'codigo_pais': 'pais',
-            'nome_pais_socio': 'nome_pais',
-            'cpf_representante_legal': 'cpf_representante',
-            'nome_representante_legal': 'nome_representante',
-            'codigo_qualificacao_representante_legal': 'qualificacao_representante'
-        })
-        
-        # Converte para parquet
-        table_name = 'socio'
-        logger.info(f'Criando arquivo parquet {table_name}...')
-        create_parquet(dd_socio, table_name, path_parquet)
-        logger.info('Processamento concluído com sucesso')
-        
-        # Limpa os arquivos temporários
-        file_delete(path_unzip)
-        logger.info('Arquivos temporários removidos')
-        
-        return True
+        return success
         
     except Exception as e:
-        logger.error(f'Erro ao processar dados: {str(e)}')
+        logger.error(f'Erro inesperado no processo principal: {str(e)}')
+        # Certifica-se de limpar os arquivos temporários em caso de erro
+        try:
+            file_delete(path_unzip)
+        except Exception as clean_error:
+            logger.warning(f'Não foi possível limpar arquivos temporários após erro fatal: {str(clean_error)}')
         return False 

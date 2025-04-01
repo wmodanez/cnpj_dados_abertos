@@ -7,7 +7,7 @@ import pycurl
 import requests
 from typing import Tuple, List, Dict
 from concurrent.futures import ThreadPoolExecutor
-from config import config
+from config import config, IGNORED_FILES
 from .utils.colors import Colors
 
 logger = logging.getLogger(__name__)
@@ -188,8 +188,9 @@ def download_file(file_info: Tuple[str, str, str, str], retry_count: int = 0) ->
 
 def check_download(link, file: str, url: str, path_zip: str) -> bool:
     """Verifica se o arquivo pode ser baixado."""
-    if str(link.get('href')).endswith('.zip') and file in str(link.get('href')):
-        file_download: str = link.get('href')
+    file_download: str = link.get('href')
+    
+    if str(file_download).endswith('.zip') and file in str(file_download):
         file_url: str = url + file_download
 
         if not file_download.startswith('http'):
@@ -198,7 +199,7 @@ def check_download(link, file: str, url: str, path_zip: str) -> bool:
             logger.error(f'{Colors.RED}URL inválida para download: {file_download}{Colors.END}')
             return False
     else:
-        return True
+        return False
 
 def download_files_parallel(soup, file: str, url: str, path_zip: str) -> bool:
     """Realiza o download paralelo dos arquivos com retry."""
@@ -211,12 +212,30 @@ def download_files_parallel(soup, file: str, url: str, path_zip: str) -> bool:
     # Lista para armazenar informações dos arquivos a serem baixados
     files_to_download: List[Tuple[str, str, str, str]] = []
     
+    # Lista para armazenar arquivos ignorados
+    ignored_files = []
+    
     # Coleta informações dos arquivos
     for link in [x for x in soup.find_all('a') if str(x.get('href')).endswith('.zip')]:
+        file_name = link.get('href')
+        
+        # Verifica se o arquivo está na lista de ignorados
+        if file_name in IGNORED_FILES:
+            ignored_files.append(file_name)
+            continue
+            
+        # Verifica se o arquivo corresponde ao tipo atual sendo processado
         if check_download(link, file, url, path_zip):
-            file_download: str = link.get('href')
+            file_download: str = file_name
             file_url: str = url + file_download
             files_to_download.append((file_download, file_url, path_zip, file))
+    
+    # Log de arquivos ignorados
+    if ignored_files:
+        ignored_count = len(ignored_files)
+        logger.info(f"{Colors.YELLOW}Ignorando {ignored_count} arquivos conforme configuração:{Colors.END}")
+        for ignored_file in ignored_files:
+            logger.info(f"{Colors.YELLOW}   - {ignored_file}{Colors.END}")
     
     if not files_to_download:
         return True

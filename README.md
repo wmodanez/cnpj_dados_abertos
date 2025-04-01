@@ -170,3 +170,30 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 - O processamento pode levar algumas horas dependendo do hardware
 - Certifique-se de ter espaço suficiente em disco
 - Em caso de falhas, o sistema tentará novamente automaticamente
+
+## Otimizações de Processamento
+
+Este projeto foi otimizado para lidar com grandes volumes de dados de maneira eficiente. 
+As seguintes otimizações foram implementadas:
+
+### Processamento sequencial de arquivos ZIP
+
+Em vez de descompactar todos os arquivos de uma vez (o que poderia consumir muito espaço em disco), 
+o processamento agora é feito sequencialmente:
+
+1. Cada arquivo ZIP é descompactado individualmente
+2. Os arquivos CSV resultantes são processados
+3. Os arquivos temporários são excluídos imediatamente
+4. Só então o próximo arquivo ZIP é processado
+
+Essa abordagem tem as seguintes vantagens:
+- Reduz significativamente o uso de espaço em disco
+- Previne vazamentos de memória durante o processamento
+- Mantém o diretório de trabalho limpo
+- Permite processamento de conjuntos de dados maiores sem esgotar o armazenamento
+
+### Limpeza de arquivos temporários
+
+Todos os arquivos temporários descompactados são excluídos após o processamento, mesmo em caso de erro,
+garantindo que não fiquem arquivos residuais no sistema. A exclusão é feita usando processamento paralelo
+para maior eficiência.

@@ -189,6 +189,7 @@ flowchart TD
 ### 1. Paralelização e Desempenho
 
 #### Downloads Assíncronos
+
 - **Atual:** Downloads sequenciais com PyCurl
 - **Sugestão:** Implementar downloads paralelos com `asyncio` e `aiohttp`
 - **Benefício:** Redução de 60-80% no tempo de download total
@@ -208,6 +209,7 @@ async def download_file(session, url):
 ```
 
 #### Descompactação em Paralelo
+
 - **Atual:** Descompactação sequencial dos arquivos ZIP
 - **Sugestão:** Usar `concurrent.futures` para extrair múltiplos arquivos simultaneamente
 - **Benefício:** Redução significativa no tempo de extração
@@ -221,6 +223,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
 ```
 
 #### Cache de Metadados
+
 - **Atual:** Reprocessamento completo de arquivos mesmo com poucas alterações
 - **Sugestão:** Implementar cache de metadados (SQLite ou arquivo JSON)
 - **Benefício:** Evitar reprocessamento desnecessário, processando apenas o que mudou
@@ -229,6 +232,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
 ### 2. Modernização das Ferramentas
 
 #### Migração para PySpark
+
 - **Atual:** Uso exclusivo de Dask para processamento distribuído
 - **Sugestão:** Implementar PySpark como ferramenta principal de processamento
 - **Benefícios:** 
@@ -238,6 +242,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
   - Pipeline de processamento completo desde a leitura até a validação
 
 #### Formato de Armazenamento Otimizado
+
 - **Atual:** Parquet simples via Dask
 - **Sugestão:** Parquet otimizado via PySpark com compressão e estatísticas avançadas
 - **Benefícios:** 
@@ -246,6 +251,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
   - Compatibilidade direta com ferramentas analíticas
 
 #### Validação de Dados Integrada
+
 - **Atual:** Validação mínima ou inexistente
 - **Sugestão:** Utilizar as ferramentas nativas do Spark para validação
 - **Componentes:** 
@@ -276,16 +282,19 @@ validations = spark.sql("""
 ### 3. Resiliência e Monitoramento
 
 #### Checkpoints de Recuperação
+
 - **Atual:** Difícil retomar processamento interrompido
 - **Sugestão:** Utilizar o sistema de checkpoints nativo do Spark
 - **Benefício:** Capacidade de retomar de falhas sem reprocessamento completo
 
 #### Sistema de Monitoramento
+
 - **Atual:** Logs básicos
 - **Sugestão:** Utilizar a interface web do Spark e integrá-la com ferramentas de observabilidade
 - **Ferramentas:** Prometheus/Grafana para visualização, ou exportação de métricas do Spark
 
 #### Tratamento Avançado de Erros
+
 - **Atual:** Tratamento básico de erros
 - **Sugestão:** Aproveitar o mecanismo de validação do Spark para identificar e corrigir erros
 - **Benefício:** Correção iterativa durante o processamento, conforme implementado no fluxograma
@@ -293,11 +302,13 @@ validations = spark.sql("""
 ### 4. Arquitetura Geral
 
 #### Pipeline Modular
+
 - **Atual:** Fluxo monolítico
 - **Sugestão:** Arquitetura em etapas independentes conforme o fluxograma otimizado
 - **Benefício:** Facilidade de manutenção e possibilidade de executar apenas partes específicas
 
 #### Integração Direta com DuckDB
+
 - **Atual:** Conversão manual de Parquet para DuckDB
 - **Sugestão:** Utilizar conectores entre Spark e DuckDB para criação de views diretamente
 - **Benefício:** Processo mais direto e eficiente de disponibilização dos dados para análise
@@ -319,21 +330,25 @@ validations = spark.sql("""
 Para implementar estas melhorias de forma gradual e segura:
 
 ### Fase 1: Otimizações Imediatas (1-2 semanas)
+
 - Implementar downloads paralelos com asyncio
 - Adicionar descompactação em paralelo
 - Implementar cache básico de metadados
 
 ### Fase 2: Migração para PySpark (2-3 semanas)
+
 - Configurar ambiente Spark
 - Adaptar scripts de processamento para PySpark
 - Implementar validação de dados com ferramentas do Spark
 
 ### Fase 3: Otimização de Fluxo (2-3 semanas)
+
 - Implementar o loop de processamento com validação e correção
 - Adicionar sistema de checkpoints
 - Otimizar armazenamento Parquet
 
 ### Fase 4: Refinamentos Finais (1-2 semanas)
+
 - Implementar integração otimizada com DuckDB
 - Configurar monitoramento e métricas
 - Testes de desempenho e ajustes finais

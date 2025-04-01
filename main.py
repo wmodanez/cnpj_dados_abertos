@@ -6,7 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 from dask.distributed import Client, LocalCluster
 from dotenv import load_dotenv
-from config import config
+from config import config, IGNORED_FILES
 from src.utils import check_basic_folders
 from src.process.empresa import process_empresa
 from src.process.estabelecimento import process_estabelecimento
@@ -100,6 +100,27 @@ def main():
     print_section("Carregando variáveis de ambiente...")
     load_dotenv('.env.local')
     print_success("Variáveis de ambiente carregadas com sucesso")
+    
+    # Exibe os arquivos ignorados
+    print_section("Arquivos auxiliares que serão ignorados no download:")
+    file_descriptions = {}
+    
+    # Tenta obter as descrições do arquivo config.py
+    try:
+        with open("config.py", "r", encoding="utf-8") as config_file:
+            for line in config_file:
+                for ignored_file in IGNORED_FILES:
+                    if f"'{ignored_file}'," in line and "#" in line:
+                        file_descriptions[ignored_file] = line.split('#')[1].strip()
+    except Exception as e:
+        logger.warning(f"Não foi possível ler as descrições dos arquivos ignorados: {str(e)}")
+    
+    # Exibe os arquivos ignorados com suas descrições
+    for ignored_file in IGNORED_FILES:
+        if ignored_file in file_descriptions:
+            print_warning(f"- {ignored_file} ({file_descriptions[ignored_file]})")
+        else:
+            print_warning(f"- {ignored_file}")
     
     # Configurações de diretórios
     URL: str = os.getenv('URL_ORIGIN')
