@@ -4,6 +4,7 @@ import dask.dataframe as dd
 import pandas as pd
 from config import config
 from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size, check_internet_connection
+from ..utils import process_csv_files_parallel, process_csv_to_df, verify_csv_integrity
 from ..download import download_files_parallel
 from ..utils.logging import setup_logging, Colors
 import os
@@ -19,6 +20,39 @@ def create_parquet(df, table_name, path_parquet):
     output_dir = os.path.join(path_parquet, yyyymm, table_name)
     os.makedirs(output_dir, exist_ok=True)
     df.to_parquet(output_dir, write_index=False)
+
+def process_csv_file(csv_path):
+    """
+    Função para processar um único arquivo CSV de empresas.
+    
+    Args:
+        csv_path: Caminho do arquivo CSV a ser processado
+        
+    Returns:
+        DataFrame Dask com os dados processados ou None em caso de erro
+    """
+    # Verifica a integridade do CSV
+    if not verify_csv_integrity(csv_path):
+        logger.error(f'Falha na verificação de integridade do arquivo {os.path.basename(csv_path)}')
+        return None
+    
+    # Define os tipos de dados para as colunas
+    dtype_dict = {
+        'cnpj_basico': 'object',
+        'razao_social': 'object',
+        'natureza_juridica': 'object',
+        'qualificacao_responsavel': 'object',
+        'capital_social': 'object',
+        'porte_empresa': 'object',
+        'ente_federativo_responsavel': 'object'
+    }
+    
+    try:
+        df = process_csv_to_df(csv_path, dtype=dtype_dict)
+        return df
+    except Exception as e:
+        logger.error(f'Erro ao processar arquivo {os.path.basename(csv_path)}: {str(e)}')
+        return None
 
 def process_empresa(soup, url: str, path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa os dados de empresas."""
@@ -139,54 +173,24 @@ def process_empresa(soup, url: str, path_zip: str, path_unzip: str, path_parquet
                     logger.error(f'Erro inesperado ao listar arquivos CSV: {str(e)}')
                     continue
                 
-                # Lê e concatena todos os DataFrames deste arquivo ZIP
-                for csv_file in csv_files:
-                    csv_path = os.path.join(path_unzip, csv_file)
-                    logger.info(f'Processando arquivo CSV: {csv_file}')
-                    
-                    # Verifica integridade do CSV antes de processá-lo
-                    try:
-                        # Tenta ler as primeiras linhas para verificar integridade
-                        with open(csv_path, 'r', encoding='utf-8') as f:
-                            reader = csv.reader(f)
-                            for _ in range(5):
-                                next(reader, None)
-                    except UnicodeDecodeError as e:
-                        logger.error(f'Erro de codificação no arquivo {csv_file}: {str(e)}')
-                        continue
-                    except csv.Error as e:
-                        logger.error(f'Erro de formato CSV no arquivo {csv_file}: {str(e)}')
-                        continue
-                    except Exception as e:
-                        logger.error(f'Erro ao verificar integridade do arquivo {csv_file}: {str(e)}')
-                        continue
-                    
-                    try:
-                        df = dd.read_csv(
-                            csv_path,
-                            dtype={
-                                'cnpj_basico': 'object',
-                                'razao_social': 'object',
-                                'natureza_juridica': 'object',
-                                'qualificacao_responsavel': 'object',
-                                'capital_social': 'object',
-                                'porte_empresa': 'object',
-                                'ente_federativo_responsavel': 'object'
-                            }
-                        )
-                        all_dfs.append(df)
-                    except pd.errors.EmptyDataError as e:
-                        logger.error(f'Arquivo CSV vazio {csv_file}: {str(e)}')
-                        continue
-                    except pd.errors.ParserError as e:
-                        logger.error(f'Erro de parse no arquivo CSV {csv_file}: {str(e)}')
-                        continue
-                    except MemoryError as e:
-                        logger.error(f'Memória insuficiente para processar arquivo CSV {csv_file}: {str(e)}')
-                        continue
-                    except Exception as e:
-                        logger.error(f'Erro inesperado ao processar arquivo CSV {csv_file}: {str(e)}')
-                        continue
+                # Processa todos os arquivos CSV em paralelo
+                logger.info(f'Processando {len(csv_files)} arquivos CSV em paralelo...')
+                
+                dfs = process_csv_files_parallel(
+                    csv_files=csv_files,
+                    base_path=path_unzip,
+                    process_function=process_csv_file,
+                    max_workers=config.dask.n_workers
+                )
+                
+                # Filtra DataFrames vazios ou inválidos
+                dfs = [df for df in dfs if df is not None]
+                
+                if dfs:
+                    all_dfs.extend(dfs)
+                    logger.info(f'Processamento de {len(dfs)} arquivos CSV concluído com sucesso')
+                else:
+                    logger.warning(f'Nenhum DataFrame válido foi gerado a partir dos arquivos CSV')
                 
                 # Limpa os arquivos temporários após processamento
                 try:
