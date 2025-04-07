@@ -50,3 +50,6 @@ dados-abertos/
 dados-abertos-zip/
 src/Entity/
 /experiments/
+
+# Ignorar pastas de cache em qualquer subdiretório
+*/cache/

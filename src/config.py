@@ -1,6 +1,10 @@
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Tuple
+from dotenv import load_dotenv
+
+# Carrega variáveis de ambiente do .env ANTES de definir as configurações
+load_dotenv()
 
 # Lista de arquivos que devem ser ignorados durante o download
 # Esta lista contém arquivos auxiliares que não são necessários para 
@@ -35,18 +39,22 @@ class DatabaseConfig:
 @dataclass
 class CacheConfig:
     """Configurações relacionadas ao cache de downloads."""
-    # Diretório onde será armazenado o arquivo de cache
-    # Agora relativo a este arquivo (src/config.py), então cria src/cache/
-    cache_dir: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
     # Nome do arquivo de cache
     cache_file: str = 'download_cache.json'
-    # Caminho completo do arquivo de cache
-    cache_path: str = field(init=False)
     # Flag para habilitar ou desabilitar o cache
     enabled: bool = True
-    
+    # Diretório onde será armazenado o arquivo de cache.
+    # Usa PATH_ZIP do .env, com fallback para 'data' na raiz.
+    # Cria um subdiretório 'cache' dentro do diretório base.
+    cache_dir: str = field(default_factory=lambda: os.path.join(os.getenv('PATH_ZIP', 'data'), 'cache'))
+    # Caminho completo do arquivo de cache (calculado após init)
+    cache_path: str = field(init=False)
+
     def __post_init__(self):
         """Inicializa campos que dependem de outros campos."""
+        # Garante que cache_dir existe antes de formar o path completo
+        # Nota: A classe DownloadCache também cria o diretório ao salvar.
+        os.makedirs(self.cache_dir, exist_ok=True)
         self.cache_path = os.path.join(self.cache_dir, self.cache_file)
 
 @dataclass
