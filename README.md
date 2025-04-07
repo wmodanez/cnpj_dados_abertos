@@ -44,6 +44,7 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
   
   - [Comparação de Tecnologias](#-comparação-de-tecnologias)
   - [Plano de Implementação Progressiva](#-plano-de-implementação-progressiva)
+  - [Diagrama de Gantt do Plano de Implementação](#diagrama-de-gantt-do-plano-de-implementação)
   - [Tabela de Implementação das Branches](#tabela-de-implementação-das-branches)
 </details>
 
@@ -570,6 +571,64 @@ Para implementar estas melhorias de forma gradual e segura:
 | 3 | feature/advanced-error-handling | Tratamento avançado de erros | ⏳ | feature/pyspark-migration |
 | 4 | feature/modular-pipeline | Implementação de pipeline modular | ⏳ | Fase 3 |
 | 4 | feature/duckdb-integration | Integração direta com DuckDB | ⏳ | Fase 3 |
+
+### Diagrama de Gantt do Plano de Implementação
+
+O diagrama abaixo ilustra a programação temporal das tarefas, suas interdependências e o caminho crítico do projeto de otimização:
+
+```mermaid
+gantt
+    title Cronograma de Implementação da Otimização do Fluxo CNPJ
+    dateFormat  YYYY-MM-DD
+    axisFormat %d/%m
+    excludes weekends 2025-04-17 2025-04-18 2025-04-21 2025-05-01 2025-05-02 2025-06-19 2025-06-20
+    
+    %% Feriados brasileiros e pontos facultativos
+    section Dias Não Úteis
+    Ponto Facultativo (antes da Paixão)       :crit, active, holiday0a, 2025-04-17, 1d
+    Sexta-feira da Paixão                    :crit, active, holiday0, 2025-04-18, 1d
+    Tiradentes                               :crit, active, holiday1, 2025-04-21, 1d
+    Dia do Trabalho                          :crit, active, holiday2, 2025-05-01, 1d
+    Ponto Facultativo (após Dia do Trabalho) :crit, active, holiday2b, 2025-05-02, 1d
+    Corpus Christi                           :crit, active, holiday3, 2025-06-19, 1d
+    Ponto Facultativo (após Corpus Christi)  :crit, active, holiday3b, 2025-06-20, 1d
+    
+    section Fase 1: Otimizações Imediatas
+    Análise inicial e planejamento detalhado    :a1, 2025-04-14, 3d
+    Implementar downloads paralelos com asyncio  :a2, after a1, 4d
+    Adicionar descompactação em paralelo        :a3, after a1, 4d
+    Implementar cache básico de metadados       :a4, after a2 a3, 5d
+    Testes de performance da Fase 1             :a5, after a4, 2d
+    
+    section Fase 2: Migração para PySpark
+    Configurar ambiente Spark                   :b1, after a5, 3d
+    Preparar infraestrutura                     :b2, after b1, 2d
+    Adaptar scripts para PySpark                :b3, after b2, 8d
+    Implementar validação de dados com Spark    :b4, after b3, 5d
+    Testes integrados dos componentes Spark     :b5, after b4, 3d
+    
+    section Fase 3: Otimização de Fluxo
+    Implementar loop de processamento           :c1, after b5, 6d
+    Adicionar sistema de checkpoints            :c2, after c1, 4d
+    Otimizar armazenamento Parquet              :c3, after c1, 5d
+    Testes de carga do fluxo completo           :c4, after c2 c3, 3d
+    
+    section Fase 4: Refinamentos Finais
+    Implementar integração com DuckDB           :d1, after c4, 4d
+    Configurar monitoramento                    :d2, after c4, 3d
+    Configurar métricas de desempenho           :d3, after d2, 2d
+    Testes finais de desempenho                 :d4, after d1 d3, 3d
+    Documentação e treinamento                  :d5, after d4, 2d
+```
+
+O diagrama acima representa:
+
+- **Duração das tarefas**: Cada barra representa uma tarefa com sua duração estimada
+- **Dependências**: As tarefas conectadas mostram quais precisam ser concluídas antes de outras começarem
+- **Agrupamento**: As tarefas estão organizadas nas quatro fases do plano de implementação
+- **Caminho crítico**: A sequência de tarefas que determina a duração total do projeto
+
+Este cronograma prevê aproximadamente 8-10 semanas para a implementação completa, considerando as dependências entre tarefas e tempos realistas para desenvolvimento e testes.
 
 ## Otimizações de Processamento
 
