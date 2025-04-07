@@ -8,7 +8,11 @@ import logging
 import shutil
 from typing import List, Tuple
 from concurrent.futures import ThreadPoolExecutor
-from .config import config
+import sys
+
+# Importações locais do projeto
+from ..config import config
+from .colors import Colors
 import pandas as pd
 import time
 

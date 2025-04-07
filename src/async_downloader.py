@@ -16,10 +16,11 @@ from dotenv import load_dotenv
 from tqdm.asyncio import tqdm
 
 # Importações locais do projeto
-from .config import config, IGNORED_FILES # Importar config - Ajuste para relativo
-from .utils import DownloadCache # Importar cache
-import datetime # Para lidar com timestamps
-import time # Para time.strptime
+from .config import config
+from .utils import DownloadCache
+from .utils.colors import Colors
+import datetime
+import time
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -222,7 +223,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
 
         try:
             # 1. Obter metadados remotos
-            progress_bar.set_description(f"{filename[:20]} (verificando...)", refresh=True)
+            progress_bar.set_description(f"{Colors.CYAN}{filename[:20]} (verificando...){Colors.END}", refresh=True)
             remote_size, remote_last_modified = await get_remote_file_metadata(session, url)
 
             if remote_size is None:
@@ -240,11 +241,12 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                 if config.cache.enabled and download_cache.is_file_cached(filename, remote_size, remote_last_modified):
                      if local_size == remote_size:
                          logger.info(f"Arquivo {filename} já existe, atualizado e em cache. Pulando download.")
-                         progress_bar.set_description(f"{filename[:20]} (cache)", refresh=True)
+                         progress_bar.set_description(f"{Colors.GREEN}{filename[:20]} (cache){Colors.END}", refresh=True)
                          skip_download = True
                      else:
                          # Cache diz que está ok, mas tamanho local difere -> Baixar completo
                          logger.warning(f"Arquivo {filename} em cache, mas tamanho local difere. Baixando completo.")
+                         progress_bar.set_description(f"{Colors.YELLOW}{filename[:20]} (cache inválido){Colors.END}", refresh=True)
                          file_mode = 'wb'
                          initial_size = 0
                 # Sem cache ou cache desatualizado, verifica tamanho e data local
@@ -278,17 +280,21 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                           local_last_modified = int(os.path.getmtime(destination_path))
                           if local_last_modified >= remote_last_modified:
                               logger.info(f"Arquivo local {filename} completo e atualizado. Pulando download.")
+                              progress_bar.set_description(f"{Colors.GREEN}{filename[:20]} (local){Colors.END}", refresh=True)
                               skip_download = True
                           else:
                               logger.info(f"Arquivo local {filename} completo mas desatualizado. Baixando completo.")
+                              progress_bar.set_description(f"{Colors.YELLOW}{filename[:20]} (desatualizado){Colors.END}", refresh=True)
                               file_mode = 'wb'
                               initial_size = 0
                      else:
                           # Tamanho igual, sem data remota -> Assume OK, pula.
                           logger.info(f"Arquivo local {filename} completo (sem data remota). Pulando download.")
+                          progress_bar.set_description(f"{Colors.GREEN}{filename[:20]} (local){Colors.END}", refresh=True)
                           skip_download = True
                 else: # local_size > remote_size
                      logger.warning(f"Arquivo local {filename} maior que o remoto ({local_size} > {remote_size}). Baixando completo.")
+                     progress_bar.set_description(f"{Colors.YELLOW}{filename[:20]} (tamanho inválido){Colors.END}", refresh=True)
                      file_mode = 'wb'
                      initial_size = 0
             else:
@@ -310,7 +316,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
             progress_bar.reset()
             progress_bar.total = remote_size
             progress_bar.update(initial_size) # Começa do tamanho inicial (0 ou local_size)
-            progress_bar.set_description(f"{filename[:20]} ({'retomando' if attempt_resume else 'baixando'}...)", refresh=True)
+            progress_bar.set_description(f"{Colors.CYAN}{filename[:20]} ({'retomando' if attempt_resume else 'baixando'}...){Colors.END}", refresh=True)
 
             async with session.get(url, headers=resume_header, timeout=aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)) as response:
 
@@ -318,6 +324,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                  if attempt_resume:
                      if response.status == 206: # Partial Content - OK!
                          logger.info(f"Servidor aceitou retomar download para {filename}.")
+                         progress_bar.set_description(f"{Colors.CYAN}{filename[:20]} (retomando...){Colors.END}", refresh=True)
                          # file_mode já é 'ab', initial_size já foi considerado na barra
                      elif response.status == 200: # OK - Servidor ignorou Range, enviou tudo
                          logger.warning(f"Servidor ignorou Range para {filename}. Baixando arquivo completo novamente.")
@@ -326,7 +333,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                          progress_bar.reset() # Reseta barra
                          progress_bar.total = remote_size # Define total novamente
                          progress_bar.update(0) # Começa do 0
-                         progress_bar.set_description(f"{filename[:20]} (baixando...)", refresh=True)
+                         progress_bar.set_description(f"{Colors.YELLOW}{filename[:20]} (baixando completo*){Colors.END}", refresh=True)
                          # Continua para ler e escrever o conteúdo completo
                      else: # 416 ou outro erro ao tentar retomar
                          logger.error(f"Falha ao tentar retomar {filename} (Status: {response.status}). Baixando arquivo completo como fallback.")
@@ -336,7 +343,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                          progress_bar.reset()
                          progress_bar.total = remote_size
                          progress_bar.update(0)
-                         progress_bar.set_description(f"{filename[:20]} (baixando...)", refresh=True)
+                         progress_bar.set_description(f"{Colors.RED}{filename[:20]} (fallback download){Colors.END}", refresh=True)
                          # Precisamos refazer a requisição GET sem o header Range
                          # Fechar a resposta atual e refazer
                          response.release() # Libera conexão
@@ -354,7 +361,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
 
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
             logger.error(f"Erro ao processar {filename} ({url}): {e}")
-            progress_bar.set_description(f"{filename[:20]} (ERRO)", refresh=True)
+            progress_bar.set_description(f"{Colors.RED}{filename[:20]} (ERRO){Colors.END}", refresh=True)
             # Remove do cache em caso de erro
             if config.cache.enabled:
                 download_cache.remove_file_from_cache(filename)
@@ -364,7 +371,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
             return url, e
         except Exception as e:
             logger.error(f"Erro inesperado ao processar {filename} ({url}): {e}")
-            progress_bar.set_description(f"{filename[:20]} (ERRO Inesp.)", refresh=True)
+            progress_bar.set_description(f"{Colors.RED}{filename[:20]} (ERRO Inesp.){Colors.END}", refresh=True)
             if config.cache.enabled:
                 download_cache.remove_file_from_cache(filename)
             return url, e
@@ -500,8 +507,10 @@ async def main_example():
             logger.error(f"Erro ao baixar {file_or_url}: {error}")
 
 if __name__ == "__main__":
-    # Para rodar este exemplo diretamente: python src/async_downloader.py
-    # Nota: Em produção, chame download_multiple_files a partir do seu fluxo principal.
+    # Para testar este módulo diretamente, execute como um módulo
+    # a partir do diretório raiz do projeto: python -m src.async_downloader
+    # Nota: Em produção, importe e chame download_multiple_files a partir do seu fluxo principal (ex: main.py).
+    logger.info("Executando async_downloader como script de teste...")
     try:
         asyncio.run(main_example())
     except KeyboardInterrupt:
