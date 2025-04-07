@@ -2,6 +2,162 @@
 
 Este projeto automatiza o download, processamento e armazenamento dos dados públicos de CNPJ disponibilizados pela Receita Federal. Ele foi desenvolvido para ser eficiente, resiliente e fácil de usar.
 
+## Navegação
+
+<details>
+  <summary>🚀 Como Usar</summary>
+  
+  - [Como Usar](#-como-usar)
+  - [Pré-requisitos](#pré-requisitos)
+  - [Instalação](#instalação)
+  - [Execução](#execução)
+  - [Gerenciamento de Cache](#gerenciamento-de-cache)
+  - [O que o Script Faz](#-o-que-o-script-faz)
+</details>
+
+<details>
+  <summary>📋 Fluxo do Processo</summary>
+  
+  - [Fluxo do Processo](#-fluxo-do-processo)
+  - [Etapas do Fluxo Atual](#etapas-do-fluxo-atual)
+  - [Ferramentas Utilizadas Atualmente](#ferramentas-utilizadas-atualmente)
+</details>
+
+<details>
+  <summary>✨ Características</summary>
+  
+  - [Características](#-características)
+</details>
+
+<details>
+  <summary>📋 Sugestões de Otimização</summary>
+  
+  - [Sugestões de Otimização](#-sugestões-de-otimização)
+  - [1. Paralelização e Desempenho](#1-paralelização-e-desempenho)
+  - [2. Modernização das Ferramentas](#2-modernização-das-ferramentas)
+  - [3. Resiliência e Monitoramento](#3-resiliência-e-monitoramento)
+  - [4. Arquitetura Geral](#4-arquitetura-geral)
+</details>
+
+<details>
+  <summary>📊 Comparação e Implementação</summary>
+  
+  - [Comparação de Tecnologias](#-comparação-de-tecnologias)
+  - [Plano de Implementação Progressiva](#-plano-de-implementação-progressiva)
+  - [Tabela de Implementação das Branches](#tabela-de-implementação-das-branches)
+</details>
+
+<details>
+  <summary>📝 Monitoramento e Configuração</summary>
+  
+  - [Logs e Monitoramento](#-logs-e-monitoramento)
+  - [Configurações](#️-configurações)
+</details>
+
+<details>
+  <summary>⚡ Otimizações de Processamento</summary>
+  
+  - [Otimizações de Processamento](#otimizações-de-processamento)
+  - [Processamento sequencial de arquivos ZIP](#processamento-sequencial-de-arquivos-zip)
+  - [Sistema de Cache para Downloads](#sistema-de-cache-para-downloads)
+  - [Paralelização do Processamento de CSV](#paralelização-do-processamento-de-csv)
+  - [Tratamento Específico de Exceções](#tratamento-específico-de-exceções)
+  - [Verificações de Segurança](#verificações-de-segurança)
+  - [Limpeza de arquivos temporários](#limpeza-de-arquivos-temporários)
+</details>
+
+<details>
+  <summary>🤝 Contribuição e Licença</summary>
+  
+  - [Contribuindo](#-contribuindo)
+  - [Licença](#-licença)
+  - [Notas](#️-notas)
+</details>
+
+## 🚀 Como Usar
+
+### Pré-requisitos
+
+- Python 3.8 ou superior
+- Espaço em disco suficiente para os arquivos
+- Conexão com internet estável
+
+### Instalação
+
+1. **Clone o repositório**
+```bash
+git clone https://github.com/seu-usuario/cnpj.git
+cd cnpj
+```
+
+2. **Crie um ambiente virtual**
+```bash
+# Windows
+python -m venv venv
+venv\Scripts\activate
+
+# Linux/Mac
+python3 -m venv venv
+source venv/bin/activate
+```
+
+3. **Instale as dependências**
+```bash
+pip install -r requirements.txt
+```
+
+4. **Configure o ambiente**
+   - Copie o arquivo `.env.local.example` para `.env.local`
+   - Ajuste as configurações conforme necessário:
+```env
+# URL base dos dados da Receita Federal
+URL_ORIGIN=https://dados.rfb.gov.br/CNPJ/
+
+# Diretórios para download e processamento
+PATH_ZIP=./download/      # Arquivos ZIP baixados
+PATH_UNZIP=./unzip/      # Arquivos extraídos
+PATH_PARQUET=./parquet/  # Arquivos Parquet processados
+
+# Configurações do banco de dados
+FILE_DB_PARQUET=cnpj.duckdb
+PATH_REMOTE_PARQUET=//servidor/compartilhado/
+```
+
+### Execução
+
+```bash
+python main.py
+```
+
+### Gerenciamento de Cache
+
+```bash
+# Exibir informações sobre arquivos em cache
+python cache_manager.py cache-info
+
+# Limpar o cache de downloads
+python cache_manager.py clear-cache
+```
+
+## 📊 O que o Script Faz
+
+1. **Download dos Dados**
+   - Identifica os arquivos mais recentes
+   - Baixa em paralelo com retry automático
+   - Verifica integridade dos arquivos
+   - Mantém cache para evitar downloads desnecessários
+
+2. **Processamento**
+   - Verifica espaço em disco e conexão com a internet
+   - Extrai arquivos ZIP sequencialmente
+   - Processa dados CSV em paralelo com Dask
+   - Gera arquivos Parquet otimizados
+
+3. **Armazenamento**
+   - Cria banco de dados DuckDB
+   - Organiza dados em tabelas
+   - Copia para local remoto
+
 ## 📋 Fluxo do Processo
 
 O atual pipeline de processamento de dados de CNPJs segue um fluxo estruturado, mas com oportunidades de otimização:
@@ -132,6 +288,36 @@ flowchart TD
 - **Logging Detalhado**: Rastreamento completo das operações
 - **Configurável**: Fácil adaptação às necessidades específicas
 
+## 📝 Logs e Monitoramento
+
+- Logs são gerados em `logs/cnpj_process_YYYYMMDD_HHMMSS.log`
+- Dashboard Dask disponível em `http://localhost:8787`
+- Progresso de downloads exibido em tempo real
+- Logs detalhados de erros com tratamento específico por tipo de exceção
+
+## ⚙️ Configurações
+
+O arquivo `config.py` permite ajustar:
+
+- **Processamento**
+  - Número de workers Dask (`config.dask.n_workers`)
+  - Threads por worker
+  - Limite de memória
+
+- **Cache**
+  - Habilitar/desabilitar cache (`config.cache.enabled`)
+  - Diretório do cache (`config.cache.cache_dir`)
+  - Tempo de expiração do cache (`config.cache.max_age_days`)
+
+- **Arquivos**
+  - Encoding
+  - Separador
+  - Tipos de dados
+
+- **Banco de Dados**
+  - Número de threads
+  - Configurações de compressão
+
 ## 📋 Sugestões de Otimização
 
 O fluxo de processamento pode ser aprimorado conforme o diagrama e sugestões a seguir:
@@ -227,13 +413,28 @@ flowchart TD
 - Redução de 60-80% no tempo de download total
 - Funciona em conjunto com o cache de metadados
 
+```bash
+# Criar branch para implementação de downloads assíncronos
+git checkout -b feature/async-downloads master
+```
+
 #### Descompactação em Paralelo
 - Usar `concurrent.futures` para extrair múltiplos arquivos simultaneamente
 - Redução significativa no tempo de extração
 
+```bash
+# Criar branch para implementação de descompactação paralela
+git checkout -b feature/parallel-extraction master
+```
+
 #### Cache de Metadados
 - Implementar cache de metadados (SQLite ou arquivo JSON)
 - Evitar reprocessamento desnecessário, processando apenas o que mudou
+
+```bash
+# Criar branch para implementação do cache de metadados
+git checkout -b feature/metadata-cache master
+```
 
 ### 2. Modernização das Ferramentas
 
@@ -243,10 +444,20 @@ flowchart TD
 - Ecossistema mais maduro e ampla comunidade
 - Integração nativa com diversas ferramentas de big data
 
+```bash
+# Criar branch para migração para PySpark
+git checkout -b feature/pyspark-migration master
+```
+
 #### Formato de Armazenamento Otimizado
 - Parquet otimizado via PySpark com compressão e estatísticas avançadas
 - Melhor compressão dos dados
 - Leitura mais rápida com estatísticas de coluna
+
+```bash
+# Criar branch para implementação de armazenamento otimizado
+git checkout -b feature/optimized-storage master
+```
 
 #### Validação de Dados Integrada
 - Utilizar as ferramentas nativas do Spark para validação
@@ -254,19 +465,39 @@ flowchart TD
 - Regras de qualidade via Spark SQL
 - Tratamento integrado de dados inválidos
 
+```bash
+# Criar branch para implementação de validação de dados integrada
+git checkout -b feature/integrated-validation master
+```
+
 ### 3. Resiliência e Monitoramento
 
 #### Checkpoints de Recuperação
 - Utilizar o sistema de checkpoints nativo do Spark
 - Capacidade de retomar de falhas sem reprocessamento completo
 
+```bash
+# Criar branch para implementação de checkpoints de recuperação
+git checkout -b feature/recovery-checkpoints master
+```
+
 #### Sistema de Monitoramento
 - Utilizar a interface web do Spark e integrá-la com ferramentas de observabilidade
 - Prometheus/Grafana para visualização
 
+```bash
+# Criar branch para implementação do sistema de monitoramento
+git checkout -b feature/monitoring-system master
+```
+
 #### Tratamento Avançado de Erros
 - Aproveitar o mecanismo de validação do Spark para identificar e corrigir erros
 - Correção iterativa durante o processamento
+
+```bash
+# Criar branch para implementação de tratamento avançado de erros
+git checkout -b feature/advanced-error-handling master
+```
 
 ### 4. Arquitetura Geral
 
@@ -274,9 +505,19 @@ flowchart TD
 - Arquitetura em etapas independentes
 - Facilidade de manutenção e possibilidade de executar apenas partes específicas
 
+```bash
+# Criar branch para implementação de pipeline modular
+git checkout -b feature/modular-pipeline master
+```
+
 #### Integração Direta com DuckDB
 - Utilizar conectores entre Spark e DuckDB para criação de views diretamente
 - Processo mais direto e eficiente de disponibilização dos dados para análise
+
+```bash
+# Criar branch para implementação de integração com DuckDB
+git checkout -b feature/duckdb-integration master
+```
 
 ## 📊 Comparação de Tecnologias
 
@@ -314,143 +555,21 @@ Para implementar estas melhorias de forma gradual e segura:
 - Configurar monitoramento e métricas
 - Testes de desempenho e ajustes finais
 
-## 🚀 Como Usar
+### Tabela de Implementação das Branches
 
-### Pré-requisitos
-
-- Python 3.8 ou superior
-- Espaço em disco suficiente para os arquivos
-- Conexão com internet estável
-
-### Instalação
-
-1. **Clone o repositório**
-```bash
-git clone https://github.com/seu-usuario/cnpj.git
-cd cnpj
-```
-
-2. **Crie um ambiente virtual**
-```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
-
-# Linux/Mac
-python3 -m venv venv
-source venv/bin/activate
-```
-
-3. **Instale as dependências**
-```bash
-pip install -r requirements.txt
-```
-
-4. **Configure o ambiente**
-   - Copie o arquivo `.env.local.example` para `.env.local`
-   - Ajuste as configurações conforme necessário:
-```env
-# URL base dos dados da Receita Federal
-URL_ORIGIN=https://dados.rfb.gov.br/CNPJ/
-
-# Diretórios para download e processamento
-PATH_ZIP=./download/      # Arquivos ZIP baixados
-PATH_UNZIP=./unzip/      # Arquivos extraídos
-PATH_PARQUET=./parquet/  # Arquivos Parquet processados
-
-# Configurações do banco de dados
-FILE_DB_PARQUET=cnpj.duckdb
-PATH_REMOTE_PARQUET=//servidor/compartilhado/
-```
-
-### Execução
-
-```bash
-python main.py
-```
-
-### Gerenciamento de Cache
-
-```bash
-# Exibir informações sobre arquivos em cache
-python cache_manager.py cache-info
-
-# Limpar o cache de downloads
-python cache_manager.py clear-cache
-```
-
-## 📊 O que o Script Faz
-
-1. **Download dos Dados**
-   - Identifica os arquivos mais recentes
-   - Baixa em paralelo com retry automático
-   - Verifica integridade dos arquivos
-   - Mantém cache para evitar downloads desnecessários
-
-2. **Processamento**
-   - Verifica espaço em disco e conexão com a internet
-   - Extrai arquivos ZIP sequencialmente
-   - Processa dados CSV em paralelo com Dask
-   - Gera arquivos Parquet otimizados
-
-3. **Armazenamento**
-   - Cria banco de dados DuckDB
-   - Organiza dados em tabelas
-   - Copia para local remoto
-
-## 📝 Logs e Monitoramento
-
-- Logs são gerados em `logs/cnpj_process_YYYYMMDD_HHMMSS.log`
-- Dashboard Dask disponível em `http://localhost:8787`
-- Progresso de downloads exibido em tempo real
-- Logs detalhados de erros com tratamento específico por tipo de exceção
-
-## ⚙️ Configurações
-
-O arquivo `config.py` permite ajustar:
-
-- **Processamento**
-  - Número de workers Dask (`config.dask.n_workers`)
-  - Threads por worker
-  - Limite de memória
-
-- **Cache**
-  - Habilitar/desabilitar cache (`config.cache.enabled`)
-  - Diretório do cache (`config.cache.cache_dir`)
-  - Tempo de expiração do cache (`config.cache.max_age_days`)
-
-- **Arquivos**
-  - Encoding
-  - Separador
-  - Tipos de dados
-
-- **Banco de Dados**
-  - Número de threads
-  - Configurações de compressão
-
-## 🤝 Contribuindo
-
-Contribuições são bem-vindas! Por favor:
-
-1. Faça um fork do projeto
-2. Crie uma branch para sua feature
-3. Faça commit das mudanças
-4. Push para a branch
-5. Abra um Pull Request
-
-## 📄 Licença
-
-Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalhes.
-
-## ⚠️ Notas
-
-- O processamento pode levar algumas horas dependendo do hardware
-- Requisitos mínimos de espaço em disco:
-  - Empresas: 5GB
-  - Estabelecimentos: 8GB
-  - Simples Nacional: 3GB
-- Em caso de falhas, o sistema tentará novamente automaticamente
-- Verificação de espaço em disco é realizada antes da descompactação
+| Fase | Nome da Branch | Descrição | Status | Dependências |
+|------|---------------|-----------|--------|--------------|
+| 1 | feature/async-downloads | Implementação de downloads assíncronos | ⏳ | - |
+| 1 | feature/parallel-extraction | Descompactação em paralelo de arquivos | ⏳ | - |
+| 1 | feature/metadata-cache | Sistema de cache de metadados | ⏳ | - |
+| 2 | feature/pyspark-migration | Migração do processamento para PySpark | ⏳ | Fase 1 |
+| 2 | feature/optimized-storage | Otimização do formato de armazenamento | ⏳ | feature/pyspark-migration |
+| 2 | feature/integrated-validation | Validação integrada de dados com Spark | ⏳ | feature/pyspark-migration |
+| 3 | feature/recovery-checkpoints | Sistema de checkpoints para recuperação | ⏳ | feature/pyspark-migration |
+| 3 | feature/monitoring-system | Implementação de sistema de monitoramento | ⏳ | feature/pyspark-migration |
+| 3 | feature/advanced-error-handling | Tratamento avançado de erros | ⏳ | feature/pyspark-migration |
+| 4 | feature/modular-pipeline | Implementação de pipeline modular | ⏳ | Fase 3 |
+| 4 | feature/duckdb-integration | Integração direta com DuckDB | ⏳ | Fase 3 |
 
 ## Otimizações de Processamento
 
@@ -502,3 +621,27 @@ Essa abordagem tem as seguintes vantagens:
 
 Todos os arquivos temporários descompactados são excluídos após o processamento, mesmo em caso de erro,
 garantindo que não fiquem arquivos residuais no sistema.
+
+## 🤝 Contribuindo
+
+Contribuições são bem-vindas! Por favor:
+
+1. Faça um fork do projeto
+2. Crie uma branch para sua feature
+3. Faça commit das mudanças
+4. Push para a branch
+5. Abra um Pull Request
+
+## 📄 Licença
+
+Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalhes.
+
+## ⚠️ Notas
+
+- O processamento pode levar algumas horas dependendo do hardware
+- Requisitos mínimos de espaço em disco:
+  - Empresas: 5GB
+  - Estabelecimentos: 8GB
+  - Simples Nacional: 3GB
+- Em caso de falhas, o sistema tentará novamente automaticamente
+- Verificação de espaço em disco é realizada antes da descompactação
