@@ -6,13 +6,14 @@ import requests
 from bs4 import BeautifulSoup
 from dask.distributed import Client, LocalCluster
 from dotenv import load_dotenv
-from config import config, IGNORED_FILES
-from src.utils import check_basic_folders
+from src.config import config, IGNORED_FILES
+from src.utils import check_basic_folders, check_internet_connection
 from src.process.empresa import process_empresa
 from src.process.estabelecimento import process_estabelecimento
 from src.process.simples import process_simples
 from src.process.socio import process_socio
 from src.database import create_duckdb_file
+from src.download import download_files_parallel
 
 # Cores para o console
 class Colors:

@@ -2,7 +2,7 @@ import datetime
 import logging
 import dask.dataframe as dd
 import pandas as pd
-from config import config
+from .config import config
 from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size, check_internet_connection
 from ..utils import process_csv_files_parallel, process_csv_to_df, verify_csv_integrity
 from ..download import download_files_parallel

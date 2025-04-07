@@ -3,7 +3,7 @@ import os
 import shutil
 import logging
 import duckdb
-from config import config
+from .config import config
 
 logger = logging.getLogger(__name__)
 

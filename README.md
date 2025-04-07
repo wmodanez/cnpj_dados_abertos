@@ -134,10 +134,10 @@ python main.py
 
 ```bash
 # Exibir informações sobre arquivos em cache
-python cache_manager.py cache-info
+python -m src.cache_manager cache-info
 
 # Limpar o cache de downloads
-python cache_manager.py clear-cache
+python -m src.cache_manager clear-cache
 ```
 
 ## 📊 O que o Script Faz

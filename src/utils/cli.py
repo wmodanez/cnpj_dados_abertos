@@ -4,7 +4,7 @@ Utilitários de linha de comando para o projeto.
 import os
 import argparse
 import logging
-from config import config
+from .config import config
 from .cache import DownloadCache
 
 logger = logging.getLogger(__name__)

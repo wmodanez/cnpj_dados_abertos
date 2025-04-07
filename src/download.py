@@ -7,7 +7,7 @@ import pycurl
 import requests
 from typing import Tuple, List, Dict
 from concurrent.futures import ThreadPoolExecutor
-from config import config, IGNORED_FILES
+from .config import config, IGNORED_FILES
 from .utils.colors import Colors
 from .utils import check_internet_connection, DownloadCache
 
