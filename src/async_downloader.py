@@ -1,18 +1,21 @@
 import asyncio
-import aiohttp
-import aiofiles
 import os
 import logging
+import re
+import datetime
+import time
 from typing import List, Tuple
-from urllib.parse import urljoin # Para construir URLs completas
-import re # Para expressões regulares (identificar AAAA-MM)
+from urllib.parse import urljoin
 
-import requests # Para buscar a página de listagem inicial
-from bs4 import BeautifulSoup # Para parsear HTML
-from dotenv import load_dotenv # Para carregar variáveis de ambiente
-from tqdm.asyncio import tqdm # Importar tqdm assíncrono
+# Bibliotecas de terceiros
+import aiofiles
+import aiohttp
+import requests
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from tqdm.asyncio import tqdm
 
-# Importar do projeto
+# Importações locais do projeto
 from config import config, IGNORED_FILES # Importar config
 from utils import DownloadCache # Importar cache
 import datetime # Para lidar com timestamps
@@ -23,7 +26,7 @@ load_dotenv()
 
 # Instanciar o cache
 # TODO: Considerar injetar a instância ao invés de criar globalmente, se necessário
-download_cache = DownloadCache(config.cache.cache_path)
+download_cache = DownloadCache(config.cache.cache_dir)
 
 # Configuração básica de logging (pode ser ajustada conforme necessário)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -66,6 +69,19 @@ def _find_links(soup: BeautifulSoup, base_url: str, ends_with: str | None = None
                 found_urls.append(full_url)
 
     return found_urls
+
+def _filter_urls_by_type(urls: List[str], tipos: Tuple[str, ...]) -> Tuple[List[str], int]:
+    """Filtra uma lista de URLs, mantendo apenas aquelas cujo nome de arquivo começa com um dos tipos fornecidos."""
+    filtered_urls = []
+    ignored_count = 0
+    for url in urls:
+        filename = url.split('/')[-1]
+        if any(filename.lower().startswith(tipo.lower()) for tipo in tipos):
+            filtered_urls.append(url)
+        else:
+            logger.debug(f"Ignorando URL (tipo não desejado): {filename}")
+            ignored_count += 1
+    return filtered_urls, ignored_count
 
 def get_latest_month_zip_urls(base_url: str) -> List[str]:
     """Busca URLs de arquivos .zip na pasta AAAA-MM mais recente.
@@ -117,7 +133,7 @@ def get_latest_month_zip_urls(base_url: str) -> List[str]:
         logger.warning(f"Nenhum arquivo .zip encontrado em {latest_month_folder_url}")
 
     logger.info(f"Total de {len(zip_urls)} URLs .zip encontradas na pasta {latest_folder_name}. ")
-    return zip_urls
+    return zip_urls # Retorna todas as URLs encontradas
 
 async def get_remote_file_metadata(session: aiohttp.ClientSession, url: str) -> Tuple[int | None, int | None]:
     """Obtém tamanho e timestamp de modificação de um arquivo remoto via HEAD request."""
@@ -324,24 +340,38 @@ async def main_example():
         return
 
     # Buscar as URLs dos arquivos .zip
-    zip_urls = get_latest_month_zip_urls(base_url)
-    print(zip_urls)
+    all_zip_urls = get_latest_month_zip_urls(base_url)
+    # print(all_zip_urls) # Debug: Mostrar todas as URLs encontradas
 
-    if not zip_urls:
+    if not all_zip_urls:
         logger.warning("Nenhuma URL .zip encontrada na origem. Verifique a URL_ORIGIN ou a estrutura da página.")
         return
 
-    # Limitar a quantidade para teste inicial (opcional)
-    zip_urls = zip_urls[:5] # Descomente para testar com poucos arquivos
-    logger.info(f"Iniciando download de {len(zip_urls)} arquivos para {download_folder}...")
+    # Filtrar as URLs pelos tipos desejados
+    tipos_desejados = ("Empresas", "Estabelecimentos", "Simples", "Socios")
+    zip_urls_to_download, ignored_count = _filter_urls_by_type(all_zip_urls, tipos_desejados)
+
+    if not zip_urls_to_download:
+        logger.warning(f"Nenhuma URL relevante para download encontrada após filtrar por tipos: {tipos_desejados}")
+        return
+
+
+    # Limitar a quantidade para teste inicial (opcional) - Aplicar após filtrar
+    # zip_urls_to_download = zip_urls_to_download[:2]
+    logger.info(f"Iniciando download de {len(zip_urls_to_download)} arquivos relevantes para {download_folder}...")
 
     # Definir o número máximo de downloads concorrentes
     max_concurrent_downloads = 5 # Ajuste conforme necessário
 
-    downloaded, failed = await download_multiple_files(zip_urls, download_folder, max_concurrent=max_concurrent_downloads)
+    downloaded, failed = await download_multiple_files(zip_urls_to_download, download_folder, max_concurrent=max_concurrent_downloads)
 
     print("\n--- Resumo Final ---")
     print(f"Arquivos baixados com sucesso: {len(downloaded)}")
+
+    if failed:
+        logger.warning(f"Total de downloads falhados: {len(failed)}")
+        for file_or_url, error in failed:
+            logger.error(f"Erro ao baixar {file_or_url}: {error}")
 
 if __name__ == "__main__":
     # Para rodar este exemplo diretamente: python src/async_downloader.py
