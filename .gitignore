@@ -49,3 +49,4 @@ parquet/
 dados-abertos/
 dados-abertos-zip/
 src/Entity/
+/experiments/
