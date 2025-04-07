@@ -1,6 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import os
+from typing import Tuple
 
 @dataclass
 class CacheConfig:
@@ -19,7 +20,10 @@ class Config:
     path_result: str = os.path.join(os.getcwd(), 'data', 'result')
     path_temp: str = os.path.join(os.getcwd(), 'data', 'temp')
     
-    cache: CacheConfig = CacheConfig()
-    dask: DaskConfig = DaskConfig()
+    cache: CacheConfig = field(default_factory=CacheConfig)
+    dask: DaskConfig = field(default_factory=DaskConfig)
+    
+# Lista de arquivos a serem ignorados no download (ex: ['layout.pdf', ...])
+IGNORED_FILES: Tuple[str, ...] = ()
     
 config = Config() 
