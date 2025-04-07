@@ -559,7 +559,7 @@ Para implementar estas melhorias de forma gradual e segura:
 
 | Fase | Nome da Branch | Descrição | Status | Dependências |
 |------|---------------|-----------|--------|--------------|
-| 1 | feature/async-downloads | Implementação de downloads assíncronos | ⏳ | - |
+| 1 | feature/async-downloads | Implementação de downloads assíncronos | 🚧 | - |
 | 1 | feature/parallel-extraction | Descompactação em paralelo de arquivos | ⏳ | - |
 | 1 | feature/metadata-cache | Sistema de cache de metadados | ⏳ | - |
 | 2 | feature/pyspark-migration | Migração do processamento para PySpark | ⏳ | Fase 1 |
