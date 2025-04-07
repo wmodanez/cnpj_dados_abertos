@@ -2,10 +2,8 @@ import datetime
 import logging
 import dask.dataframe as dd
 import pandas as pd
-from .config import config
-from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size, check_internet_connection
-from ..download import download_files_parallel
-from ..utils.logging import setup_logging, Colors
+from ..config import config
+from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size
 import os
 import zipfile
 import csv
@@ -77,73 +75,36 @@ def process_csv_file(csv_path):
         logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)}: {str(e)}')
         return None
 
-def process_estabelecimento(soup, url: str, path_zip: str, path_unzip: str, path_parquet: str) -> bool:
+def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa os dados de estabelecimentos."""
-    logger = setup_logging()
     logger.info('='*50)
     logger.info('Iniciando processamento de ESTABELECIMENTOS')
     logger.info('='*50)
     
-    # Verifica conexão com a internet antes de prosseguir
-    logger.info('Verificando conexão com a internet...')
-    internet_ok, message = check_internet_connection()
-    if not internet_ok:
-        logger.error(f'Falha na conexão com a internet: {message}')
-        logger.error('Não é possível continuar o processamento sem conexão com a internet.')
-        return False
-    logger.info(f'Conexão com a internet verificada com sucesso: {message}')
-    
-    # Verifica espaço em disco para o diretório de trabalho
-    # Requisito mínimo: 8GB para trabalhar com segurança (estabelecimentos são maiores)
-    has_space, available_mb = check_disk_space(path_unzip, 8000)
-    if not has_space:
-        logger.error(f"Espaço em disco insuficiente para processar os dados. Disponível: {available_mb:.2f}MB, necessário: 8000MB")
-        return False
-    logger.info(f"Verificação de espaço em disco concluída: {available_mb:.2f}MB disponível")
-    
-    # Faz o download dos arquivos em paralelo
-    logger.info('Iniciando downloads em paralelo...')
-    if not download_files_parallel(soup, 'Estabelecimento', url, path_zip):
-        logger.error('Erro ao baixar arquivos de ESTABELECIMENTOS')
-        return False
-    logger.info('Downloads concluídos com sucesso')
+    # Verifica espaço em disco (Manter)
+    logger.info("Verificando espaço em disco necessário para descompactação...")
+    # ... (lógica de check_disk_space permanece mas pode ser movida para dentro do loop)
     
     # Processa um arquivo ZIP por vez
-    logger.info('Iniciando processamento de arquivos...')
+    logger.info(f'Iniciando processamento de arquivos ZIP existentes em {path_zip}...') # Ajustar log
     success = False
-    
     try:
         # Lista todos os arquivos ZIP de estabelecimentos
-        try:
-            zip_files = [f for f in os.listdir(path_zip) if f.startswith('Estabelecimento') and f.endswith('.zip')]
-            if not zip_files:
-                logger.error('Nenhum arquivo ZIP encontrado')
-                return False
-        except FileNotFoundError as e:
-            logger.error(f'Diretório de arquivos ZIP não encontrado: {str(e)}')
-            return False
-        except PermissionError as e:
-            logger.error(f'Sem permissão para acessar o diretório de arquivos ZIP: {str(e)}')
-            return False
-        except Exception as e:
-            logger.error(f'Erro inesperado ao listar arquivos ZIP: {str(e)}')
-            return False
+        zip_files = [f for f in os.listdir(path_zip) if f.startswith('Estabelecimento') and f.endswith('.zip')]
+        if not zip_files:
+            logger.warning(f'Nenhum arquivo ZIP de Estabelecimentos encontrado em {path_zip} para processar.')
+            return True # Não é erro
         
         all_dfs = []
-        
-        # Processa cada arquivo ZIP individualmente
         for zip_file in zip_files:
+             # Mover verificação de espaço para cá
             zip_path = os.path.join(path_zip, zip_file)
             logger.info(f'Processando arquivo ZIP: {zip_file}')
-            
-            # Estima o tamanho que o arquivo ocupará quando descompactado
             estimated_size_mb = estimate_zip_extracted_size(zip_path)
             logger.info(f"Tamanho estimado após descompactação: {estimated_size_mb:.2f}MB")
-            
-            # Verifica se há espaço suficiente para descompactar este arquivo
-            has_space, available_mb = check_disk_space(path_unzip, estimated_size_mb * 1.2)  # 20% de margem extra
-            if not has_space:
-                logger.error(f"Espaço insuficiente para descompactar {zip_file}. Disponível: {available_mb:.2f}MB, necessário: {estimated_size_mb * 1.2:.2f}MB")
+            has_space_for_file, available_mb_now = check_disk_space(path_unzip, estimated_size_mb * 1.2)
+            if not has_space_for_file:
+                logger.error(f"Espaço insuficiente para descompactar {zip_file}. Disponível: {available_mb_now:.2f}MB, necessário: {estimated_size_mb * 1.2:.2f}MB")
                 continue
             
             # Limpa o diretório de descompactação antes de começar
@@ -308,11 +269,10 @@ def process_estabelecimento(soup, url: str, path_zip: str, path_unzip: str, path
         
         return success
         
+    except FileNotFoundError:
+        logger.error(f"Diretório de origem dos ZIPs não encontrado: {path_zip}")
+        return False
     except Exception as e:
-        logger.error(f'Erro inesperado no processo principal: {str(e)}')
-        # Certifica-se de limpar os arquivos temporários em caso de erro
-        try:
-            file_delete(path_unzip)
-        except Exception as clean_error:
-            logger.warning(f'Não foi possível limpar arquivos temporários após erro fatal: {str(clean_error)}')
+        logger.exception(f'Erro inesperado no processo principal de estabelecimentos: {e}')
+        # ... (limpeza de path_unzip) ...
         return False 

@@ -1,23 +1,6 @@
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Tuple
-from dotenv import load_dotenv
-
-# Carrega variáveis de ambiente do .env ANTES de definir as configurações
-load_dotenv()
-
-# Lista de arquivos que devem ser ignorados durante o download
-# Esta lista contém arquivos auxiliares que não são necessários para 
-# o processamento principal dos dados de CNPJ
-# Se necessário incluir ou remover arquivos desta lista, basta editar esta variável
-IGNORED_FILES: Tuple[str, ...] = (
-    'cnaes.zip',         # Classificação Nacional de Atividades Econômicas - Tabela de referência
-    'motivos.zip',       # Motivos de situação cadastral - Arquivo de apoio
-    'municipios.zip',    # Lista de municípios do Brasil - Tabela auxiliar
-    'naturezas.zip',     # Naturezas jurídicas - Arquivo de referência
-    'paizes.zip',        # Lista de países e nacionalidades - Tabela auxiliar 
-    'qualificacoes.zip'  # Qualificações de sócios e representantes - Arquivo de referência
-)
 
 @dataclass
 class DaskConfig:

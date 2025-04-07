@@ -36,13 +36,13 @@ load_dotenv()
 # TODO: Considerar injetar a instância ao invés de criar globalmente, se necessário
 download_cache = DownloadCache(config.cache.cache_path)
 
-# Configuração básica de logging (pode ser ajustada conforme necessário)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler(rich_tracebacks=True)]
-)
+# Remover configuração de logging daqui - será feita em main.py
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format="%(message)s",
+#     datefmt="[%X]",
+#     handlers=[RichHandler(rich_tracebacks=True)]
+# )
 logger = logging.getLogger(__name__)
 
 def _fetch_and_parse(url: str) -> BeautifulSoup | None:
@@ -499,59 +499,9 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
 
     return downloaded_files, failed_downloads
 
-# Exemplo de uso (agora usando .env)
-async def main_example():
-    # Obter configurações do .env
-    base_url = os.getenv('URL_ORIGIN')
-    download_folder = os.getenv('PATH_ZIP')
-
-    if not base_url:
-        logger.error("Variável de ambiente URL_ORIGIN não definida no arquivo .env")
-        return
-    if not download_folder:
-        logger.error("Variável de ambiente PATH_ZIP não definida no arquivo .env")
-        return
-
-    # Buscar as URLs dos arquivos .zip
-    all_zip_urls = get_latest_month_zip_urls(base_url)
-    # print(all_zip_urls) # Debug: Mostrar todas as URLs encontradas
-
-    if not all_zip_urls:
-        logger.warning("Nenhuma URL .zip encontrada na origem. Verifique a URL_ORIGIN ou a estrutura da página.")
-        return
-
-    # Filtrar as URLs pelos tipos desejados
-    tipos_desejados = ("Empresas", "Estabelecimentos", "Simples", "Socios")
-    zip_urls_to_download, ignored_count = _filter_urls_by_type(all_zip_urls, tipos_desejados)
-
-    if not zip_urls_to_download:
-        logger.warning(f"Nenhuma URL relevante para download encontrada após filtrar por tipos: {tipos_desejados}")
-        return
-
-
-    # Limitar a quantidade para teste inicial (opcional) - Aplicar após filtrar
-    # zip_urls_to_download = zip_urls_to_download[:2]
-    logger.info(f"Iniciando download de {len(zip_urls_to_download)} arquivos relevantes para {download_folder}...")
-
-    # Definir o número máximo de downloads concorrentes
-    max_concurrent_downloads = 5 # Ajuste conforme necessário
-
-    downloaded, failed = await download_multiple_files(zip_urls_to_download, download_folder, max_concurrent=max_concurrent_downloads)
-
-    print("\n--- Resumo Final ---")
-    print(f"Arquivos baixados com sucesso: {len(downloaded)}")
-
-    if failed:
-        logger.warning(f"Total de downloads falhados: {len(failed)}")
-        for file_or_url, error in failed:
-            logger.error(f"Erro ao baixar {file_or_url}: {error}")
-
-if __name__ == "__main__":
-    # Para testar este módulo diretamente, execute como um módulo
-    # a partir do diretório raiz do projeto: python -m src.async_downloader
-    # Nota: Em produção, importe e chame download_multiple_files a partir do seu fluxo principal (ex: main.py).
-    logger.info("Executando async_downloader como script de teste...")
-    try:
-        asyncio.run(main_example())
-    except KeyboardInterrupt:
-        logger.info("Download interrompido pelo usuário.") 
+# Remover função de exemplo e bloco de execução direta
+# async def main_example():
+#     ...
+#
+# if __name__ == "__main__":
+#     ... 
