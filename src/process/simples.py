@@ -32,9 +32,13 @@ def create_parquet(df, table_name, path_parquet):
     
     os.makedirs(output_dir, exist_ok=True)
     
+    # Log das colunas antes de salvar
+    logger.info(f"Colunas do DataFrame '{table_name}' antes de salvar em Parquet: {list(df.columns)}")
+    
     # Configura o nome dos arquivos parquet com prefixo da tabela
     df.to_parquet(
         output_dir,
+        engine='pyarrow',  # Especifica o engine
         write_index=False,
         name_function=lambda i: create_parquet_filename(table_name, i)
     )
@@ -53,7 +57,7 @@ def process_csv_file(csv_path):
     if not verify_csv_integrity(csv_path):
         return None
     
-    # Define os tipos de dados para as colunas
+    # Define os tipos de dados e os nomes originais das colunas
     dtype_dict = {
         'cnpj_basico': 'object',
         'opcao_pelo_simples': 'object',
@@ -63,9 +67,11 @@ def process_csv_file(csv_path):
         'data_opcao_pelo_mei': 'object',
         'data_exclusao_do_mei': 'object'
     }
+    original_column_names = list(dtype_dict.keys())
     
     try:
-        df = process_csv_to_df(csv_path, dtype=dtype_dict)
+        # Passa os nomes das colunas explicitamente
+        df = process_csv_to_df(csv_path, dtype=dtype_dict, column_names=original_column_names)
         return df
     except Exception as e:
         logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)}: {str(e)}')
@@ -192,15 +198,15 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 
                 dd_simples = dd.concat(all_dfs)
                 
-                # Renomeia as colunas
+                # Renomeia as colunas usando os nomes originais corretos como chave
                 dd_simples = dd_simples.rename(columns={
-                    'cnpj_basico': 'cnpj',
-                    'opcao_simples': 'opcao_simples',
-                    'data_opcao_simples': 'data_opcao_simples',
-                    'data_exclusao_simples': 'data_exclusao_simples',
-                    'opcao_mei': 'opcao_mei',
-                    'data_opcao_mei': 'data_opcao_mei',
-                    'data_exclusao_mei': 'data_exclusao_mei'
+                    'cnpj_basico': 'cnpj', # Chave original do CSV
+                    'opcao_pelo_simples': 'opcao_simples', # Chave original do CSV
+                    'data_opcao_pelo_simples': 'data_opcao_simples', # Chave original do CSV
+                    'data_exclusao_do_simples': 'data_exclusao_simples', # Chave original do CSV
+                    'opcao_pelo_mei': 'opcao_mei', # Chave original do CSV
+                    'data_opcao_pelo_mei': 'data_opcao_mei', # Chave original do CSV
+                    'data_exclusao_do_mei': 'data_exclusao_mei' # Chave original do CSV
                 })
                 
                 # Converte para parquet

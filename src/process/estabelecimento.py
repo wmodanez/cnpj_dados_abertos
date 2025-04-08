@@ -32,9 +32,13 @@ def create_parquet(df, table_name, path_parquet):
     
     os.makedirs(output_dir, exist_ok=True)
     
+    # Log das colunas antes de salvar
+    logger.info(f"Colunas do DataFrame '{table_name}' antes de salvar em Parquet: {list(df.columns)}")
+    
     # Configura o nome dos arquivos parquet com prefixo da tabela
     df.to_parquet(
         output_dir,
+        engine='pyarrow',  # Especifica o engine
         write_index=False,
         name_function=lambda i: create_parquet_filename(table_name, i)
     )
@@ -53,12 +57,12 @@ def process_csv_file(csv_path):
     if not verify_csv_integrity(csv_path):
         return None
     
-    # Define os tipos de dados para as colunas
+    # Define os tipos de dados e os nomes originais das colunas
     dtype_dict = {
         'cnpj_basico': 'object',
         'cnpj_ordem': 'object',
         'cnpj_dv': 'object',
-        'matriz_filial': 'object',
+        'identificador_matriz_filial': 'object',
         'nome_fantasia': 'object',
         'situacao_cadastral': 'object',
         'data_situacao_cadastral': 'object',
@@ -86,9 +90,11 @@ def process_csv_file(csv_path):
         'situacao_especial': 'object',
         'data_situacao_especial': 'object'
     }
+    original_column_names = list(dtype_dict.keys())
     
     try:
-        df = process_csv_to_df(csv_path, dtype=dtype_dict)
+        # Passa os nomes das colunas explicitamente
+        df = process_csv_to_df(csv_path, dtype=dtype_dict, column_names=original_column_names)
         return df
     except Exception as e:
         logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)}: {str(e)}')
@@ -215,38 +221,38 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str) -
                 
                 dd_estabelecimento = dd.concat(all_dfs)
                 
-                # Renomeia as colunas
+                # Renomeia as colunas usando os nomes originais corretos como chave
                 dd_estabelecimento = dd_estabelecimento.rename(columns={
-                    'cnpj_basico': 'cnpj',
-                    'cnpj_ordem': 'ordem',
-                    'cnpj_dv': 'dv',
-                    'identificador_matriz_filial': 'matriz_filial',
-                    'nome_fantasia': 'nome_fantasia',
-                    'situacao_cadastral': 'situacao_cadastral',
-                    'data_situacao_cadastral': 'data_situacao_cadastral',
-                    'motivo_situacao_cadastral': 'motivo_situacao_cadastral',
-                    'nome_cidade_exterior': 'cidade_exterior',
-                    'pais': 'pais',
-                    'data_inicio_atividade': 'data_inicio_atividade',
-                    'cnae_fiscal_principal': 'cnae_principal',
-                    'cnae_fiscal_secundaria': 'cnae_secundaria',
-                    'tipo_logradouro': 'tipo_logradouro',
-                    'logradouro': 'logradouro',
-                    'numero': 'numero',
-                    'complemento': 'complemento',
-                    'bairro': 'bairro',
-                    'cep': 'cep',
-                    'uf': 'uf',
-                    'municipio': 'municipio',
-                    'ddd_1': 'ddd_1',
-                    'telefone_1': 'telefone_1',
-                    'ddd_2': 'ddd_2',
-                    'telefone_2': 'telefone_2',
-                    'ddd_fax': 'ddd_fax',
-                    'fax': 'fax',
-                    'correio_eletronico': 'email',
-                    'situacao_especial': 'situacao_especial',
-                    'data_situacao_especial': 'data_situacao_especial'
+                    'cnpj_basico': 'cnpj', # Chave original
+                    'cnpj_ordem': 'ordem', # Chave original
+                    'cnpj_dv': 'dv', # Chave original
+                    'identificador_matriz_filial': 'matriz_filial', # Chave original
+                    'nome_fantasia': 'nome_fantasia', # Chave original
+                    'situacao_cadastral': 'situacao_cadastral', # Chave original
+                    'data_situacao_cadastral': 'data_situacao_cadastral', # Chave original
+                    'motivo_situacao_cadastral': 'motivo_situacao_cadastral', # Chave original
+                    'nome_cidade_exterior': 'cidade_exterior', # Chave original
+                    'pais': 'pais', # Chave original
+                    'data_inicio_atividade': 'data_inicio_atividade', # Chave original
+                    'cnae_fiscal_principal': 'cnae_principal', # Chave original
+                    'cnae_fiscal_secundaria': 'cnae_secundaria', # Chave original
+                    'tipo_logradouro': 'tipo_logradouro', # Chave original
+                    'logradouro': 'logradouro', # Chave original
+                    'numero': 'numero', # Chave original
+                    'complemento': 'complemento', # Chave original
+                    'bairro': 'bairro', # Chave original
+                    'cep': 'cep', # Chave original
+                    'uf': 'uf', # Chave original
+                    'municipio': 'municipio', # Chave original
+                    'ddd_1': 'ddd_1', # Chave original
+                    'telefone_1': 'telefone_1', # Chave original
+                    'ddd_2': 'ddd_2', # Chave original
+                    'telefone_2': 'telefone_2', # Chave original
+                    'ddd_fax': 'ddd_fax', # Chave original
+                    'fax': 'fax', # Chave original
+                    'correio_eletronico': 'email', # Chave original
+                    'situacao_especial': 'situacao_especial', # Chave original
+                    'data_situacao_especial': 'data_situacao_especial' # Chave original
                 })
                 
                 # Converte para parquet

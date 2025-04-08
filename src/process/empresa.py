@@ -28,44 +28,49 @@ def create_parquet(df, table_name, path_parquet):
     
     os.makedirs(output_dir, exist_ok=True)
     
+    # Log das colunas antes de salvar
+    logger.info(f"Colunas do DataFrame '{table_name}' antes de salvar em Parquet: {list(df.columns)}")
+    
     # Configura o nome dos arquivos parquet com prefixo da tabela
     df.to_parquet(
         output_dir,
+        engine='pyarrow',  # Especifica o engine
         write_index=False,
         name_function=lambda i: create_parquet_filename(table_name, i)
     )
 
 def process_csv_file(csv_path):
     """
-    Função para processar um único arquivo CSV de empresas.
+    Processa um único arquivo CSV de empresa e retorna um DataFrame Dask.
     
     Args:
-        csv_path: Caminho do arquivo CSV a ser processado
+        csv_path: Caminho para o arquivo CSV
         
     Returns:
-        DataFrame Dask com os dados processados ou None em caso de erro
+        DataFrame Dask ou None em caso de erro
     """
     # Verifica a integridade do CSV
     if not verify_csv_integrity(csv_path):
-        logger.error(f'Falha na verificação de integridade do arquivo {os.path.basename(csv_path)}')
         return None
     
-    # Define os tipos de dados para as colunas
+    # Define os tipos de dados e os nomes originais das colunas
     dtype_dict = {
         'cnpj_basico': 'object',
-        'razao_social': 'object',
+        'razao_social_nome_empresarial': 'object',
         'natureza_juridica': 'object',
-        'qualificacao_responsavel': 'object',
-        'capital_social': 'object',
-        'porte_empresa': 'object',
+        'qualificacao_do_responsavel': 'object',
+        'capital_social_da_empresa': 'object',
+        'porte_da_empresa': 'object',
         'ente_federativo_responsavel': 'object'
     }
+    original_column_names = list(dtype_dict.keys())
     
     try:
-        df = process_csv_to_df(csv_path, dtype=dtype_dict)
+        # Passa os nomes das colunas explicitamente
+        df = process_csv_to_df(csv_path, dtype=dtype_dict, column_names=original_column_names)
         return df
     except Exception as e:
-        logger.error(f'Erro ao processar arquivo {os.path.basename(csv_path)}: {str(e)}')
+        logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)}: {str(e)}')
         return None
 
 def process_empresa(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
@@ -199,15 +204,15 @@ def process_empresa(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 
                 dd_empresa = dd.concat(all_dfs)
                 
-                # Renomeia as colunas
+                # Renomeia as colunas usando os nomes originais corretos como chave
                 dd_empresa = dd_empresa.rename(columns={
-                    'cnpj_basico': 'cnpj',
-                    'razao_social': 'razao_social',
-                    'natureza_juridica': 'natureza_juridica',
-                    'qualificacao_responsavel': 'qualificacao_responsavel',
-                    'capital_social': 'capital_social',
-                    'porte_empresa': 'porte_empresa',
-                    'ente_federativo_responsavel': 'ente_federativo_responsavel'
+                    'cnpj_basico': 'cnpj', # Chave original do CSV
+                    'razao_social_nome_empresarial': 'razao_social', # Chave original do CSV
+                    'natureza_juridica': 'natureza_juridica', # Chave original do CSV
+                    'qualificacao_do_responsavel': 'qualificacao_responsavel', # Chave original do CSV
+                    'capital_social_da_empresa': 'capital_social', # Chave original do CSV
+                    'porte_da_empresa': 'porte_empresa', # Chave original do CSV
+                    'ente_federativo_responsavel': 'ente_federativo_responsavel' # Chave original do CSV
                 })
                 
                 # Converte para parquet

@@ -39,19 +39,20 @@ def verify_csv_integrity(csv_path: str) -> bool:
         logger.error(f'Erro ao verificar integridade do arquivo {os.path.basename(csv_path)}: {str(e)}')
         return False
 
-def process_csv_to_df(csv_path: str, dtype: dict = None) -> dd.DataFrame:
+def process_csv_to_df(csv_path: str, dtype: dict, column_names: List[str]) -> dd.DataFrame:
     """
     Lê um arquivo CSV e retorna um DataFrame Dask.
     
     Args:
         csv_path: Caminho para o arquivo CSV
         dtype: Dicionário de tipos de dados para as colunas
+        column_names: Lista com os nomes das colunas
         
     Returns:
         DataFrame Dask ou levanta uma exceção em caso de erro
     """
     try:
-        # Adiciona sep=';', encoding='latin1' e outras opções robustas
+        # Lê o CSV especificando os nomes das colunas e sem tentar ler cabeçalho
         df = dd.read_csv(
             csv_path, 
             dtype=dtype,
@@ -60,7 +61,8 @@ def process_csv_to_df(csv_path: str, dtype: dict = None) -> dd.DataFrame:
             quoting=csv.QUOTE_MINIMAL,
             escapechar='\\',
             on_bad_lines='warn',
-            header=0,
+            header=None,  # Não lê a primeira linha como cabeçalho
+            names=column_names, # Usa os nomes fornecidos
             low_memory=False
         )
         return df

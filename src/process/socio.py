@@ -30,9 +30,13 @@ def create_parquet(df, table_name, path_parquet):
     
     os.makedirs(output_dir, exist_ok=True)
     
+    # Log das colunas antes de salvar
+    logger.info(f"Colunas do DataFrame '{table_name}' antes de salvar em Parquet: {list(df.columns)}")
+
     # Configura o nome dos arquivos parquet com prefixo da tabela
     df.to_parquet(
         output_dir,
+        engine='pyarrow',  # Especifica o engine
         write_index=False,
         name_function=lambda i: create_parquet_filename(table_name, i)
     )
@@ -121,44 +125,33 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 csv_path = os.path.join(path_unzip, csv_file)
                 logger.info(f'Processando arquivo CSV: {csv_file}')
                 
+                # Verifica integridade
+                if not verify_csv_integrity(csv_path):
+                    logger.warning(f"Arquivo CSV {csv_file} inválido ou corrompido, pulando.")
+                    continue
+                    
+                # Define os tipos de dados e nomes originais das colunas
+                dtype_dict = {
+                    'cnpj_basico': 'object',
+                    'identificador_de_socio': 'object',
+                    'nome_do_socio_razao_social': 'object',
+                    'cnpj_ou_cpf_do_socio': 'object',
+                    'qualificacao_do_socio': 'object',
+                    'data_de_entrada_sociedade': 'object',
+                    'pais': 'object',
+                    'representante_legal': 'object',
+                    'nome_do_representante': 'object',
+                    'qualificacao_do_representante_legal': 'object',
+                    'faixa_etaria': 'object'
+                }
+                original_column_names = list(dtype_dict.keys())
+
                 try:
-                    with open(csv_path, 'r', encoding='utf-8') as f:
-                        reader = csv.reader(f)
-                        for _ in range(5):
-                            next(reader, None)
-                except UnicodeDecodeError as e:
-                    logger.error(f'Erro de codificação no arquivo {csv_file}: {str(e)}')
-                    continue
-                except csv.Error as e:
-                    logger.error(f'Erro de formato CSV no arquivo {csv_file}: {str(e)}')
-                    continue
-                except Exception as e:
-                    logger.error(f'Erro ao verificar integridade do arquivo {csv_file}: {str(e)}')
-                    continue
-                
-                try:
-                    df = dd.read_csv(
+                    # Lê o CSV passando os nomes explicitamente
+                    df = process_csv_to_df(
                         csv_path,
-                        dtype={
-                            'cnpj_basico': 'object',
-                            'identificador_socio': 'object',
-                            'nome_socio': 'object',
-                            'cnpj_cpf_socio': 'object',
-                            'qualificacao_socio': 'object',
-                            'data_entrada_sociedade': 'object',
-                            'pais': 'object',
-                            'representante_legal': 'object',
-                            'nome_representante': 'object',
-                            'qualificacao_representante': 'object',
-                            'faixa_etaria': 'object',
-                            'Unnamed: 8': 'object'
-                        },
-                        sep=';',
-                        encoding='latin1',
-                        quoting=csv.QUOTE_MINIMAL,
-                        escapechar='\\',
-                        on_bad_lines='warn',
-                        low_memory=False
+                        dtype=dtype_dict,
+                        column_names=original_column_names
                     )
                     all_dfs.append(df)
                 except pd.errors.EmptyDataError as e:
@@ -188,18 +181,20 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 
                 dd_socio = dd.concat(all_dfs)
                 
+                # Renomeia as colunas usando os nomes originais corretos como chave
                 dd_socio = dd_socio.rename(columns={
-                    'cnpj_basico': 'cnpj',
-                    'identificador_socio': 'identificador_socio',
-                    'nome_socio': 'nome_socio',
-                    'cnpj_cpf_socio': 'cnpj_cpf_socio',
-                    'qualificacao_socio': 'qualificacao_socio',
-                    'data_entrada_sociedade': 'data_entrada_sociedade',
-                    'pais': 'pais',
-                    'representante_legal': 'representante_legal',
-                    'nome_representante': 'nome_representante',
-                    'qualificacao_representante': 'qualificacao_representante',
-                    'faixa_etaria': 'faixa_etaria'
+                    'cnpj_basico': 'cnpj', # Chave original
+                    'identificador_de_socio': 'identificador_socio', # Chave original
+                    'nome_do_socio_razao_social': 'nome_socio', # Chave original
+                    'cnpj_ou_cpf_do_socio': 'cnpj_cpf_socio', # Chave original
+                    'qualificacao_do_socio': 'qualificacao_socio', # Chave original
+                    'data_de_entrada_sociedade': 'data_entrada_sociedade', # Chave original
+                    'pais': 'pais', # Chave original
+                    'representante_legal': 'representante_legal', # Chave original
+                    'nome_do_representante': 'nome_representante', # Chave original
+                    'qualificacao_do_representante_legal': 'qualificacao_representante', # Chave original
+                    'faixa_etaria': 'faixa_etaria' # Chave original
+                    # A coluna 'Unnamed: 8' parece não existir mais após a leitura explícita
                 })
                 
                 table_name = 'socio'
