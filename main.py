@@ -1,70 +1,79 @@
+import argparse
+import asyncio
 import datetime
 import logging
 import os
-import asyncio
-import argparse
 from multiprocessing import freeze_support
+
+import aiohttp
 from dask.distributed import Client, LocalCluster
 from dotenv import load_dotenv
 from rich.logging import RichHandler
+
+from src.async_downloader import get_latest_month_zip_urls, download_multiple_files, _filter_urls_by_type
 from src.config import config
-from src.utils import check_basic_folders, check_internet_connection
+from src.database import create_duckdb_file
 from src.process.empresa import process_empresa
 from src.process.estabelecimento import process_estabelecimento
 from src.process.simples import process_simples
 from src.process.socio import process_socio
-from src.database import create_duckdb_file
-from src.async_downloader import get_latest_month_zip_urls, download_multiple_files, _filter_urls_by_type
-import aiohttp
+from src.utils import check_basic_folders
+
 
 def setup_logging():
     """Configura o sistema de logging."""
     if not os.path.exists('logs'):
         os.makedirs('logs')
-    
+
     log_filename = f'logs/cnpj_process_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
     log_format = '%(asctime)s - %(levelname)s - %(message)s'
     date_format = '%Y-%m-%d %H:%M:%S'
-    
+
     # Configuração do logger raiz para capturar tudo
     # (Necessário para que os logs de async_downloader sejam pegos)
-    root_logger = logging.getLogger() 
-    root_logger.setLevel(logging.INFO) 
-    
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
     # Handler para arquivo (sem cores)
     file_handler = logging.FileHandler(log_filename, encoding='utf-8')
     file_handler.setFormatter(logging.Formatter(log_format, date_format))
     root_logger.addHandler(file_handler)
-    
+
     # Handler para console (com RichHandler)
     console_handler = RichHandler(rich_tracebacks=True)
     # O formatter do RichHandler é configurado por ele mesmo, não precisa setFormatter
     root_logger.addHandler(console_handler)
-    
+
     # Retorna um logger específico para main, se desejar, mas a configuração é global
     return logging.getLogger(__name__)
 
+
 def print_header(text: str):
     """Imprime um cabeçalho formatado."""
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"{text}")
-    print(f"{'='*50}\n")
+    print(f"{'=' * 50}\n")
+
 
 def print_section(text: str):
     """Imprime uma seção formatada."""
     print(f"\n▶ {text}")
 
+
 def print_success(text: str):
     """Imprime uma mensagem de sucesso formatada."""
     print(f"✓ {text}")
+
 
 def print_warning(text: str):
     """Imprime uma mensagem de aviso formatada."""
     print(f"⚠ {text}")
 
+
 def print_error(text: str):
     """Imprime uma mensagem de erro formatada."""
     print(f"✗ {text}")
+
 
 async def run_download_process(tipos_desejados: list[str] | None = None):
     """Executa todo o processo de download de forma assíncrona.
@@ -78,7 +87,7 @@ async def run_download_process(tipos_desejados: list[str] | None = None):
     """
     logger = logging.getLogger(__name__)
     logger.info("Iniciando processo de download centralizado...")
-    
+
     try:
         base_url = os.getenv('URL_ORIGIN')
         download_folder = os.getenv('PATH_ZIP')
@@ -135,26 +144,27 @@ async def run_download_process(tipos_desejados: list[str] | None = None):
             return False, ""
 
         logger.info("Processo de download concluído.")
-        
+
         if failed:
             logger.error(f"{len(failed)} downloads falharam. Verifique os logs acima.")
             if not downloaded:  # Se nenhum arquivo foi baixado com sucesso
                 return False, ""
             # Se pelo menos um arquivo foi baixado, continua com o processamento
             logger.warning("Continuando processamento com os arquivos baixados com sucesso.")
-        
+
         return True, latest_folder
 
     except Exception as e:
         logger.exception(f"Erro crítico no processo de download: {e}")
         return False, ""
 
+
 def main():
     """Função principal que orquestra todo o processo."""
     # Configuração dos argumentos de linha de comando
     parser = argparse.ArgumentParser(description='Processa dados do CNPJ')
     parser.add_argument('--tipos', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
-                      help='Tipos de dados a serem processados. Se não especificado, processa todos.')
+                        help='Tipos de dados a serem processados. Se não especificado, processa todos.')
     args = parser.parse_args()
 
     # Mapeia os tipos de argumentos para os nomes reais dos arquivos
@@ -168,28 +178,28 @@ def main():
     logger = setup_logging()
     print_header(f'Início da execução: {datetime.datetime.now():%d/%m/%Y às %H:%M:%S}')
     start_time: datetime = datetime.datetime.now()
-    
+
     # Carrega variáveis de ambiente
     print_section("Carregando variáveis de ambiente...")
     load_dotenv('.env.local')
     print_success("Variáveis de ambiente carregadas com sucesso")
-    
+
     # Configurações de diretórios
     PATH_ZIP: str = os.getenv('PATH_ZIP')
     PATH_UNZIP: str = os.getenv('PATH_UNZIP')
     PATH_PARQUET: str = os.getenv('PATH_PARQUET')
     FILE_DB_PARQUET: str = os.getenv('FILE_DB_PARQUET')
     PATH_REMOTE_PARQUET: str = os.getenv('PATH_REMOTE_PARQUET')
-    
+
     # Cria diretórios necessários
     print_section("Criando diretórios necessários...")
     list_folders: list = [PATH_ZIP, PATH_UNZIP, PATH_PARQUET]
     # Adiciona o diretório de cache para garantir que seja criado no início, se necessário
     # Embora config.py e cache.py também tentem criar
-    list_folders.append(config.cache.cache_dir) 
+    list_folders.append(config.cache.cache_dir)
     for folder in list_folders:
-        if folder: # Verifica se a variável de ambiente não está vazia
-             check_basic_folders(folder)
+        if folder:  # Verifica se a variável de ambiente não está vazia
+            check_basic_folders(folder)
     print_success("Diretórios criados com sucesso")
 
     # Define quais tipos processar baseado nos argumentos
@@ -215,8 +225,8 @@ def main():
         print_error("A etapa de download falhou ou não encontrou arquivos. Abortando processamento subsequente.")
         # Opcional: encerrar Dask se já foi iniciado, ou sair
         client.shutdown()
-        return # Sai da função main
-    
+        return  # Sai da função main
+
     print_success("Etapa de Download concluída.")
     # -----------------------------------------
 
@@ -261,7 +271,7 @@ def main():
         print_warning("Nenhum dado novo para criar banco de dados")
 
     print_header(f"Tempo total de execução: {str(datetime.datetime.now() - start_time)}")
-    
+
     print_section("Encerrando cliente Dask...")
     try:
         # Fecha o cliente Dask
@@ -277,5 +287,6 @@ def main():
     finally:
         print_success("Processo finalizado com sucesso!")
 
+
 if __name__ == '__main__':
-    main() 
+    main()

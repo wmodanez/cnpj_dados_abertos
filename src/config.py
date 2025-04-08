@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List
+
 
 @dataclass
 class DaskConfig:
@@ -9,15 +10,18 @@ class DaskConfig:
     memory_limit: str = '4GB'
     dashboard_address: str = ':8787'
 
+
 @dataclass
 class FileConfig:
     separator: str = ';'
     encoding: str = 'latin1'
     KB: int = 1024
 
+
 @dataclass
 class DatabaseConfig:
     threads: int = 4
+
 
 @dataclass
 class CacheConfig:
@@ -40,19 +44,20 @@ class CacheConfig:
         os.makedirs(self.cache_dir, exist_ok=True)
         self.cache_path = os.path.join(self.cache_dir, self.cache_file)
 
+
 @dataclass
 class Config:
     dask: DaskConfig = field(default_factory=DaskConfig)
     file: FileConfig = field(default_factory=FileConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
-    
+
     # Configurações de colunas e tipos de dados
     empresa_columns: List[str] = field(default_factory=lambda: [
         'cnpj_basico', 'razao_social', 'natureza_juridica', 'qualificacao_responsavel',
         'capital_social', 'porte_empresa', 'ente_federativo_responsavel'
     ])
-    
+
     empresa_dtypes: Dict[str, str] = field(default_factory=lambda: {
         'cnpj_basico': 'string',
         'razao_social': 'string',
@@ -62,7 +67,7 @@ class Config:
         'porte_empresa': 'int',
         'ente_federativo_responsavel': 'string'
     })
-    
+
     estabelecimento_columns: List[str] = field(default_factory=lambda: [
         'cnpj_basico', 'cnpj_ordem', 'cnpj_dv', 'matriz_filial', 'nome_fantasia',
         'codigo_situacao_cadastral', 'data_situacao_cadastral', 'codigo_motivo_situacao_cadastral',
@@ -72,7 +77,7 @@ class Config:
         'telefone2', 'ddd_fax', 'fax', 'correio_eletronico', 'situacao_especial',
         'data_situacao_especial'
     ])
-    
+
     estabelecimento_dtypes: Dict[str, str] = field(default_factory=lambda: {
         'cnpj_basico': 'string',
         'cnpj_ordem': 'string',
@@ -105,12 +110,12 @@ class Config:
         'situacao_especial': 'string',
         'data_situacao_especial': 'string'
     })
-    
+
     simples_columns: List[str] = field(default_factory=lambda: [
         'cnpj_basico', 'opcao_simples', 'data_opcao_simples', 'data_exclusao_simples',
         'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei'
     ])
-    
+
     simples_dtypes: Dict[str, str] = field(default_factory=lambda: {
         'cnpj_basico': 'int',
         'opcao_simples': 'string',
@@ -120,13 +125,13 @@ class Config:
         'data_opcao_mei': 'string',
         'data_exclusao_mei': 'string'
     })
-    
+
     socio_columns: List[str] = field(default_factory=lambda: [
         'cnpj_basico', 'identificador_socio', 'nome_socio', 'cnpj_cpf_socio',
         'qualificacao_socio', 'data_entrada_sociedade', 'pais', 'representante_legal',
         'nome_representante', 'qualificacao_representante_legal', 'faixa_etaria'
     ])
-    
+
     socio_dtypes: Dict[str, str] = field(default_factory=lambda: {
         'cnpj_basico': 'string',
         'identificador_socio': 'string',
@@ -141,5 +146,6 @@ class Config:
         'faixa_etaria': 'string'
     })
 
+
 # Instância global de configuração
-config = Config() 
+config = Config()

@@ -8,4 +8,4 @@ def create_parquet_filename(table_name: str, part_number: int) -> str:
     Returns:
         str: Nome do arquivo parquet formatado
     """
-    return f"{table_name}_{part_number}.parquet" 
+    return f"{table_name}_{part_number}.parquet"

@@ -1,20 +1,21 @@
 """
 Utilitários para gerenciamento de cache de downloads.
 """
-import os
+import datetime
 import json
 import logging
-import datetime
+import os
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
 
 class DownloadCache:
     """
     Classe para gerenciar cache de arquivos baixados.
     Mantém um registro de arquivos já baixados para evitar downloads repetidos.
     """
-    
+
     def __init__(self, cache_file: str):
         """
         Inicializa o cache de downloads.
@@ -24,7 +25,7 @@ class DownloadCache:
         """
         self.cache_file = cache_file
         self.cache_data = self._load_cache()
-    
+
     def _load_cache(self) -> Dict[str, Any]:
         """
         Carrega os dados do cache do arquivo.
@@ -42,7 +43,7 @@ class DownloadCache:
                 logger.warning(f"Erro ao carregar arquivo de cache: {str(e)}. Criando novo cache.")
                 return {"files": {}, "last_update": datetime.datetime.now().isoformat()}
         return {"files": {}, "last_update": datetime.datetime.now().isoformat()}
-    
+
     def _save_cache(self) -> bool:
         """
         Salva os dados do cache no arquivo.
@@ -53,10 +54,10 @@ class DownloadCache:
         try:
             # Cria o diretório do cache se não existir
             os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
-            
+
             # Atualiza a data da última atualização
             self.cache_data["last_update"] = datetime.datetime.now().isoformat()
-            
+
             with open(self.cache_file, 'w') as f:
                 json.dump(self.cache_data, f, indent=2)
             logger.info(f"Cache salvo com {len(self.cache_data.get('files', []))} arquivos")
@@ -64,7 +65,7 @@ class DownloadCache:
         except IOError as e:
             logger.error(f"Erro ao salvar arquivo de cache: {str(e)}")
             return False
-    
+
     def is_file_cached(self, filename: str, remote_size: int, remote_modified: int) -> bool:
         """
         Verifica se um arquivo está no cache e é atual.
@@ -81,8 +82,8 @@ class DownloadCache:
         if filename in files:
             file_info = files[filename]
             # Verifica se o tamanho e a data de modificação são iguais
-            if (file_info.get("size") == remote_size and 
-                file_info.get("modified") == remote_modified):
+            if (file_info.get("size") == remote_size and
+                    file_info.get("modified") == remote_modified):
                 logger.info(f"Arquivo {filename} encontrado no cache e está atualizado")
                 return True
             else:
@@ -90,7 +91,7 @@ class DownloadCache:
                 return False
         logger.info(f"Arquivo {filename} não encontrado no cache")
         return False
-    
+
     def update_file_cache(self, filename: str, size: int, modified: int, status: str = "success") -> bool:
         """
         Atualiza as informações de um arquivo no cache.
@@ -106,16 +107,16 @@ class DownloadCache:
         """
         if "files" not in self.cache_data:
             self.cache_data["files"] = {}
-        
+
         self.cache_data["files"][filename] = {
             "size": size,
             "modified": modified,
             "last_download": datetime.datetime.now().isoformat(),
             "status": status
         }
-        
+
         return self._save_cache()
-    
+
     def remove_file_from_cache(self, filename: str) -> bool:
         """
         Remove um arquivo do cache.
@@ -131,7 +132,7 @@ class DownloadCache:
             logger.info(f"Arquivo {filename} removido do cache")
             return self._save_cache()
         return False
-    
+
     def clear_cache(self) -> bool:
         """
         Limpa todo o cache.
@@ -142,7 +143,7 @@ class DownloadCache:
         self.cache_data = {"files": {}, "last_update": datetime.datetime.now().isoformat()}
         logger.info("Cache limpo completamente")
         return self._save_cache()
-    
+
     def get_cached_files(self) -> List[str]:
         """
         Retorna a lista de arquivos no cache.
@@ -151,7 +152,7 @@ class DownloadCache:
             Lista com os nomes dos arquivos no cache
         """
         return list(self.cache_data.get("files", {}).keys())
-    
+
     def get_file_info(self, filename: str) -> Optional[Dict[str, Any]]:
         """
         Retorna as informações de um arquivo no cache.
@@ -163,4 +164,4 @@ class DownloadCache:
             Dicionário com as informações do arquivo ou None se não estiver no cache
         """
         files = self.cache_data.get("files", {})
-        return files.get(filename) 
+        return files.get(filename)

@@ -1,17 +1,16 @@
-import datetime
 import logging
-import dask.dataframe as dd
-import pandas as pd
-from ..config import config
-from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size
-from ..utils import process_csv_files_parallel, process_csv_to_df, verify_csv_integrity, create_parquet_filename
+import logging
 import os
 import zipfile
-import csv
-import io
-from concurrent.futures import ThreadPoolExecutor
+
+import dask.dataframe as dd
+
+from ..config import config
+from ..utils import file_delete, check_disk_space, estimate_zip_extracted_size
+from ..utils import process_csv_files_parallel, process_csv_to_df, verify_csv_integrity, create_parquet_filename
 
 logger = logging.getLogger(__name__)
+
 
 def create_parquet(df, table_name, path_parquet):
     """Converte um DataFrame para formato parquet.
@@ -22,19 +21,19 @@ def create_parquet(df, table_name, path_parquet):
         path_parquet: Caminho base para os arquivos parquet
     """
     output_dir = os.path.join(path_parquet, table_name)
-    
+
     # Limpa o diretório antes de criar os novos arquivos
     try:
         file_delete(output_dir)
         logger.info(f'Diretório {output_dir} limpo antes de criar novos arquivos parquet')
     except Exception as e:
         logger.warning(f'Não foi possível limpar diretório {output_dir}: {str(e)}')
-    
+
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # Log das colunas antes de salvar
     logger.info(f"Colunas do DataFrame '{table_name}' antes de salvar em Parquet: {list(df.columns)}")
-    
+
     # Configura o nome dos arquivos parquet com prefixo da tabela
     df.to_parquet(
         output_dir,
@@ -42,6 +41,7 @@ def create_parquet(df, table_name, path_parquet):
         write_index=False,
         name_function=lambda i: create_parquet_filename(table_name, i)
     )
+
 
 def process_csv_file(csv_path):
     """
@@ -56,7 +56,7 @@ def process_csv_file(csv_path):
     # Verifica a integridade do CSV
     if not verify_csv_integrity(csv_path):
         return None
-    
+
     # Define os tipos de dados e os nomes originais das colunas
     dtype_dict = {
         'cnpj_basico': 'object',
@@ -68,7 +68,7 @@ def process_csv_file(csv_path):
         'data_exclusao_do_mei': 'object'
     }
     original_column_names = list(dtype_dict.keys())
-    
+
     try:
         # Passa os nomes das colunas explicitamente
         df = process_csv_to_df(csv_path, dtype=dtype_dict, column_names=original_column_names)
@@ -77,15 +77,16 @@ def process_csv_file(csv_path):
         logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)}: {str(e)}')
         return None
 
+
 def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa os dados do Simples Nacional."""
-    logger.info('='*50)
+    logger.info('=' * 50)
     logger.info('Iniciando processamento do SIMPLES NACIONAL')
-    logger.info('='*50)
-    
+    logger.info('=' * 50)
+
     # Verifica espaço em disco (Manter)
     logger.info("Verificando espaço em disco necessário para descompactação...")
-    
+
     # Limpa o diretório de descompactação antes de começar
     try:
         file_delete(path_unzip)
@@ -104,7 +105,7 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
         zip_files = [f for f in os.listdir(path_zip) if f.startswith('Simples') and f.endswith('.zip')]
         if not zip_files:
             logger.warning(f'Nenhum arquivo ZIP do Simples encontrado em {path_zip} para processar.')
-            return True # Não é erro
+            return True  # Não é erro
 
         all_dfs = []
         for zip_file in zip_files:
@@ -115,9 +116,10 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
             logger.info(f"Tamanho estimado após descompactação: {estimated_size_mb:.2f}MB")
             has_space_for_file, available_mb_now = check_disk_space(path_unzip, estimated_size_mb * 1.2)
             if not has_space_for_file:
-                logger.error(f"Espaço insuficiente para descompactar {zip_file}. Disponível: {available_mb_now:.2f}MB, necessário: {estimated_size_mb * 1.2:.2f}MB")
+                logger.error(
+                    f"Espaço insuficiente para descompactar {zip_file}. Disponível: {available_mb_now:.2f}MB, necessário: {estimated_size_mb * 1.2:.2f}MB")
                 continue
-            
+
             # Descompacta apenas este arquivo ZIP
             try:
                 logger.info(f'Descompactando arquivo: {zip_path}')
@@ -139,7 +141,7 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
             except Exception as e:
                 logger.error(f'Erro inesperado ao descompactar arquivo {zip_path}: {str(e)}')
                 continue
-            
+
             # Processa os dados deste arquivo
             try:
                 # Lê todos os arquivos CSV descompactados
@@ -157,58 +159,60 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 except Exception as e:
                     logger.error(f'Erro inesperado ao listar arquivos CSV: {str(e)}')
                     continue
-                
+
                 # Processa todos os arquivos CSV em paralelo
                 logger.info(f'Processando {len(csv_files)} arquivos CSV em paralelo...')
-                
+
                 dfs = process_csv_files_parallel(
                     csv_files=csv_files,
                     base_path=path_unzip,
                     process_function=process_csv_file,
                     max_workers=config.dask.n_workers
                 )
-                
+
                 # Filtra DataFrames vazios ou inválidos
                 dfs = [df for df in dfs if df is not None]
-                
+
                 if dfs:
                     all_dfs.extend(dfs)
                     logger.info(f'Processamento de {len(dfs)} arquivos CSV concluído com sucesso')
                 else:
                     logger.warning(f'Nenhum DataFrame válido foi gerado a partir dos arquivos CSV')
-                
+
                 success = True
-                
+
             except Exception as e:
                 logger.error(f'Erro inesperado ao processar dados do arquivo {zip_file}: {str(e)}')
                 continue
-        
+
         # Se temos DataFrames para processar, concatena todos e cria o parquet
         if all_dfs:
             logger.info('Concatenando todos os DataFrames...')
             try:
                 # Verifica espaço para criação do arquivo parquet
                 # Estima o tamanho como 50% do tamanho dos DataFrames em memória (compressão)
-                parquet_size_estimate = sum([df.memory_usage(deep=True).sum().compute() for df in all_dfs]) * 0.5 / (1024 * 1024)
+                parquet_size_estimate = sum([df.memory_usage(deep=True).sum().compute() for df in all_dfs]) * 0.5 / (
+                            1024 * 1024)
                 has_space, available_mb = check_disk_space(path_parquet, parquet_size_estimate)
-                
+
                 if not has_space:
-                    logger.error(f"Espaço insuficiente para criar arquivo parquet. Disponível: {available_mb:.2f}MB, estimado: {parquet_size_estimate:.2f}MB")
+                    logger.error(
+                        f"Espaço insuficiente para criar arquivo parquet. Disponível: {available_mb:.2f}MB, estimado: {parquet_size_estimate:.2f}MB")
                     return False
-                
+
                 dd_simples = dd.concat(all_dfs)
-                
+
                 # Renomeia as colunas usando os nomes originais corretos como chave
                 dd_simples = dd_simples.rename(columns={
-                    'cnpj_basico': 'cnpj', 
-                    'opcao_pelo_simples': 'opcao_simples', 
-                    'data_opcao_pelo_simples': 'data_opcao_simples', 
-                    'data_exclusao_do_simples': 'data_exclusao_simples', 
-                    'opcao_pelo_mei': 'opcao_mei', 
-                    'data_opcao_pelo_mei': 'data_opcao_mei', 
-                    'data_exclusao_do_mei': 'data_exclusao_mei' 
+                    'cnpj_basico': 'cnpj',
+                    'opcao_pelo_simples': 'opcao_simples',
+                    'data_opcao_pelo_simples': 'data_opcao_simples',
+                    'data_exclusao_do_simples': 'data_exclusao_simples',
+                    'opcao_pelo_mei': 'opcao_mei',
+                    'data_opcao_pelo_mei': 'data_opcao_mei',
+                    'data_exclusao_do_mei': 'data_exclusao_mei'
                 })
-                
+
                 # Converte para parquet
                 table_name = 'simples'
                 logger.info(f'Criando arquivo parquet {table_name}...')
@@ -217,7 +221,7 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                     csv_files = [f for f in os.listdir(path_unzip) if 'CSV' in f]
                     if not csv_files:
                         raise ValueError("Nenhum arquivo CSV encontrado na pasta de descompactação")
-                    
+
                     # Extrai o nome da pasta do mês do primeiro arquivo CSV
                     create_parquet(dd_simples, table_name, path_parquet)
                     logger.info('Processamento concluído com sucesso')
@@ -247,12 +251,12 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 success = False
         else:
             logger.error('Nenhum dado foi processado com sucesso')
-        
+
         return success
-        
+
     except FileNotFoundError:
         logger.error(f"Diretório de origem dos ZIPs não encontrado: {path_zip}")
         return False
     except Exception as e:
         logger.exception(f'Erro inesperado no processo principal do Simples: {e}')
-        return False 
+        return False

@@ -1,15 +1,17 @@
 """
 Utilitários para processamento paralelo de arquivos CSV usando Dask e ThreadPoolExecutor.
 """
-import os
 import csv
 import logging
-import pandas as pd
-import dask.dataframe as dd
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Callable, Optional, Any
 
+import dask.dataframe as dd
+import pandas as pd
+
 logger = logging.getLogger('cnpj')
+
 
 def verify_csv_integrity(csv_path: str) -> bool:
     """
@@ -39,6 +41,7 @@ def verify_csv_integrity(csv_path: str) -> bool:
         logger.error(f'Erro ao verificar integridade do arquivo {os.path.basename(csv_path)}: {str(e)}')
         return False
 
+
 def process_csv_to_df(csv_path: str, dtype: dict, column_names: List[str]) -> dd.DataFrame:
     """
     Lê um arquivo CSV e retorna um DataFrame Dask.
@@ -54,7 +57,7 @@ def process_csv_to_df(csv_path: str, dtype: dict, column_names: List[str]) -> dd
     try:
         # Lê o CSV especificando os nomes das colunas e sem tentar ler cabeçalho
         df = dd.read_csv(
-            csv_path, 
+            csv_path,
             dtype=dtype,
             sep=';',
             encoding='latin1',
@@ -62,7 +65,7 @@ def process_csv_to_df(csv_path: str, dtype: dict, column_names: List[str]) -> dd
             escapechar='\\',
             on_bad_lines='warn',
             header=None,  # Não lê a primeira linha como cabeçalho
-            names=column_names, # Usa os nomes fornecidos
+            names=column_names,  # Usa os nomes fornecidos
             low_memory=False
         )
         return df
@@ -79,12 +82,13 @@ def process_csv_to_df(csv_path: str, dtype: dict, column_names: List[str]) -> dd
         logger.error(f'Erro inesperado ao processar arquivo CSV {os.path.basename(csv_path)}: {str(e)}')
         raise
 
+
 def process_csv_files_parallel(
-    csv_files: List[str],
-    base_path: str,
-    process_function: Callable[[str], Any],
-    max_workers: int = 4,
-    file_filter: Optional[Callable[[str], bool]] = None
+        csv_files: List[str],
+        base_path: str,
+        process_function: Callable[[str], Any],
+        max_workers: int = 4,
+        file_filter: Optional[Callable[[str], bool]] = None
 ) -> List[Any]:
     """
     Processa múltiplos arquivos CSV em paralelo utilizando ThreadPoolExecutor.
@@ -101,22 +105,22 @@ def process_csv_files_parallel(
     """
     results = []
     full_paths = [os.path.join(base_path, f) for f in csv_files]
-    
+
     # Aplica filtro se fornecido
     if file_filter:
         full_paths = [p for p in full_paths if file_filter(p)]
-    
+
     if not full_paths:
         logger.warning("Nenhum arquivo encontrado para processamento após aplicar filtro")
         return results
-    
+
     logger.info(f"Iniciando processamento paralelo de {len(full_paths)} arquivos com {max_workers} workers")
-    
+
     # Usa ThreadPoolExecutor para processar arquivos em paralelo
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submete todas as tarefas
         future_to_file = {executor.submit(process_function, path): path for path in full_paths}
-        
+
         # Coleta resultados à medida que são concluídos
         for future in as_completed(future_to_file):
             file_path = future_to_file[future]
@@ -130,6 +134,6 @@ def process_csv_files_parallel(
                     logger.warning(f"Arquivo {file_name} retornou None")
             except Exception as e:
                 logger.error(f"Exceção ao processar arquivo {file_name}: {str(e)}")
-    
+
     logger.info(f"Processamento paralelo concluído. Resultados válidos: {len(results)}")
     return results

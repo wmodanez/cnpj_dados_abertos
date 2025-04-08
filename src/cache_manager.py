@@ -7,7 +7,7 @@ Uso:
   python -m src.cache_manager cache-info   # Exibe informações sobre o cache
 """
 # Ajustado para import relativo dentro do pacote src
-from .utils.cli import main 
+from .utils.cli import main
 
 if __name__ == "__main__":
-    main() 
+    main()
