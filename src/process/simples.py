@@ -4,6 +4,8 @@ import os
 import zipfile
 
 import dask.dataframe as dd
+import numpy as np
+import pandas as pd
 
 from ..config import config
 from ..utils import file_delete, check_disk_space, estimate_zip_extracted_size
@@ -57,25 +59,84 @@ def process_csv_file(csv_path):
     if not verify_csv_integrity(csv_path):
         return None
 
-    # Define os tipos de dados e os nomes originais das colunas
-    dtype_dict = {
-        'cnpj_basico': 'object',
-        'opcao_pelo_simples': 'object',
-        'data_opcao_pelo_simples': 'object',
-        'data_exclusao_do_simples': 'object',
-        'opcao_pelo_mei': 'object',
-        'data_opcao_pelo_mei': 'object',
-        'data_exclusao_do_mei': 'object'
-    }
-    original_column_names = list(dtype_dict.keys())
+    # Usa colunas e dtypes da config
+    original_column_names = config.simples_columns
+    dtype_dict = config.simples_dtypes
 
     try:
-        # Passa os nomes das colunas explicitamente
-        df = process_csv_to_df(csv_path, dtype=dtype_dict, column_names=original_column_names)
+        # Passa nomes, separador, encoding da config, na_filter=False
+        df = process_csv_to_df(
+            csv_path, 
+            dtype=dtype_dict, 
+            column_names=original_column_names,
+            separator=config.file.separator, # Usa separador da config
+            encoding=config.file.encoding,   # Usa encoding da config
+            na_filter=False # Como em manipular_dados.py
+        )
         return df
     except Exception as e:
         logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)}: {str(e)}')
         return None
+
+
+def apply_simples_transformations(ddf):
+    """Aplica as transformações específicas para Simples Nacional."""
+    logger.info("Aplicando transformações em Simples...")
+    
+    # 1. Renomear colunas (Ajustar conforme nomes na config)
+    rename_mapping = {
+        'cnpj_basico': 'cnpj_basico', # Mantém
+        'opcao_pelo_simples': 'opcao_simples',
+        'data_opcao_pelo_simples': 'data_opcao_simples',
+        'data_exclusao_do_simples': 'data_exclusao_simples',
+        'opcao_pelo_mei': 'opcao_mei',
+        'data_opcao_pelo_mei': 'data_opcao_mei',
+        'data_exclusao_do_mei': 'data_exclusao_mei'
+    }
+    actual_rename_mapping = {k: v for k, v in rename_mapping.items() if k in ddf.columns}
+    ddf = ddf.rename(columns=actual_rename_mapping)
+    logger.info(f"Colunas após renomear: {list(ddf.columns)}")
+
+    # 2. Converter colunas de data
+    date_cols_to_convert = [
+        'data_opcao_simples', 'data_exclusao_simples', 
+        'data_opcao_mei', 'data_exclusao_mei'
+    ]
+    for col in date_cols_to_convert:
+        if col in ddf.columns:
+            logger.info(f"Convertendo coluna de data: {col}")
+            # Substituir '00000000' por NaN antes de converter
+            def convert_date_partition(series):
+                try:
+                    series = series.str.replace('00000000', '', regex=False)
+                except AttributeError:
+                    pass 
+                return pd.to_datetime(series, errors='coerce', format='%Y%m%d')
+
+            meta = (col, 'datetime64[ns]') # Dask pode inferir a meta aqui
+            ddf[col] = ddf[col].map_partitions(convert_date_partition, meta=meta)
+            logger.info(f"Coluna '{col}' convertida para datetime.")
+        else:
+             logger.warning(f"Coluna de data '{col}' não encontrada para conversão.")
+
+    # 3. Converter colunas de opção (Simples e MEI)
+    option_cols_to_convert = {'opcao_simples': 'Int64', 'opcao_mei': 'Int64'}
+    for col, target_type in option_cols_to_convert.items():
+        if col in ddf.columns:
+            logger.info(f"Convertendo coluna de opção: {col}")
+            # Substituir S/N por 1/0 e converter para Int64
+            def convert_option_partition(series):
+                return series.replace({'S': 1, 'N': 0})
+                
+            # Usar meta correspondente ao tipo final
+            meta = (col, 'int64') # Meta para .replace
+            ddf[col] = ddf[col].map_partitions(convert_option_partition, meta=meta)
+            ddf[col] = ddf[col].map_partitions(pd.to_numeric, errors='coerce', meta=(col, 'float64')).astype(target_type)
+            logger.info(f"Coluna '{col}' convertida para {target_type}.")
+        else:
+             logger.warning(f"Coluna de opção '{col}' não encontrada para conversão.")
+
+    return ddf
 
 
 def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
@@ -200,18 +261,10 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                         f"Espaço insuficiente para criar arquivo parquet. Disponível: {available_mb:.2f}MB, estimado: {parquet_size_estimate:.2f}MB")
                     return False
 
-                dd_simples = dd.concat(all_dfs)
+                dd_simples_raw = dd.concat(all_dfs)
 
-                # Renomeia as colunas usando os nomes originais corretos como chave
-                dd_simples = dd_simples.rename(columns={
-                    'cnpj_basico': 'cnpj',
-                    'opcao_pelo_simples': 'opcao_simples',
-                    'data_opcao_pelo_simples': 'data_opcao_simples',
-                    'data_exclusao_do_simples': 'data_exclusao_simples',
-                    'opcao_pelo_mei': 'opcao_mei',
-                    'data_opcao_pelo_mei': 'data_opcao_mei',
-                    'data_exclusao_do_mei': 'data_exclusao_mei'
-                })
+                # Aplicar transformações
+                dd_simples = apply_simples_transformations(dd_simples_raw)
 
                 # Converte para parquet
                 table_name = 'simples'

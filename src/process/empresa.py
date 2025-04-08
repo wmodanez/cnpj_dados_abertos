@@ -1,8 +1,8 @@
 import logging
 import os
 import zipfile
-
 import dask.dataframe as dd
+import pandas as pd
 
 from ..config import config
 from ..utils import file_delete, check_disk_space, estimate_zip_extracted_size
@@ -56,21 +56,19 @@ def process_csv_file(csv_path):
     if not verify_csv_integrity(csv_path):
         return None
 
-    # Define os tipos de dados e os nomes originais das colunas
-    dtype_dict = {
-        'cnpj_basico': 'object',
-        'razao_social_nome_empresarial': 'object',
-        'natureza_juridica': 'object',
-        'qualificacao_do_responsavel': 'object',
-        'capital_social_da_empresa': 'object',
-        'porte_da_empresa': 'object',
-        'ente_federativo_responsavel': 'object'
-    }
-    original_column_names = list(dtype_dict.keys())
+    # Usa as colunas e dtypes da configuração global
+    original_column_names = config.empresa_columns
+    dtype_dict = config.empresa_dtypes
 
     try:
-        # Passa os nomes das colunas explicitamente
-        df = process_csv_to_df(csv_path, dtype=dtype_dict, column_names=original_column_names)
+        # Passa os nomes das colunas, separador e encoding da config
+        df = process_csv_to_df(
+            csv_path, 
+            dtype=dtype_dict, 
+            column_names=original_column_names,
+            separator=config.file.separator, # Usa separador da config
+            encoding=config.file.encoding    # Usa encoding da config
+        )
         return df
     except Exception as e:
         logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)}: {str(e)}')
@@ -213,7 +211,8 @@ def process_empresa(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 dd_empresa = dd.concat(all_dfs)
 
                 # Renomeia as colunas usando os nomes originais corretos como chave
-                dd_empresa = dd_empresa.rename(columns={
+                # Verifica se as colunas originais existem antes de renomear
+                rename_mapping = {
                     'cnpj_basico': 'cnpj',
                     'razao_social_nome_empresarial': 'razao_social',
                     'natureza_juridica': 'natureza_juridica',
@@ -221,24 +220,67 @@ def process_empresa(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                     'capital_social_da_empresa': 'capital_social',
                     'porte_da_empresa': 'porte_empresa',
                     'ente_federativo_responsavel': 'ente_federativo_responsavel'
-                })
+                }
+                # Filtra o mapeamento para incluir apenas colunas existentes no DataFrame
+                actual_rename_mapping = {k: v for k, v in rename_mapping.items() if k in dd_empresa.columns}
+                dd_empresa = dd_empresa.rename(columns=actual_rename_mapping)
 
-                # Converte para parquet
-                table_name = 'empresa'
-                logger.info(f'Criando arquivo parquet {table_name}...')
+
+                # --- Criação do Parquet Principal ('empresas') ---
+                table_name_main = 'empresas' # Nome ajustado
+                logger.info(f'Criando arquivo parquet {table_name_main}...')
                 try:
-                    create_parquet(dd_empresa, table_name, path_parquet)
-                    logger.info('Processamento concluído com sucesso')
+                    create_parquet(dd_empresa, table_name_main, path_parquet)
+                    logger.info(f'Parquet {table_name_main} criado com sucesso')
                     success = True
                 except PermissionError as e:
-                    logger.error(f'Sem permissão para criar arquivo parquet: {str(e)}')
+                    logger.error(f'Sem permissão para criar arquivo parquet {table_name_main}: {str(e)}')
                     success = False
                 except IOError as e:
-                    logger.error(f'Erro de I/O ao criar arquivo parquet: {str(e)}')
+                    logger.error(f'Erro de I/O ao criar arquivo parquet {table_name_main}: {str(e)}')
                     success = False
                 except Exception as e:
-                    logger.error(f'Erro inesperado ao criar arquivo parquet: {str(e)}')
+                    logger.error(f'Erro inesperado ao criar arquivo parquet {table_name_main}: {str(e)}')
                     success = False
+                
+                # --- Criação do Parquet de Empresas Privadas ('empresa_privada') ---
+                if success and 'natureza_juridica' in dd_empresa.columns: # Procede apenas se o parquet principal foi criado e a coluna existe
+                    logger.info("Iniciando criação do parquet para empresas privadas...")
+                    try:
+                        # Converter 'natureza_juridica' para numérico, tratando erros
+                        # Usar meta para especificar o tipo de saída ajuda Dask
+                        dd_empresa['natureza_juridica_num'] = dd_empresa['natureza_juridica'].map_partitions(
+                            pd.to_numeric, errors='coerce', meta=('natureza_juridica', 'float64') 
+                        ).astype('Int64') # Usar Int64 para permitir NAs inteiros
+
+                        # Filtrar empresas privadas
+                        dd_empresa_privada = dd_empresa[
+                            dd_empresa['natureza_juridica_num'].between(2046, 2348, inclusive='both')
+                        ].copy() # .copy() para evitar SettingWithCopyWarning
+                        
+                        # Colunas a serem removidas (verificar se existem antes de dropar)
+                        cols_to_drop = ['qualificacao_responsavel', 'ente_federativo_responsavel', 'natureza_juridica_num']
+                        actual_cols_to_drop = [col for col in cols_to_drop if col in dd_empresa_privada.columns]
+                        
+                        if actual_cols_to_drop:
+                           dd_empresa_privada = dd_empresa_privada.drop(columns=actual_cols_to_drop)
+                           logger.info(f"Colunas removidas para empresa_privada: {actual_cols_to_drop}")
+                        else:
+                            logger.warning("Nenhuma das colunas esperadas para drop ('qualificacao_responsavel', 'ente_federativo_responsavel') encontrada em empresa_privada.")
+
+
+                        # Criar o parquet para empresas privadas
+                        table_name_privada = 'empresa_privada'
+                        logger.info(f'Criando arquivo parquet {table_name_privada}...')
+                        create_parquet(dd_empresa_privada, table_name_privada, path_parquet)
+                        logger.info(f'Parquet {table_name_privada} criado com sucesso')
+
+                    except Exception as e:
+                        logger.error(f'Erro ao processar/criar parquet para {table_name_privada}: {str(e)}')
+                        # Não definimos success como False aqui, pois o parquet principal pode ter sido criado
+                elif 'natureza_juridica' not in dd_empresa.columns:
+                     logger.warning("Coluna 'natureza_juridica' não encontrada. Pulando criação do parquet 'empresa_privada'.")
+
 
                 # Limpa o diretório após criar os arquivos parquet
                 try:

@@ -6,7 +6,9 @@ import zipfile
 import dask.dataframe as dd
 import pandas as pd
 
+from ..config import config
 from ..utils import file_delete, check_disk_space, estimate_zip_extracted_size, create_parquet_filename
+from ..utils import process_csv_files_parallel, process_csv_to_df, verify_csv_integrity
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,95 @@ def create_parquet(df, table_name, path_parquet):
         write_index=False,
         name_function=lambda i: create_parquet_filename(table_name, i)
     )
+
+
+def process_csv_file(csv_path):
+    """
+    Processa um único arquivo CSV de sócio e retorna um DataFrame Dask.
+    
+    Args:
+        csv_path: Caminho para o arquivo CSV
+        
+    Returns:
+        DataFrame Dask ou None em caso de erro
+    """
+    # Verifica integridade
+    if not verify_csv_integrity(csv_path):
+        logger.warning(f"Arquivo CSV {os.path.basename(csv_path)} inválido ou corrompido, pulando.")
+        return None
+
+    # Usa colunas e dtypes da config
+    original_column_names = config.socio_columns
+    dtype_dict = config.socio_dtypes
+
+    try:
+        # Passa nomes, separador, encoding da config, na_filter=False
+        df = process_csv_to_df(
+            csv_path,
+            dtype=dtype_dict,
+            column_names=original_column_names,
+            separator=config.file.separator, # Usa separador da config
+            encoding=config.file.encoding,   # Usa encoding da config
+            na_filter=False # Como em manipular_dados.py
+        )
+        return df
+    except pd.errors.EmptyDataError:
+        logger.warning(f'Arquivo CSV vazio {os.path.basename(csv_path)}')
+        return None
+    except Exception as e:
+        logger.error(f'Erro ao processar o arquivo CSV {os.path.basename(csv_path)}: {str(e)}')
+        return None
+
+
+def apply_socio_transformations(ddf):
+    """Aplica as transformações específicas para Sócios."""
+    logger.info("Aplicando transformações em Sócios...")
+
+    # 1. Renomear colunas (Ajustar conforme nomes na config)
+    rename_mapping = {
+        'cnpj_basico': 'cnpj_basico', # Mantém
+        'identificador_de_socio': 'identificador_socio',
+        'nome_do_socio_razao_social': 'nome_socio',
+        'cnpj_ou_cpf_do_socio': 'cnpj_cpf_socio',
+        'qualificacao_do_socio': 'qualificacao_socio',
+        'data_de_entrada_sociedade': 'data_entrada_sociedade',
+        'pais': 'pais',
+        'representante_legal': 'representante_legal',
+        'nome_do_representante': 'nome_representante',
+        'qualificacao_do_representante_legal': 'qualificacao_representante_legal', # Corrigido nome
+        'faixa_etaria': 'faixa_etaria'
+    }
+    actual_rename_mapping = {k: v for k, v in rename_mapping.items() if k in ddf.columns}
+    ddf = ddf.rename(columns=actual_rename_mapping)
+    logger.info(f"Colunas após renomear: {list(ddf.columns)}")
+
+    # 2. Converter tipos para Int64 (permitir nulos)
+    cols_to_int = [
+        'cnpj_basico', 'identificador_socio', 'qualificacao_socio',
+        'qualificacao_representante_legal', 'faixa_etaria'
+    ]
+    for col in cols_to_int:
+        if col in ddf.columns:
+            logger.info(f"Convertendo coluna '{col}' para Int64")
+            ddf[col] = ddf[col].map_partitions(pd.to_numeric, errors='coerce', meta=(col, 'float64')).astype('Int64')
+        else:
+            logger.warning(f"Coluna '{col}' não encontrada para conversão para Int64.")
+            
+    # Converter data_entrada_sociedade para datetime
+    if 'data_entrada_sociedade' in ddf.columns:
+        logger.info("Convertendo coluna 'data_entrada_sociedade' para datetime")
+        def convert_date_partition(series):
+            try:
+                series = series.str.replace('00000000', '', regex=False)
+            except AttributeError:
+                pass
+            return pd.to_datetime(series, errors='coerce', format='%Y%m%d')
+        meta = ('data_entrada_sociedade', 'datetime64[ns]')
+        ddf['data_entrada_sociedade'] = ddf['data_entrada_sociedade'].map_partitions(convert_date_partition, meta=meta)
+    else:
+        logger.warning("Coluna 'data_entrada_sociedade' não encontrada para conversão.")
+
+    return ddf
 
 
 def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
@@ -125,53 +216,25 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 logger.error(f'Erro inesperado ao listar arquivos CSV: {str(e)}')
                 continue
 
-            for csv_file in csv_files:
-                csv_path = os.path.join(path_unzip, csv_file)
-                logger.info(f'Processando arquivo CSV: {csv_file}')
-
-                # Verifica integridade
-                if not verify_csv_integrity(csv_path):
-                    logger.warning(f"Arquivo CSV {csv_file} inválido ou corrompido, pulando.")
-                    continue
-
-                # Define os tipos de dados e nomes originais das colunas
-                dtype_dict = {
-                    'cnpj_basico': 'object',
-                    'identificador_de_socio': 'object',
-                    'nome_do_socio_razao_social': 'object',
-                    'cnpj_ou_cpf_do_socio': 'object',
-                    'qualificacao_do_socio': 'object',
-                    'data_de_entrada_sociedade': 'object',
-                    'pais': 'object',
-                    'representante_legal': 'object',
-                    'nome_do_representante': 'object',
-                    'qualificacao_do_representante_legal': 'object',
-                    'faixa_etaria': 'object'
-                }
-                original_column_names = list(dtype_dict.keys())
-
-                try:
-                    # Lê o CSV passando os nomes explicitamente
-                    df = process_csv_to_df(
-                        csv_path,
-                        dtype=dtype_dict,
-                        column_names=original_column_names
-                    )
-                    all_dfs.append(df)
-                except pd.errors.EmptyDataError as e:
-                    logger.error(f'Arquivo CSV vazio {csv_file}: {str(e)}')
-                    continue
-                except pd.errors.ParserError as e:
-                    logger.error(f'Erro de parse no arquivo CSV {csv_file}: {str(e)}')
-                    continue
-                except MemoryError as e:
-                    logger.error(f'Memória insuficiente para processar arquivo CSV {csv_file}: {str(e)}')
-                    continue
-                except Exception as e:
-                    logger.error(f'Erro inesperado ao processar arquivo CSV {csv_file}: {str(e)}')
-                    continue
-
-            success = True
+            # Processa todos os arquivos CSV em paralelo
+            logger.info(f'Processando {len(csv_files)} arquivos CSV em paralelo...')
+            dfs = process_csv_files_parallel(
+                csv_files=csv_files,
+                base_path=path_unzip,
+                process_function=process_csv_file, # Usa a função refatorada
+                max_workers=config.dask.n_workers
+            )
+            
+            # Filtra DataFrames vazios ou inválidos
+            dfs = [df for df in dfs if df is not None]
+            
+            if dfs:
+                all_dfs.extend(dfs)
+                logger.info(f'Processamento de {len(dfs)} arquivos CSV concluído com sucesso')
+            else:
+                logger.warning(f'Nenhum DataFrame válido foi gerado a partir dos arquivos CSV')
+            
+            success = True # Marca sucesso se chegou aqui sem erro fatal
 
         if all_dfs:
             logger.info('Concatenando todos os DataFrames...')
@@ -185,24 +248,13 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                         f"Espaço insuficiente para criar arquivo parquet. Disponível: {available_mb:.2f}MB, estimado: {parquet_size_estimate:.2f}MB")
                     return False
 
-                dd_socio = dd.concat(all_dfs)
+                dd_socio_raw = dd.concat(all_dfs)
 
-                # Renomeia as colunas usando os nomes originais corretos como chave
-                dd_socio = dd_socio.rename(columns={
-                    'cnpj_basico': 'cnpj',
-                    'identificador_de_socio': 'identificador_socio',
-                    'nome_do_socio_razao_social': 'nome_socio',
-                    'cnpj_ou_cpf_do_socio': 'cnpj_cpf_socio',
-                    'qualificacao_do_socio': 'qualificacao_socio',
-                    'data_de_entrada_sociedade': 'data_entrada_sociedade',
-                    'pais': 'pais',
-                    'representante_legal': 'representante_legal',
-                    'nome_do_representante': 'nome_representante',
-                    'qualificacao_do_representante_legal': 'qualificacao_representante',
-                    'faixa_etaria': 'faixa_etaria'
-                })
+                # Aplicar transformações
+                dd_socio = apply_socio_transformations(dd_socio_raw)
 
-                table_name = 'socio'
+                # Renomear parquet
+                table_name = 'socios' # Nome ajustado
                 logger.info(f'Criando arquivo parquet {table_name}...')
                 try:
                     create_parquet(dd_socio, table_name, path_parquet)
