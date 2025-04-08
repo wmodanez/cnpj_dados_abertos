@@ -3,7 +3,7 @@ import logging
 import dask.dataframe as dd
 import pandas as pd
 from ..config import config
-from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size
+from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size, create_parquet_filename
 import os
 import zipfile
 import csv
@@ -12,11 +12,30 @@ import io
 logger = logging.getLogger(__name__)
 
 def create_parquet(df, table_name, path_parquet):
-    """Converte um DataFrame para formato parquet."""
-    yyyymm = datetime.date.today().strftime('%Y%m')
-    output_dir = os.path.join(path_parquet, yyyymm, table_name)
+    """Converte um DataFrame para formato parquet.
+    
+    Args:
+        df: DataFrame Dask a ser convertido
+        table_name: Nome da tabela
+        path_parquet: Caminho base para os arquivos parquet
+    """
+    output_dir = os.path.join(path_parquet, table_name)
+    
+    # Limpa o diretório antes de criar os novos arquivos
+    try:
+        file_delete(output_dir)
+        logger.info(f'Diretório {output_dir} limpo antes de criar novos arquivos parquet')
+    except Exception as e:
+        logger.warning(f'Não foi possível limpar diretório {output_dir}: {str(e)}')
+    
     os.makedirs(output_dir, exist_ok=True)
-    df.to_parquet(output_dir, write_index=False)
+    
+    # Configura o nome dos arquivos parquet com prefixo da tabela
+    df.to_parquet(
+        output_dir,
+        write_index=False,
+        name_function=lambda i: create_parquet_filename(table_name, i)
+    )
 
 def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa os dados de sócios."""
@@ -31,6 +50,16 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
         return False
     logger.info(f"Verificação de espaço em disco concluída: {available_mb:.2f}MB disponível")
     
+    # Limpa o diretório de descompactação antes de começar
+    try:
+        file_delete(path_unzip)
+    except PermissionError as e:
+        logger.error(f'Sem permissão para limpar diretório de descompactação: {str(e)}')
+        return False
+    except Exception as e:
+        logger.error(f'Erro inesperado ao limpar diretório de descompactação: {str(e)}')
+        return False
+
     logger.info(f'Iniciando processamento de arquivos ZIP existentes em {path_zip}...')
     success = False
     
@@ -50,15 +79,6 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
             has_space_for_file, available_mb_now = check_disk_space(path_unzip, estimated_size_mb * 1.2)
             if not has_space_for_file:
                 logger.error(f"Espaço insuficiente para descompactar {zip_file}. Disponível: {available_mb_now:.2f}MB, necessário: {estimated_size_mb * 1.2:.2f}MB")
-                continue
-            
-            try:
-                file_delete(path_unzip)
-            except PermissionError as e:
-                logger.error(f'Sem permissão para limpar diretório de descompactação: {str(e)}')
-                continue
-            except Exception as e:
-                logger.error(f'Erro inesperado ao limpar diretório de descompactação: {str(e)}')
                 continue
             
             try:
@@ -83,7 +103,7 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 continue
             
             try:
-                csv_files = [f for f in os.listdir(path_unzip) if f.startswith('Socio') and f.endswith('.csv')]
+                csv_files = [f for f in os.listdir(path_unzip) if 'CSV' in f]
                 if not csv_files:
                     logger.warning(f'Nenhum arquivo CSV encontrado após descompactar {zip_file}')
                     continue
@@ -130,8 +150,15 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                             'representante_legal': 'object',
                             'nome_representante': 'object',
                             'qualificacao_representante': 'object',
-                            'faixa_etaria': 'object'
-                        }
+                            'faixa_etaria': 'object',
+                            'Unnamed: 8': 'object'
+                        },
+                        sep=';',
+                        encoding='latin1',
+                        quoting=csv.QUOTE_MINIMAL,
+                        escapechar='\\',
+                        on_bad_lines='warn',
+                        low_memory=False
                     )
                     all_dfs.append(df)
                 except pd.errors.EmptyDataError as e:
@@ -146,12 +173,6 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 except Exception as e:
                     logger.error(f'Erro inesperado ao processar arquivo CSV {csv_file}: {str(e)}')
                     continue
-            
-            try:
-                file_delete(path_unzip)
-                logger.info(f'Arquivos temporários de {zip_file} removidos')
-            except Exception as e:
-                logger.warning(f'Não foi possível remover arquivos temporários de {zip_file}: {str(e)}')
             
             success = True
             
@@ -196,6 +217,14 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 except Exception as e:
                     logger.error(f'Erro inesperado ao criar arquivo parquet: {str(e)}')
                     success = False
+
+                # Limpa o diretório após criar os arquivos parquet
+                try:
+                    file_delete(path_unzip)
+                    logger.info('Diretório de descompactação limpo após processamento')
+                except Exception as e:
+                    logger.warning(f'Não foi possível limpar diretório após processamento: {str(e)}')
+
             except MemoryError as e:
                 logger.error(f'Memória insuficiente para concatenar DataFrames: {str(e)}')
                 success = False
@@ -212,8 +241,4 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
         return False
     except Exception as e:
         logger.exception(f'Erro inesperado no processo principal de sócios: {e}')
-        try:
-            file_delete(path_unzip)
-        except Exception as clean_error:
-            logger.warning(f'Não foi possível limpar arquivos temporários após erro fatal: {str(clean_error)}')
         return False 

@@ -96,7 +96,7 @@ def _filter_urls_by_type(urls: List[str], tipos: Tuple[str, ...]) -> Tuple[List[
             ignored_count += 1
     return filtered_urls, ignored_count
 
-def get_latest_month_zip_urls(base_url: str) -> List[str]:
+def get_latest_month_zip_urls(base_url: str) -> Tuple[List[str], str]:
     """Busca URLs de arquivos .zip na pasta AAAA-MM mais recente.
 
     1. Busca e parseia a URL base.
@@ -104,6 +104,9 @@ def get_latest_month_zip_urls(base_url: str) -> List[str]:
     3. Filtra diretórios no formato AAAA-MM e encontra o mais recente.
     4. Busca e parseia a URL do diretório mais recente.
     5. Encontra links .zip nesse diretório.
+    
+    Returns:
+        Tuple[List[str], str]: Lista de URLs e nome da pasta mais recente
     """
     zip_urls = []
     latest_month_folder_url = None
@@ -113,7 +116,7 @@ def get_latest_month_zip_urls(base_url: str) -> List[str]:
     logger.info(f"Buscando diretórios em: {base_url}")
     base_soup = _fetch_and_parse(base_url)
     if not base_soup:
-        return [] # Erro já logado em _fetch_and_parse
+        return [], "" # Erro já logado em _fetch_and_parse
 
     directory_links = _find_links(base_soup, base_url, ends_with=None) # ends_with=None busca diretórios terminados em /
 
@@ -127,7 +130,7 @@ def get_latest_month_zip_urls(base_url: str) -> List[str]:
 
     if not year_month_folders:
         logger.warning(f"Nenhum diretório no formato AAAA-MM encontrado em {base_url}")
-        return []
+        return [], ""
 
     # Ordena pela chave (nome da pasta AAAA-MM) para encontrar o mais recente
     year_month_folders.sort(key=lambda x: x[0], reverse=True)
@@ -138,7 +141,7 @@ def get_latest_month_zip_urls(base_url: str) -> List[str]:
     logger.info(f"Buscando arquivos .zip em: {latest_month_folder_url}")
     latest_soup = _fetch_and_parse(latest_month_folder_url)
     if not latest_soup:
-        return [] # Erro já logado
+        return [], latest_folder_name # Erro já logado
 
     zip_urls = _find_links(latest_soup, latest_month_folder_url, ends_with='.zip')
 
@@ -146,7 +149,7 @@ def get_latest_month_zip_urls(base_url: str) -> List[str]:
         logger.warning(f"Nenhum arquivo .zip encontrado em {latest_month_folder_url}")
 
     logger.info(f"Total de {len(zip_urls)} URLs .zip encontradas na pasta {latest_folder_name}. ")
-    return zip_urls # Retorna todas as URLs encontradas
+    return zip_urls, latest_folder_name # Retorna URLs e nome da pasta
 
 async def _process_download_response(response: aiohttp.ClientResponse, destination_path: str, file_mode: str, progress: Progress, task_id: int, expected_size: int, initial_size: int, filename: str, remote_last_modified: int | None):
     """Processa o corpo da resposta HTTP e escreve no arquivo, atualizando a barra Rich."""

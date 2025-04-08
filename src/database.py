@@ -4,116 +4,103 @@ import shutil
 import logging
 import duckdb
 from .config import config
+import glob
 
 logger = logging.getLogger(__name__)
 
-def create_duckdb_file(path_parquet: str, file_db_parquet: str, path_remote_parquet: str, yyyymm: str) -> None:
-    """Cria um arquivo DuckDB com as tabelas parquet."""
-    logger.info('Início da criação das tabelas parquet')
-    inter_time: datetime = datetime.datetime.now()
+def create_duckdb_file(path_parquet_folder: str, file_db_parquet: str, path_remote_parquet: str) -> bool:
+    """Cria um arquivo DuckDB a partir dos arquivos parquet."""
+    logger.info(f"Iniciando criação do banco de dados DuckDB em {path_parquet_folder}...")
     
-    # Verifica se o diretório de destino existe e tem permissões
-    try:
-        if not os.path.exists(path_remote_parquet):
-            logger.info(f'Criando diretório de destino: {path_remote_parquet}')
-            os.makedirs(path_remote_parquet, exist_ok=True)
-    except PermissionError:
-        logger.error(f'Erro: Sem permissão para criar/acessar o diretório {path_remote_parquet}')
-        return
-    except Exception as e:
-        logger.error(f'Erro ao verificar diretório de destino: {str(e)}')
-        return
+    parquet_files = {}      
 
-    # Remove arquivo existente se houver
-    try:
-        if os.path.exists(path_parquet + file_db_parquet):
-            logger.info(f'Removendo arquivo existente: {path_parquet + file_db_parquet}')
-            os.remove(path_parquet + file_db_parquet)
-    except Exception as e:
-        logger.warning(f'Não foi possível remover arquivo existente: {str(e)}')
-
-    try:
-        logger.info('Iniciando conexão com DuckDB')
-        conn: duckdb.connect = duckdb.connect(
-            path_parquet + file_db_parquet,
-            config={
-                'threads': config.database.threads,
-                'memory_limit': config.dask.memory_limit,
-                'use_direct_io': True,
-                'compression': True,
-                'checkpoint_threshold': '1GB'
-            }
-        )
-
-        # Lista de tabelas principais
-        list_tabela: list = ['empresas', 'estabelecimentos', 'estabelecimentos_go', 'simples', 'socios']
-        
-        # Processa tabelas principais em paralelo
-        for tabela in list_tabela:
-            path_parquet: str = path_parquet + yyyymm + '/' + tabela + '/*.parquet'
-            logger.info(f'Processando tabela: {tabela}')
-            add_table_parquet(conn, tabela, path_parquet)
-
-        # Lista de tabelas fixas
-        list_tabela_fixa: list = ['cnae', 'motivo', 'municipio']
-        
-        # Processa tabelas fixas
-        for tabela in list_tabela_fixa:
-            path_parquet = path_parquet + 'base/' + tabela + '.parquet'
-            logger.info(f'Processando tabela fixa: {tabela}')
-            add_table_parquet(conn, tabela, path_parquet)
-        
-        logger.info(f'Tempo total de carga das tabelas: {str(datetime.datetime.now() - inter_time)}')
-
-        # Tenta copiar o arquivo para o destino remoto
-        try:
-            if not os.path.exists(path_parquet + file_db_parquet):
-                logger.error(f'Arquivo de origem não encontrado: {path_parquet + file_db_parquet}')
-                return
-
-            logger.info(f'Iniciando cópia do arquivo para: {path_remote_parquet + file_db_parquet}')
-            shutil.copy2(path_parquet + file_db_parquet, path_remote_parquet + file_db_parquet)
-            logger.info('Arquivo copiado com sucesso')
-            logger.info(f'Tempo gasto para cópia do arquivo: {str(datetime.datetime.now() - inter_time)}')
+    if os.path.exists(path_parquet_folder):
+        for root, dirs, files in os.walk(path_parquet_folder):
+            if root == path_parquet_folder:
+                continue
+                
+            # Pega o nome da subpasta (simples, socio, etc)
+            table_name = os.path.basename(root)
             
-        except PermissionError:
-            logger.error(f'Erro: Sem permissão para copiar arquivo para {path_remote_parquet}')
-        except Exception as e:
-            logger.error(f'Erro ao copiar o arquivo: {str(e)}')
-
-    except Exception as e:
-        logger.error(f'Erro ao criar banco de dados: {str(e)}')
-    finally:
+            # Busca arquivos parquet nesta pasta
+            parquet_files_in_dir = []
+            for f in files:
+                if f.endswith('.parquet'):
+                    # Normaliza as barras invertidas para o SQL
+                    parquet_files_in_dir.append(os.path.join(root, f).replace('\\', '/'))
+            
+            if parquet_files_in_dir:
+                parquet_files[table_name] = parquet_files_in_dir
+                logger.info(f"Encontrados {len(parquet_files_in_dir)} arquivos parquet na pasta {table_name}")
+    
+    # Busca os arquivos parquet na pasta base
+    base_path = os.path.join(path_parquet_folder, 'base')
+    if os.path.exists(base_path):
+        base_files = []
+        for f in os.listdir(base_path):
+            if f.endswith('.parquet'):
+                 # Normaliza as barras invertidas para o SQL
+                base_files.append(os.path.join(base_path, f).replace('\\', '/'))
+        if base_files:
+            parquet_files['base'] = base_files
+            logger.info(f"Encontrados {len(base_files)} arquivos parquet na pasta base")
+    
+    if not parquet_files:
+        logger.warning(f"Nenhum arquivo parquet encontrado em {path_parquet_folder}")
+        return False
+    
+    # Cria o banco de dados
+    db_path = os.path.join(path_parquet_folder, file_db_parquet)
+    
+    # Verifica se o arquivo de banco de dados já existe e o remove
+    if os.path.exists(db_path):
         try:
-            conn.close()
-            logger.info('Conexão com DuckDB fechada')
-        except Exception as e:
-            logger.warning(f'Erro ao fechar conexão: {str(e)}')
-
-def add_table_parquet(conn: duckdb.connect, table: str, path_parquet: str) -> None:
-    """Adiciona uma tabela ao DuckDB a partir de arquivos parquet."""
-    inter_timer: datetime = datetime.datetime.now()
+            os.remove(db_path)
+            logger.info(f"Arquivo de banco de dados existente removido: {db_path}")
+        except OSError as e:
+            logger.error(f"Erro ao remover arquivo de banco de dados existente {db_path}: {e}")
+            # Decide se quer parar ou continuar. Por enquanto, vamos parar.
+            return False
+            
     try:
-        logger.info(f'Iniciando carregamento da tabela {table}')
-        
-        # Otimiza a query para melhor performance
-        sql: str = f'''
-            CREATE OR REPLACE TABLE {table} AS 
-            SELECT * FROM '{path_parquet}'
-            USING SAMPLE 100 ROWS
-        '''
-        
-        # Executa a query com otimizações
-        conn.execute("PRAGMA enable_progress_bar")
-        conn.execute("PRAGMA threads=" + str(config.database.threads))
-        conn.execute(sql)
-        
-        # Cria índices para melhorar performance de consultas
-        if table in ['empresas', 'estabelecimentos', 'estabelecimentos_go']:
-            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_cnpj ON {table}(cnpj_basico)")
-        
-        logger.info(f'Tabela {table} carregada com sucesso')
-        logger.info(f'Tempo de carregamento da tabela {table}: {str(datetime.datetime.now() - inter_timer)}')
+        # Conecta ao banco de dados com configurações otimizadas
+        conn = duckdb.connect(db_path, config={
+            'threads': config.database.threads,
+            'memory_limit': config.dask.memory_limit,
+            'checkpoint_threshold': '1GB'
+        })
+        logger.info(f"Banco de dados criado em {db_path}")
+
+        # Para cada pasta (simples, empresa, estabelecimento, etc.), cria uma tabela
+        for table_name, files in parquet_files.items():
+            logger.info(f"Criando tabela {table_name} com {len(files)} arquivos...")
+            
+            # Cria uma lista SQL literal: ['path/file1.parquet', 'path/file2.parquet', ...]
+            sql_file_list = '[' + ', '.join([f"'{f}'" for f in files]) + ']'
+            
+            # Cria a tabela combinando todos os arquivos da pasta usando a lista SQL
+            conn.execute(f"""
+                CREATE TABLE {table_name} AS 
+                SELECT * FROM read_parquet({sql_file_list})
+            """)
+            logger.info(f"Tabela {table_name} criada com sucesso")
+
+        # Fecha a conexão
+        conn.close()
+        logger.info("Banco de dados criado com sucesso")
+
+        # Se houver caminho remoto, faz backup
+        if path_remote_parquet:
+            remote_path = os.path.join(path_remote_parquet, os.path.basename(path_parquet_folder))
+            logger.info(f"Fazendo backup para {remote_path}...")
+            
+            # Cria o diretório remoto se não existir
+            os.makedirs(remote_path, exist_ok=True)
+            
+            # Copia o arquivo do banco de dados
+            shutil.copy2(db_path, os.path.join(remote_path, file_db_parquet))
+            logger.info("Backup concluído com sucesso")
+
     except Exception as e:
-        logger.error(f'Erro ao carregar tabela {table}: {str(e)}')
-        raise 
+        logger.error(f"Erro ao criar banco de dados: {e}")
+        raise

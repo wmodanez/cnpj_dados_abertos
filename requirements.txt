@@ -9,3 +9,4 @@ aiohttp[speedups]==3.9.5
 aiofiles==23.2.1
 pandas==2.2.3
 rich==13.9.4
+pyarrow==19.0.1

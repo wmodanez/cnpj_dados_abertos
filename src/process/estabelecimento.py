@@ -4,21 +4,40 @@ import dask.dataframe as dd
 import pandas as pd
 from ..config import config
 from ..utils import file_extractor, file_delete, check_disk_space, estimate_zip_extracted_size
+from ..utils import process_csv_files_parallel, process_csv_to_df, verify_csv_integrity, create_parquet_filename
 import os
 import zipfile
 import csv
 import io
 from concurrent.futures import ThreadPoolExecutor
-from ..utils import process_csv_files_parallel, process_csv_to_df, verify_csv_integrity
 
 logger = logging.getLogger(__name__)
 
 def create_parquet(df, table_name, path_parquet):
-    """Converte um DataFrame para formato parquet."""
-    yyyymm = datetime.date.today().strftime('%Y%m')
-    output_dir = os.path.join(path_parquet, yyyymm, table_name)
+    """Converte um DataFrame para formato parquet.
+    
+    Args:
+        df: DataFrame Dask a ser convertido
+        table_name: Nome da tabela
+        path_parquet: Caminho base para os arquivos parquet
+    """
+    output_dir = os.path.join(path_parquet, table_name)
+    
+    # Limpa o diretório antes de criar os novos arquivos
+    try:
+        file_delete(output_dir)
+        logger.info(f'Diretório {output_dir} limpo antes de criar novos arquivos parquet')
+    except Exception as e:
+        logger.warning(f'Não foi possível limpar diretório {output_dir}: {str(e)}')
+    
     os.makedirs(output_dir, exist_ok=True)
-    df.to_parquet(output_dir, write_index=False)
+    
+    # Configura o nome dos arquivos parquet com prefixo da tabela
+    df.to_parquet(
+        output_dir,
+        write_index=False,
+        name_function=lambda i: create_parquet_filename(table_name, i)
+    )
 
 def process_csv_file(csv_path):
     """
@@ -83,10 +102,19 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str) -
     
     # Verifica espaço em disco (Manter)
     logger.info("Verificando espaço em disco necessário para descompactação...")
-    # ... (lógica de check_disk_space permanece mas pode ser movida para dentro do loop)
     
+    # Limpa o diretório de descompactação antes de começar
+    try:
+        file_delete(path_unzip)
+    except PermissionError as e:
+        logger.error(f'Sem permissão para limpar diretório de descompactação: {str(e)}')
+        return False
+    except Exception as e:
+        logger.error(f'Erro inesperado ao limpar diretório de descompactação: {str(e)}')
+        return False
+
     # Processa um arquivo ZIP por vez
-    logger.info(f'Iniciando processamento de arquivos ZIP existentes em {path_zip}...') # Ajustar log
+    logger.info(f'Iniciando processamento de arquivos ZIP existentes em {path_zip}...')
     success = False
     try:
         # Lista todos os arquivos ZIP de estabelecimentos
@@ -97,7 +125,7 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str) -
         
         all_dfs = []
         for zip_file in zip_files:
-             # Mover verificação de espaço para cá
+            # Mover verificação de espaço para cá
             zip_path = os.path.join(path_zip, zip_file)
             logger.info(f'Processando arquivo ZIP: {zip_file}')
             estimated_size_mb = estimate_zip_extracted_size(zip_path)
@@ -105,16 +133,6 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str) -
             has_space_for_file, available_mb_now = check_disk_space(path_unzip, estimated_size_mb * 1.2)
             if not has_space_for_file:
                 logger.error(f"Espaço insuficiente para descompactar {zip_file}. Disponível: {available_mb_now:.2f}MB, necessário: {estimated_size_mb * 1.2:.2f}MB")
-                continue
-            
-            # Limpa o diretório de descompactação antes de começar
-            try:
-                file_delete(path_unzip)
-            except PermissionError as e:
-                logger.error(f'Sem permissão para limpar diretório de descompactação: {str(e)}')
-                continue
-            except Exception as e:
-                logger.error(f'Erro inesperado ao limpar diretório de descompactação: {str(e)}')
                 continue
             
             # Descompacta apenas este arquivo ZIP
@@ -143,7 +161,7 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str) -
             try:
                 # Lê todos os arquivos CSV descompactados
                 try:
-                    csv_files = [f for f in os.listdir(path_unzip) if f.startswith('Estabelecimento') and f.endswith('.csv')]
+                    csv_files = [f for f in os.listdir(path_unzip) if 'CSV' in f]
                     if not csv_files:
                         logger.warning(f'Nenhum arquivo CSV encontrado após descompactar {zip_file}')
                         continue
@@ -176,22 +194,11 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str) -
                 else:
                     logger.warning(f'Nenhum DataFrame válido foi gerado a partir dos arquivos CSV')
                 
-                # Limpa os arquivos temporários após processamento
-                try:
-                    file_delete(path_unzip)
-                    logger.info(f'Arquivos temporários de {zip_file} removidos')
-                except Exception as e:
-                    logger.warning(f'Não foi possível remover arquivos temporários de {zip_file}: {str(e)}')
-                
                 success = True
                 
             except Exception as e:
                 logger.error(f'Erro inesperado ao processar dados do arquivo {zip_file}: {str(e)}')
-                # Mesmo em caso de erro, limpa os arquivos temporários
-                try:
-                    file_delete(path_unzip)
-                except Exception as clean_error:
-                    logger.warning(f'Não foi possível limpar arquivos temporários após erro: {str(clean_error)}')
+                continue
         
         # Se temos DataFrames para processar, concatena todos e cria o parquet
         if all_dfs:
@@ -258,6 +265,14 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str) -
                 except Exception as e:
                     logger.error(f'Erro inesperado ao criar arquivo parquet: {str(e)}')
                     success = False
+
+                # Limpa o diretório após criar os arquivos parquet
+                try:
+                    file_delete(path_unzip)
+                    logger.info('Diretório de descompactação limpo após processamento')
+                except Exception as e:
+                    logger.warning(f'Não foi possível limpar diretório após processamento: {str(e)}')
+
             except MemoryError as e:
                 logger.error(f'Memória insuficiente para concatenar DataFrames: {str(e)}')
                 success = False
