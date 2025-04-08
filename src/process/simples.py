@@ -200,13 +200,13 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 
                 # Renomeia as colunas usando os nomes originais corretos como chave
                 dd_simples = dd_simples.rename(columns={
-                    'cnpj_basico': 'cnpj', # Chave original do CSV
-                    'opcao_pelo_simples': 'opcao_simples', # Chave original do CSV
-                    'data_opcao_pelo_simples': 'data_opcao_simples', # Chave original do CSV
-                    'data_exclusao_do_simples': 'data_exclusao_simples', # Chave original do CSV
-                    'opcao_pelo_mei': 'opcao_mei', # Chave original do CSV
-                    'data_opcao_pelo_mei': 'data_opcao_mei', # Chave original do CSV
-                    'data_exclusao_do_mei': 'data_exclusao_mei' # Chave original do CSV
+                    'cnpj_basico': 'cnpj', 
+                    'opcao_pelo_simples': 'opcao_simples', 
+                    'data_opcao_pelo_simples': 'data_opcao_simples', 
+                    'data_exclusao_do_simples': 'data_exclusao_simples', 
+                    'opcao_pelo_mei': 'opcao_mei', 
+                    'data_opcao_pelo_mei': 'data_opcao_mei', 
+                    'data_exclusao_do_mei': 'data_exclusao_mei' 
                 })
                 
                 # Converte para parquet
@@ -255,5 +255,4 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
         return False
     except Exception as e:
         logger.exception(f'Erro inesperado no processo principal do Simples: {e}')
-        # ... (limpeza de path_unzip) ...
         return False 

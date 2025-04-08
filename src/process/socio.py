@@ -183,18 +183,17 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 
                 # Renomeia as colunas usando os nomes originais corretos como chave
                 dd_socio = dd_socio.rename(columns={
-                    'cnpj_basico': 'cnpj', # Chave original
-                    'identificador_de_socio': 'identificador_socio', # Chave original
-                    'nome_do_socio_razao_social': 'nome_socio', # Chave original
-                    'cnpj_ou_cpf_do_socio': 'cnpj_cpf_socio', # Chave original
-                    'qualificacao_do_socio': 'qualificacao_socio', # Chave original
-                    'data_de_entrada_sociedade': 'data_entrada_sociedade', # Chave original
-                    'pais': 'pais', # Chave original
-                    'representante_legal': 'representante_legal', # Chave original
-                    'nome_do_representante': 'nome_representante', # Chave original
-                    'qualificacao_do_representante_legal': 'qualificacao_representante', # Chave original
-                    'faixa_etaria': 'faixa_etaria' # Chave original
-                    # A coluna 'Unnamed: 8' parece não existir mais após a leitura explícita
+                    'cnpj_basico': 'cnpj', 
+                    'identificador_de_socio': 'identificador_socio', 
+                    'nome_do_socio_razao_social': 'nome_socio', 
+                    'cnpj_ou_cpf_do_socio': 'cnpj_cpf_socio', 
+                    'qualificacao_do_socio': 'qualificacao_socio', 
+                    'data_de_entrada_sociedade': 'data_entrada_sociedade', 
+                    'pais': 'pais', 
+                    'representante_legal': 'representante_legal', 
+                    'nome_do_representante': 'nome_representante', 
+                    'qualificacao_do_representante_legal': 'qualificacao_representante', 
+                    'faixa_etaria': 'faixa_etaria' 
                 })
                 
                 table_name = 'socio'

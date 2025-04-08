@@ -36,13 +36,6 @@ load_dotenv()
 # TODO: Considerar injetar a instância ao invés de criar globalmente, se necessário
 download_cache = DownloadCache(config.cache.cache_path)
 
-# Remover configuração de logging daqui - será feita em main.py
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format="%(message)s",
-#     datefmt="[%X]",
-#     handlers=[RichHandler(rich_tracebacks=True)]
-# )
 logger = logging.getLogger(__name__)
 
 def _fetch_and_parse(url: str) -> BeautifulSoup | None:
@@ -67,7 +60,7 @@ def _find_links(soup: BeautifulSoup, base_url: str, ends_with: str | None = None
 
     for link in soup.find_all('a'):
         href = link.get('href')
-        if not href or href.startswith('?') or href == '../': # Ignora links inválidos, de query ou pai
+        if not href or href.startswith('?') or href == '../': 
             continue
 
         # Verifica se o link termina com o sufixo desejado (case-insensitive)
@@ -116,13 +109,13 @@ def get_latest_month_zip_urls(base_url: str) -> Tuple[List[str], str]:
     logger.info(f"Buscando diretórios em: {base_url}")
     base_soup = _fetch_and_parse(base_url)
     if not base_soup:
-        return [], "" # Erro já logado em _fetch_and_parse
+        return [], "" 
 
     directory_links = _find_links(base_soup, base_url, ends_with=None) # ends_with=None busca diretórios terminados em /
 
     # 3: Filtrar diretórios AAAA-MM e encontrar o mais recente
     for dir_url in directory_links:
-        folder_name = dir_url.strip('/').split('/')[-1] # Pega o último componente do path
+        folder_name = dir_url.strip('/').split('/')[-1]
         match = re.fullmatch(r'(\d{4})-(\d{2})', folder_name)
         if match:
             year_month_folders.append((folder_name, dir_url))
@@ -163,7 +156,7 @@ async def _process_download_response(response: aiohttp.ClientResponse, destinati
             progress.update(task_id, total=size_to_download, completed=0)
             initial_size = 0
         else:
-             size_to_download = None # Tamanho desconhecido, a barra Rich lidará com total=None
+             size_to_download = None 
 
         async with aiofiles.open(destination_path, mode=file_mode) as f:
             # Inicia a tarefa na barra de progresso se ainda não estiver iniciada
@@ -257,7 +250,6 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                 # Checa cache primeiro (se habilitado)
                 if config.cache.enabled and download_cache.is_file_cached(filename, remote_size, remote_last_modified):
                      if local_size == remote_size:
-                         # logger.info(f"Arquivo {filename} já existe, atualizado e em cache. Pulando download.") # REMOVIDO
                          progress.update(task_id, description=f"[green]{filename[:30]} (cache)[/green]", completed=remote_size, style="green")
                          skip_download = True
                          skip_reason = "cache"
@@ -299,7 +291,6 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                      if remote_last_modified is not None:
                           local_last_modified = int(os.path.getmtime(destination_path))
                           if local_last_modified >= remote_last_modified:
-                              # logger.info(f"Arquivo local {filename} completo e atualizado. Pulando download.") # REMOVIDO
                               progress.update(task_id, description=f"[green]{filename[:30]} (local)[/green]", completed=remote_size, style="green")
                               skip_download = True
                               skip_reason = "local"
@@ -310,7 +301,6 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                               file_mode = 'wb'
                               initial_size = 0
                      else:
-                          # logger.info(f"Arquivo local {filename} completo (sem data remota). Pulando download.") # REMOVIDO
                           progress.update(task_id, description=f"[green]{filename[:30]} (local s/ data)[/green]", completed=remote_size, style="green")
                           skip_download = True
                           skip_reason = "local (sem data)"
@@ -376,9 +366,6 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
             # Remove do cache em caso de erro
             if config.cache.enabled:
                 download_cache.remove_file_from_cache(filename)
-            # Considerar remover arquivo parcial?
-            # if os.path.exists(destination_path):
-            #    try: os.remove(destination_path) except OSError:
             # Retorna erro, sem motivo de skip
             return url, e, None # Adiciona None para skip_reason
         except Exception as e:
@@ -501,10 +488,3 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
     logger.info(f"Total de arquivos pulados (cache/local): {len(skipped_files)}")
 
     return downloaded_files, failed_downloads
-
-# Remover função de exemplo e bloco de execução direta
-# async def main_example():
-#     ...
-#
-# if __name__ == "__main__":
-#     ... 

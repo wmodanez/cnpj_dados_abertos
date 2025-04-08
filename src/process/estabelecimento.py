@@ -223,36 +223,36 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str) -
                 
                 # Renomeia as colunas usando os nomes originais corretos como chave
                 dd_estabelecimento = dd_estabelecimento.rename(columns={
-                    'cnpj_basico': 'cnpj', # Chave original
-                    'cnpj_ordem': 'ordem', # Chave original
-                    'cnpj_dv': 'dv', # Chave original
-                    'identificador_matriz_filial': 'matriz_filial', # Chave original
-                    'nome_fantasia': 'nome_fantasia', # Chave original
-                    'situacao_cadastral': 'situacao_cadastral', # Chave original
-                    'data_situacao_cadastral': 'data_situacao_cadastral', # Chave original
-                    'motivo_situacao_cadastral': 'motivo_situacao_cadastral', # Chave original
-                    'nome_cidade_exterior': 'cidade_exterior', # Chave original
-                    'pais': 'pais', # Chave original
-                    'data_inicio_atividade': 'data_inicio_atividade', # Chave original
-                    'cnae_fiscal_principal': 'cnae_principal', # Chave original
-                    'cnae_fiscal_secundaria': 'cnae_secundaria', # Chave original
-                    'tipo_logradouro': 'tipo_logradouro', # Chave original
-                    'logradouro': 'logradouro', # Chave original
-                    'numero': 'numero', # Chave original
-                    'complemento': 'complemento', # Chave original
-                    'bairro': 'bairro', # Chave original
-                    'cep': 'cep', # Chave original
-                    'uf': 'uf', # Chave original
-                    'municipio': 'municipio', # Chave original
-                    'ddd_1': 'ddd_1', # Chave original
-                    'telefone_1': 'telefone_1', # Chave original
-                    'ddd_2': 'ddd_2', # Chave original
-                    'telefone_2': 'telefone_2', # Chave original
-                    'ddd_fax': 'ddd_fax', # Chave original
-                    'fax': 'fax', # Chave original
-                    'correio_eletronico': 'email', # Chave original
-                    'situacao_especial': 'situacao_especial', # Chave original
-                    'data_situacao_especial': 'data_situacao_especial' # Chave original
+                    'cnpj_basico': 'cnpj', 
+                    'cnpj_ordem': 'ordem', 
+                    'cnpj_dv': 'dv', 
+                    'identificador_matriz_filial': 'matriz_filial', 
+                    'nome_fantasia': 'nome_fantasia', 
+                    'situacao_cadastral': 'situacao_cadastral', 
+                    'data_situacao_cadastral': 'data_situacao_cadastral', 
+                    'motivo_situacao_cadastral': 'motivo_situacao_cadastral', 
+                    'nome_cidade_exterior': 'cidade_exterior', 
+                    'pais': 'pais', 
+                    'data_inicio_atividade': 'data_inicio_atividade', 
+                    'cnae_fiscal_principal': 'cnae_principal', 
+                    'cnae_fiscal_secundaria': 'cnae_secundaria', 
+                    'tipo_logradouro': 'tipo_logradouro', 
+                    'logradouro': 'logradouro', 
+                    'numero': 'numero', 
+                    'complemento': 'complemento', 
+                    'bairro': 'bairro', 
+                    'cep': 'cep', 
+                    'uf': 'uf', 
+                    'municipio': 'municipio', 
+                    'ddd_1': 'ddd_1', 
+                    'telefone_1': 'telefone_1', 
+                    'ddd_2': 'ddd_2', 
+                    'telefone_2': 'telefone_2', 
+                    'ddd_fax': 'ddd_fax', 
+                    'fax': 'fax', 
+                    'correio_eletronico': 'email', 
+                    'situacao_especial': 'situacao_especial', 
+                    'data_situacao_especial': 'data_situacao_especial' 
                 })
                 
                 # Converte para parquet
@@ -295,5 +295,4 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str) -
         return False
     except Exception as e:
         logger.exception(f'Erro inesperado no processo principal de estabelecimentos: {e}')
-        # ... (limpeza de path_unzip) ...
         return False 

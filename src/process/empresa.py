@@ -206,13 +206,13 @@ def process_empresa(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 
                 # Renomeia as colunas usando os nomes originais corretos como chave
                 dd_empresa = dd_empresa.rename(columns={
-                    'cnpj_basico': 'cnpj', # Chave original do CSV
-                    'razao_social_nome_empresarial': 'razao_social', # Chave original do CSV
-                    'natureza_juridica': 'natureza_juridica', # Chave original do CSV
-                    'qualificacao_do_responsavel': 'qualificacao_responsavel', # Chave original do CSV
-                    'capital_social_da_empresa': 'capital_social', # Chave original do CSV
-                    'porte_da_empresa': 'porte_empresa', # Chave original do CSV
-                    'ente_federativo_responsavel': 'ente_federativo_responsavel' # Chave original do CSV
+                    'cnpj_basico': 'cnpj', 
+                    'razao_social_nome_empresarial': 'razao_social', 
+                    'natureza_juridica': 'natureza_juridica', 
+                    'qualificacao_do_responsavel': 'qualificacao_responsavel', 
+                    'capital_social_da_empresa': 'capital_social', 
+                    'porte_da_empresa': 'porte_empresa', 
+                    'ente_federativo_responsavel': 'ente_federativo_responsavel' 
                 })
                 
                 # Converte para parquet

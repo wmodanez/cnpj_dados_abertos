@@ -537,40 +537,45 @@ git checkout -b feature/duckdb-integration master
 Para implementar estas melhorias de forma gradual e segura:
 
 ### Fase 1: Otimizações Imediatas (1-2 semanas)
+
 - Implementar downloads paralelos com asyncio
 - Adicionar descompactação em paralelo
 - Implementar cache básico de metadados
 
 ### Fase 2: Migração para PySpark (2-3 semanas)
+
 - Configurar ambiente Spark
 - Adaptar scripts de processamento para PySpark
 - Implementar validação de dados com ferramentas do Spark
 
 ### Fase 3: Otimização de Fluxo (2-3 semanas)
+
 - Implementar o loop de processamento com validação e correção
 - Adicionar sistema de checkpoints
 - Otimizar armazenamento Parquet
 
 ### Fase 4: Refinamentos Finais (1-2 semanas)
+
 - Implementar integração otimizada com DuckDB
 - Configurar monitoramento e métricas
 - Testes de desempenho e ajustes finais
 
+
 ### Tabela de Implementação das Branches
 
-| Fase | Nome da Branch | Descrição | Status | Dependências |
-|------|---------------|-----------|--------|--------------|
-| 1 | feature/async-downloads | Implementação de downloads assíncronos | 🚧 | - |
-| 1 | feature/parallel-extraction | Descompactação em paralelo de arquivos | ⏳ | - |
-| 1 | feature/metadata-cache | Sistema de cache de metadados | ⏳ | - |
-| 2 | feature/pyspark-migration | Migração do processamento para PySpark | ⏳ | Fase 1 |
-| 2 | feature/optimized-storage | Otimização do formato de armazenamento | ⏳ | feature/pyspark-migration |
-| 2 | feature/integrated-validation | Validação integrada de dados com Spark | ⏳ | feature/pyspark-migration |
-| 3 | feature/recovery-checkpoints | Sistema de checkpoints para recuperação | ⏳ | feature/pyspark-migration |
-| 3 | feature/monitoring-system | Implementação de sistema de monitoramento | ⏳ | feature/pyspark-migration |
-| 3 | feature/advanced-error-handling | Tratamento avançado de erros | ⏳ | feature/pyspark-migration |
-| 4 | feature/modular-pipeline | Implementação de pipeline modular | ⏳ | Fase 3 |
-| 4 | feature/duckdb-integration | Integração direta com DuckDB | ⏳ | Fase 3 |
+| Fase | Nome da Branch              | Descrição                               | Data Início | Data Previsão | Data Conclusão | Status | Dependências |
+| :--- | :-------------------------- | :-------------------------------------- | :---------- | :------------ | :------------- | :----- | :--------- |
+| 1    | feature/async-downloads     | Implementação de downloads assíncronos  | 10/04/2025  | 15/04/2025    | 08/04/2025     | ✅     | -            |
+| 1    | feature/parallel-extraction | Descompactação em paralelo de arquivos  | 09/04/2025  | 14/04/2025    | 08/04/2025     | ✅     | -            |
+| 1    | feature/metadata-cache      | Sistema de cache de metadados           | 15/04/2025  | 24/04/2025    | 08/04/2025     | ✅     | -            |
+| 2    | feature/pyspark-migration   | Migração do processamento para PySpark  | 09/04/2025  | 30/04/2025    | -              | 🚧     | -            |
+| 2    | feature/optimized-storage   | Otimização do formato de armazenamento  | 09/06/2025  | 13/06/2025    | -              | ⏳     | -            |
+| 2    | feature/integrated-validation | Validação integrada de dados com Spark  | 20/05/2025  | 26/05/2025    | -              | ⏳     | -            |
+| 3    | feature/recovery-checkpoints| Sistema de checkpoints para recuperação | 09/06/2025  | 12/06/2025    | -              | ⏳     | -            |
+| 3    | feature/monitoring-system   | Implementação de sistema de monitoramento| 23/06/2025  | 25/06/2025    | -              | ⏳     | -            |
+| 3    | feature/advanced-error-handling| Tratamento avançado de erros           | 20/05/2025  | 26/05/2025    | -              | ⏳     | -            |
+| 4    | feature/modular-pipeline    | Implementação de pipeline modular       | 03/07/2025  | 04/07/2025    | -              | ⏳     | -            |
+| 4    | feature/duckdb-integration  | Integração direta com DuckDB          | 23/06/2025  | 26/06/2025    | -              | ⏳     | -            |
 
 ### Diagrama de Gantt do Plano de Implementação
 
@@ -704,3 +709,4 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
   - Simples Nacional: 3GB
 - Em caso de falhas, o sistema tentará novamente automaticamente
 - Verificação de espaço em disco é realizada antes da descompactação
+

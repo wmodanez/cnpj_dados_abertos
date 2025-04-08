@@ -194,10 +194,10 @@ def main():
 
     # Define quais tipos processar baseado nos argumentos
     tipos_a_processar = {
-        # 'empresas': (process_empresa, "EMPRESAS"),
-        # 'estabelecimentos': (process_estabelecimento, "ESTABELECIMENTOS"),
+        'empresas': (process_empresa, "EMPRESAS"),
+        'estabelecimentos': (process_estabelecimento, "ESTABELECIMENTOS"),
         'simples': (process_simples, "SIMPLES NACIONAL"),
-        # 'socios': (process_socio, "SÓCIOS")
+        'socios': (process_socio, "SÓCIOS")
     }
 
     # Se não especificou tipos, processa todos
