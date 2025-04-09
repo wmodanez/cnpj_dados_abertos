@@ -204,10 +204,10 @@ def main():
 
     # Define quais tipos processar baseado nos argumentos
     tipos_a_processar = {
-        'empresas': (process_empresa, "EMPRESAS"),
-        'estabelecimentos': (process_estabelecimento, "ESTABELECIMENTOS"),
+        # 'empresas': (process_empresa, "EMPRESAS"),
+        # 'estabelecimentos': (process_estabelecimento, "ESTABELECIMENTOS"),
         'simples': (process_simples, "SIMPLES NACIONAL"),
-        'socios': (process_socio, "SÓCIOS")
+        # 'socios': (process_socio, "SÓCIOS")
     }
 
     # Se não especificou tipos, processa todos
@@ -216,6 +216,18 @@ def main():
 
     # Converte os tipos de argumentos para os nomes reais dos arquivos
     tipos_desejados = [tipo_para_nome[t] for t in args.tipos] if args.tipos else None
+
+    # Configuração do Dask
+    print_section("Iniciando configuração do Dask...")
+    freeze_support()
+    cluster: LocalCluster = LocalCluster(
+        n_workers=config.dask.n_workers,
+        threads_per_worker=config.dask.threads_per_worker,
+        memory_limit=config.dask.memory_limit,
+        dashboard_address=config.dask.dashboard_address
+    )
+    client: Client = Client(cluster)
+    print_success(f"Cliente Dask inicializado com sucesso: {client}")
 
     # --- Etapa de Download Centralizada ---
     print_header("Iniciando Etapa de Download...")
@@ -230,18 +242,6 @@ def main():
     print_success("Etapa de Download concluída.")
     # -----------------------------------------
 
-    # Configuração do Dask
-    print_section("Iniciando configuração do Dask...")
-    freeze_support()
-    cluster: LocalCluster = LocalCluster(
-        n_workers=config.dask.n_workers,
-        threads_per_worker=config.dask.threads_per_worker,
-        memory_limit=config.dask.memory_limit,
-        dashboard_address=config.dask.dashboard_address
-    )
-    client: Client = Client(cluster)
-    print_success(f"Cliente Dask inicializado com sucesso: {client}")
-
     # Processa os dados
     is_create_db_parquet: bool = True
 
@@ -249,43 +249,47 @@ def main():
     print_header("Iniciando processamento dos dados...")
 
     # Processa apenas os tipos solicitados
-    for tipo in args.tipos:
-        process_func, nome = tipos_a_processar[tipo]
-        print_section(f"Processando dados de {nome}...")
-        if process_func(PATH_ZIP, PATH_UNZIP, os.path.join(PATH_PARQUET, latest_folder)):
-            is_create_db_parquet = True
-            print_success(f"Dados de {nome} processados com sucesso")
-        else:
-            print_warning(f"Nenhum dado novo de {nome} para processar")
-
-    # Cria o banco de dados se necessário
-    if is_create_db_parquet:
-        print_header("Criando banco de dados DuckDB...")
-        create_duckdb_file(
-            path_parquet_folder=os.path.join(PATH_PARQUET, latest_folder),
-            file_db_parquet=FILE_DB_PARQUET,
-            path_remote_parquet=PATH_REMOTE_PARQUET
-        )
-        print_success("Banco de dados DuckDB criado com sucesso")
-    else:
-        print_warning("Nenhum dado novo para criar banco de dados")
-
-    print_header(f"Tempo total de execução: {str(datetime.datetime.now() - start_time)}")
-
-    print_section("Encerrando cliente Dask...")
     try:
-        # Fecha o cliente Dask
-        client.close()
-        # Aguarda um momento para garantir que todas as threads sejam encerradas
-        import time
-        time.sleep(1)
-        # Encerra o cluster
-        cluster.close()
-        print_success("Cliente Dask encerrado com sucesso")
+        for tipo in args.tipos:
+            process_func, nome = tipos_a_processar[tipo]
+            print_section(f"Processando dados de {nome}...")
+            if process_func(PATH_ZIP, PATH_UNZIP, os.path.join(PATH_PARQUET, latest_folder)):
+                is_create_db_parquet = True
+                print_success(f"Dados de {nome} processados com sucesso")
+            else:
+                print_warning(f"Nenhum dado novo de {nome} para processar")
+
+        # Cria o banco de dados se necessário
+        if is_create_db_parquet:
+            print_header("Criando banco de dados DuckDB...")
+            create_duckdb_file(
+                path_parquet_folder=os.path.join(PATH_PARQUET, latest_folder),
+                file_db_parquet=FILE_DB_PARQUET,
+                path_remote_parquet=PATH_REMOTE_PARQUET
+            )
+            print_success("Banco de dados DuckDB criado com sucesso")
+        else:
+            print_warning("Nenhum dado novo para criar banco de dados")
+
+        print_header(f"Tempo total de execução: {str(datetime.datetime.now() - start_time)}")
+
     except Exception as e:
-        logger.error(f"Erro ao encerrar cliente Dask: {e}")
+        logger.error(f"Erro durante o processamento: {e}")
     finally:
-        print_success("Processo finalizado com sucesso!")
+        print_section("Encerrando cliente Dask...")
+        try:
+            # Fecha o cliente Dask
+            client.close()
+            # Aguarda um momento para garantir que todas as threads sejam encerradas
+            import time
+            time.sleep(1)
+            # Encerra o cluster
+            cluster.close()
+            print_success("Cliente Dask encerrado com sucesso")
+        except Exception as e:
+            logger.error(f"Erro ao encerrar cliente Dask: {e}")
+        finally:
+            print_success("Processo finalizado com sucesso!")
 
 
 if __name__ == '__main__':

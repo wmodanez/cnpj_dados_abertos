@@ -70,7 +70,8 @@ def process_csv_file(csv_path):
             dtype=dtype_dict, 
             column_names=original_column_names,
             separator=config.file.separator, # Usa separador da config
-            encoding=config.file.encoding    # Usa encoding da config
+            encoding=config.file.encoding,   # Usa encoding da config
+            na_filter=False  # Como em simples.py
         )
         return df
     except Exception as e:
@@ -119,34 +120,25 @@ def apply_estabelecimento_transformations(ddf):
     ddf = ddf.rename(columns=actual_rename_mapping)
     logger.info(f"Colunas após renomear: {list(ddf.columns)}")
 
-    # 2. Remover colunas
-    cols_to_drop = [
-        'cnpj_ordem', 'cnpj_dv', 'tipo_logradouro', 'logradouro', 'numero', 'complemento',
-        'bairro', 'ddd1', 'telefone1', 'ddd2', 'telefone2', 'ddd_fax', 'fax', 'pais',
-        'correio_eletronico', 'situacao_especial', 'data_situacao_especial',
-        'nome_cidade_exterior'
-    ]
-    actual_cols_to_drop = [col for col in cols_to_drop if col in ddf.columns]
-    if actual_cols_to_drop:
-        ddf = ddf.drop(columns=actual_cols_to_drop)
-        logger.info(f"Colunas removidas: {actual_cols_to_drop}")
-    logger.info(f"Colunas após drop: {list(ddf.columns)}")
-
-    # 3. Criar coluna 'cnpj' completa
-    if all(col in ddf.columns for col in ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']): # Requer as colunas originais antes do drop
-        # Esta lógica precisa ser revista, pois as colunas foram dropadas. 
-        # Assumindo que a leitura inicial trará as colunas necessárias
-        # Vamos recriar as colunas temporariamente se necessário ou ajustar a ordem das operações
-        # --> CORREÇÃO: Mover o drop para depois da criação do CNPJ
-        pass # Lógica movida para depois das transformações
-    else:
-        logger.warning("Colunas 'cnpj_basico', 'cnpj_ordem', 'cnpj_dv' não encontradas para criar 'cnpj' completo.")
+    # 2. Converter tipos (antes de outras operações)
+    # 2.1 Campos numéricos inteiros - convertendo com segurança para Int64
+    int_cols = ['matriz_filial', 'codigo_situacao_cadastral', 'codigo_motivo_situacao_cadastral', 
+                'codigo_cnae', 'codigo_municipio']
+    for col in int_cols:
+        if col in ddf.columns:
+            logger.info(f"Convertendo coluna '{col}' para Int64")
+            ddf[col] = ddf[col].map_partitions(
+                pd.to_numeric, errors='coerce', meta=(col, 'float64')
+            ).astype('Int64')  # Int64 permite valores nulos
     
-    # 4. Converter tipos (CNPJ Básico e Datas)
+    # 2.2 Converta o cnpj_basico para Int64
     if 'cnpj_basico' in ddf.columns:
-        ddf['cnpj_basico'] = ddf['cnpj_basico'].map_partitions(pd.to_numeric, errors='coerce', meta=('cnpj_basico', 'float64')).astype('Int64')
+        ddf['cnpj_basico'] = ddf['cnpj_basico'].map_partitions(
+            pd.to_numeric, errors='coerce', meta=('cnpj_basico', 'float64')
+        ).astype('Int64')
         logger.info("Coluna 'cnpj_basico' convertida para Int64.")
 
+    # 2.3 Converter colunas de data
     date_cols_to_convert = {
         'data_situacao_cadastral': None, # Meta inferida pelo Dask
         'data_inicio_atividades': None
@@ -157,46 +149,60 @@ def apply_estabelecimento_transformations(ddf):
             # Substituir '0' ou '00000000' por NaN antes de converter
             # Usar map_partitions para aplicar a substituição e conversão
             def convert_date_partition(series):
-                # Tenta substituir strings, ignora erros se não for string
+                # Trata strings vazias e zeros antes da conversão
                 try:
-                    series = series.str.replace('00000000', '', regex=False).replace('0', '')
-                except AttributeError:
-                    pass # Ignora se não for string
-                return pd.to_datetime(series, errors='coerce', format='%Y%m%d')
+                    # Converte para string primeiro caso seja outro tipo
+                    series = series.astype(str)
+                    # Substitui valores inválidos por vazio
+                    series = series.replace(['0', '00000000', 'nan', 'None', 'NaN'], '')
+                    # Converte para datetime, com erros como NaT
+                    return pd.to_datetime(series, errors='coerce', format='%Y%m%d')
+                except Exception as e:
+                    logger.warning(f"Erro ao converter coluna de data {col}: {str(e)}")
+                    return pd.Series(pd.NaT, index=series.index)
 
             meta = (col, 'datetime64[ns]') if meta_type is None else (col, meta_type)
             ddf[col] = ddf[col].map_partitions(convert_date_partition, meta=meta)
             logger.info(f"Coluna '{col}' convertida para datetime.")
 
-
+    # 3. Remover colunas
+    cols_to_drop = [
+        'cnpj_ordem', 'cnpj_dv', 'tipo_logradouro', 'logradouro', 'numero', 'complemento',
+        'bairro', 'ddd1', 'telefone1', 'ddd2', 'telefone2', 'ddd_fax', 'fax', 'pais',
+        'correio_eletronico', 'situacao_especial', 'data_situacao_especial',
+        'nome_cidade_exterior'
+    ]
+    
+    # 4. Criar coluna 'cnpj' completa (se necessário)
+    # TODO: Implementar esta funcionalidade conforme necessidade
+    
     # 5. Criar coluna 'tipo_situacao_cadastral'
     if 'codigo_situacao_cadastral' in ddf.columns and 'codigo_motivo_situacao_cadastral' in ddf.columns:
         logger.info("Criando coluna 'tipo_situacao_cadastral'...")
-        # Converter códigos para numérico antes de comparar
-        ddf['codigo_situacao_cadastral_num'] = ddf['codigo_situacao_cadastral'].map_partitions(pd.to_numeric, errors='coerce', meta=('codigo_situacao_cadastral', 'float64')).astype('Int64')
-        ddf['codigo_motivo_situacao_cadastral_num'] = ddf['codigo_motivo_situacao_cadastral'].map_partitions(pd.to_numeric, errors='coerce', meta=('codigo_motivo_situacao_cadastral', 'float64')).astype('Int64')
+        # Usar diretamente as colunas já convertidas para Int64
         
         # Aplicar lógica com dask.dataframe.assign ou where
         ddf = ddf.assign(tipo_situacao_cadastral=1) # Default para ATIVA
-        ddf['tipo_situacao_cadastral'] = ddf['tipo_situacao_cadastral'].where(ddf['codigo_situacao_cadastral_num'] == 2, 2) # INATIVA
-        ddf['tipo_situacao_cadastral'] = ddf['tipo_situacao_cadastral'].where(~((ddf['codigo_situacao_cadastral_num'] == 8) & (ddf['codigo_motivo_situacao_cadastral_num'] == 1)), 3) # BAIXADA
+        ddf['tipo_situacao_cadastral'] = ddf['tipo_situacao_cadastral'].where(
+            ddf['codigo_situacao_cadastral'] != 2, 2) # INATIVA
         
-        # Remover colunas numéricas temporárias
-        ddf = ddf.drop(columns=['codigo_situacao_cadastral_num', 'codigo_motivo_situacao_cadastral_num'])
+        # Para BAIXADA, precisamos verificar se ambos os campos não são nulos
+        baixada_condition = (
+            (ddf['codigo_situacao_cadastral'] == 8) & 
+            (ddf['codigo_motivo_situacao_cadastral'] == 1)
+        )
+        ddf['tipo_situacao_cadastral'] = ddf['tipo_situacao_cadastral'].where(
+            ~baixada_condition, 3) # BAIXADA
+        
         logger.info("Coluna 'tipo_situacao_cadastral' criada.")
     else:
         logger.warning("Colunas 'codigo_situacao_cadastral' ou 'codigo_motivo_situacao_cadastral' não encontradas. Pulando criação de 'tipo_situacao_cadastral'.")
         
-    # --- Mover criação do CNPJ completo para cá ---
-    # Recriar temporariamente as colunas necessárias se já foram dropadas
-    # Ou melhor: Ler o CSV com as colunas necessárias, criar o CNPJ, DEPOIS dropar.
-    # --> REFAZENDO: A lógica assume que a leitura traz as colunas. Vou ajustar o ponto do drop.
-    
-    # APLICANDO O DROP AGORA, APÓS TRANSFORMAÇÕES QUE USARAM AS COLUNAS
-    actual_cols_to_drop_final = [col for col in cols_to_drop if col in ddf.columns]
-    if actual_cols_to_drop_final:
-        ddf = ddf.drop(columns=actual_cols_to_drop_final)
-        logger.info(f"Colunas removidas (final): {actual_cols_to_drop_final}")
+    # Removendo colunas no final, após utilizar todos os dados necessários
+    actual_cols_to_drop = [col for col in cols_to_drop if col in ddf.columns]
+    if actual_cols_to_drop:
+        ddf = ddf.drop(columns=actual_cols_to_drop)
+        logger.info(f"Colunas removidas (final): {actual_cols_to_drop}")
     logger.info(f"Colunas finais após transformações e drop: {list(ddf.columns)}")
 
     return ddf

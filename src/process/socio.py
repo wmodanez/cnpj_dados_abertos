@@ -122,12 +122,19 @@ def apply_socio_transformations(ddf):
         logger.info("Convertendo coluna 'data_entrada_sociedade' para datetime")
         def convert_date_partition(series):
             try:
-                series = series.str.replace('00000000', '', regex=False)
-            except AttributeError:
-                pass
-            return pd.to_datetime(series, errors='coerce', format='%Y%m%d')
+                # Converte para string primeiro caso seja outro tipo
+                series = series.astype(str)
+                # Substitui valores inválidos por vazio
+                series = series.replace(['0', '00000000', 'nan', 'None', 'NaN'], '')
+                # Converte para datetime, com erros como NaT
+                return pd.to_datetime(series, errors='coerce', format='%Y%m%d')
+            except Exception as e:
+                logger.warning(f"Erro ao converter data_entrada_sociedade: {str(e)}")
+                return pd.Series(pd.NaT, index=series.index)
+            
         meta = ('data_entrada_sociedade', 'datetime64[ns]')
         ddf['data_entrada_sociedade'] = ddf['data_entrada_sociedade'].map_partitions(convert_date_partition, meta=meta)
+        logger.info("Coluna 'data_entrada_sociedade' convertida para datetime.")
     else:
         logger.warning("Coluna 'data_entrada_sociedade' não encontrada para conversão.")
 

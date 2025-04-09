@@ -42,7 +42,7 @@ def verify_csv_integrity(csv_path: str) -> bool:
         return False
 
 
-def process_csv_to_df(csv_path: str, dtype: dict, column_names: List[str]) -> dd.DataFrame:
+def process_csv_to_df(csv_path: str, dtype: dict, column_names: List[str], separator: str = ';', encoding: str = 'latin1', na_filter: bool = True) -> dd.DataFrame:
     """
     Lê um arquivo CSV e retorna um DataFrame Dask.
     
@@ -50,6 +50,9 @@ def process_csv_to_df(csv_path: str, dtype: dict, column_names: List[str]) -> dd
         csv_path: Caminho para o arquivo CSV
         dtype: Dicionário de tipos de dados para as colunas
         column_names: Lista com os nomes das colunas
+        separator: Separador usado no arquivo CSV (padrão: ';')
+        encoding: Codificação do arquivo CSV (padrão: 'latin1')
+        na_filter: Se False, mantém todos os valores como estão sem converter vazios para NaN (padrão: True)
         
     Returns:
         DataFrame Dask ou levanta uma exceção em caso de erro
@@ -59,14 +62,15 @@ def process_csv_to_df(csv_path: str, dtype: dict, column_names: List[str]) -> dd
         df = dd.read_csv(
             csv_path,
             dtype=dtype,
-            sep=';',
-            encoding='latin1',
+            sep=separator,
+            encoding=encoding,
             quoting=csv.QUOTE_MINIMAL,
             escapechar='\\',
             on_bad_lines='warn',
             header=None,  # Não lê a primeira linha como cabeçalho
             names=column_names,  # Usa os nomes fornecidos
-            low_memory=False
+            low_memory=False,
+            na_filter=na_filter  # Adicionado para permitir controlar a conversão de valores vazios
         )
         return df
     except pd.errors.EmptyDataError as e:

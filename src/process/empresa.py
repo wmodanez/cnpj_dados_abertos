@@ -67,7 +67,8 @@ def process_csv_file(csv_path):
             dtype=dtype_dict, 
             column_names=original_column_names,
             separator=config.file.separator, # Usa separador da config
-            encoding=config.file.encoding    # Usa encoding da config
+            encoding=config.file.encoding,   # Usa encoding da config
+            na_filter=False # Como em simples.py
         )
         return df
     except Exception as e:
@@ -75,20 +76,97 @@ def process_csv_file(csv_path):
         return None
 
 
+def apply_empresa_transformations(ddf):
+    """Aplica as transformações específicas para Empresas."""
+    logger.info("Aplicando transformações em Empresas...")
+    
+    # 1. Renomear colunas 
+    rename_mapping = {
+        'cnpj_basico': 'cnpj',
+        'razao_social_nome_empresarial': 'razao_social',
+        'natureza_juridica': 'natureza_juridica',
+        'qualificacao_do_responsavel': 'qualificacao_responsavel',
+        'capital_social_da_empresa': 'capital_social',
+        'porte_da_empresa': 'porte_empresa',
+        'ente_federativo_responsavel': 'ente_federativo_responsavel'
+    }
+    # Filtra o mapeamento para incluir apenas colunas existentes no DataFrame
+    actual_rename_mapping = {k: v for k, v in rename_mapping.items() if k in ddf.columns}
+    ddf = ddf.rename(columns=actual_rename_mapping)
+    logger.info(f"Colunas após renomear: {list(ddf.columns)}")
+    
+    # 2. Converter colunas para tipos corretos (após serem lidas como string)
+    # Campos que precisam ser numéricos para operações posteriores
+    int_cols = ['natureza_juridica', 'qualificacao_responsavel', 'porte_empresa']
+    for col in int_cols:
+        if col in ddf.columns:
+            logger.info(f"Convertendo coluna '{col}' para Int64")
+            try:
+                # Tenta converter para numérico
+                ddf[col] = ddf[col].map_partitions(
+                    pd.to_numeric, errors='coerce', meta=(col, 'float64')
+                ).astype('Int64')  # Int64 permite valores nulos
+                
+                # Verifica o tipo depois da conversão
+                coluna_tipo = ddf[col].dtype
+                logger.info(f"Coluna '{col}' convertida com sucesso. Tipo atual: {coluna_tipo}")
+                
+                # Se for natureza_juridica, verifica se existem valores entre 2046 e 2348
+                if col == 'natureza_juridica':
+                    # Verifica a distribuição de valores para confirmar a conversão
+                    try:
+                        # Tenta acessar apenas a primeira partição para evitar computação pesada
+                        primeira_particao = ddf[col].partitions[0].compute()
+                        if len(primeira_particao) > 0:
+                            valores_unicos = primeira_particao.unique()
+                            logger.info(f"Valores únicos em primeira_particao de {col} (amostra): {valores_unicos[:10] if len(valores_unicos) > 10 else valores_unicos}")
+                            
+                            # Verifica se existem valores no intervalo de interesse
+                            valores_privados = [v for v in valores_unicos if isinstance(v, (int, float)) and 2046 <= v <= 2348]
+                            if valores_privados:
+                                logger.info(f"Encontrados valores de empresa privada em {col}: {valores_privados[:5]}")
+                            else:
+                                logger.warning(f"Não foram encontrados valores no intervalo de empresas privadas (2046-2348) em {col}")
+                    except Exception as e:
+                        logger.warning(f"Não foi possível verificar distribuição de valores em {col}: {e}")
+            except Exception as e:
+                logger.error(f"Erro ao converter coluna '{col}' para Int64: {str(e)}")
+        else:
+            logger.warning(f"Coluna '{col}' não encontrada para conversão.")
+            
+    # Conversão do campo capital_social (manuseia vírgulas como separador decimal)
+    if 'capital_social' in ddf.columns:
+        logger.info("Convertendo capital_social (tratando vírgulas como separador decimal)")
+        # Função para converter valores monetários com vírgula
+        def convert_monetary_value(series):
+            try:
+                # Converte para string primeiro caso seja outro tipo
+                series = series.astype(str)
+                # Substitui vírgula por ponto e converte para float
+                return series.str.replace(',', '.', regex=False).astype(float, errors='ignore')
+            except Exception as e:
+                logger.warning(f"Erro no tratamento monetário: {e}")
+                return series
+            
+        # Aplicar a conversão
+        try:
+            ddf['capital_social'] = ddf['capital_social'].map_partitions(convert_monetary_value, meta=('capital_social', 'float64'))
+            logger.info("Conversão de capital_social concluída com sucesso")
+        except Exception as e:
+            logger.warning(f"Erro ao converter capital_social: {str(e)}. Mantendo como está.")
+    
+    # Log dos tipos de dados após transformações
+    tipos_colunas = {col: str(ddf[col].dtype) for col in ddf.columns}
+    logger.info(f"Tipos de dados após transformações: {tipos_colunas}")
+    
+    return ddf
+
+
 def process_empresa(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa os dados de empresas."""
     logger.info('=' * 50)
     logger.info('Iniciando processamento de EMPRESAS')
     logger.info('=' * 50)
-
-    # Verifica espaço em disco para o diretório de trabalho
-    # Requisito mínimo: 5GB para trabalhar com segurança
-    has_space, available_mb = check_disk_space(path_unzip, 5000)
-    if not has_space:
-        logger.error(
-            f"Espaço em disco insuficiente para processar os dados. Disponível: {available_mb:.2f}MB, necessário: 5000MB")
-        return False
-    logger.info(f"Verificação de espaço em disco concluída: {available_mb:.2f}MB disponível")
 
     # Limpa o diretório de descompactação antes de começar
     try:
@@ -208,23 +286,10 @@ def process_empresa(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                         f"Espaço insuficiente para criar arquivo parquet. Disponível: {available_mb:.2f}MB, estimado: {parquet_size_estimate:.2f}MB")
                     return False
 
-                dd_empresa = dd.concat(all_dfs)
+                dd_empresa_raw = dd.concat(all_dfs)
 
-                # Renomeia as colunas usando os nomes originais corretos como chave
-                # Verifica se as colunas originais existem antes de renomear
-                rename_mapping = {
-                    'cnpj_basico': 'cnpj',
-                    'razao_social_nome_empresarial': 'razao_social',
-                    'natureza_juridica': 'natureza_juridica',
-                    'qualificacao_do_responsavel': 'qualificacao_responsavel',
-                    'capital_social_da_empresa': 'capital_social',
-                    'porte_da_empresa': 'porte_empresa',
-                    'ente_federativo_responsavel': 'ente_federativo_responsavel'
-                }
-                # Filtra o mapeamento para incluir apenas colunas existentes no DataFrame
-                actual_rename_mapping = {k: v for k, v in rename_mapping.items() if k in dd_empresa.columns}
-                dd_empresa = dd_empresa.rename(columns=actual_rename_mapping)
-
+                # Aplicar transformações
+                dd_empresa = apply_empresa_transformations(dd_empresa_raw)
 
                 # --- Criação do Parquet Principal ('empresas') ---
                 table_name_main = 'empresas' # Nome ajustado
@@ -247,19 +312,90 @@ def process_empresa(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                 if success and 'natureza_juridica' in dd_empresa.columns: # Procede apenas se o parquet principal foi criado e a coluna existe
                     logger.info("Iniciando criação do parquet para empresas privadas...")
                     try:
-                        # Converter 'natureza_juridica' para numérico, tratando erros
-                        # Usar meta para especificar o tipo de saída ajuda Dask
-                        dd_empresa['natureza_juridica_num'] = dd_empresa['natureza_juridica'].map_partitions(
-                            pd.to_numeric, errors='coerce', meta=('natureza_juridica', 'float64') 
-                        ).astype('Int64') # Usar Int64 para permitir NAs inteiros
+                        # Verifica se a coluna natureza_juridica é do tipo numérico (Int64)
+                        coluna_tipo = dd_empresa['natureza_juridica'].dtype
+                        logger.info(f"Tipo atual da coluna natureza_juridica: {coluna_tipo}")
+                        
+                        # Tenta obter alguns valores para diagnóstico
+                        try:
+                            # Pega alguns valores da primeira partição para verificar
+                            amostra = dd_empresa['natureza_juridica'].partitions[0].compute().head(10)
+                            logger.info(f"Amostra de valores em natureza_juridica: {amostra.tolist()}")
+                            
+                            # Verifica se há valores nulos
+                            qtd_nulos = dd_empresa['natureza_juridica'].isna().sum().compute()
+                            logger.info(f"Quantidade de valores nulos em natureza_juridica: {qtd_nulos}")
+                        except Exception as e:
+                            logger.warning(f"Não foi possível obter amostra de valores: {e}")
+                        
+                        # Verifica se o tipo é numérico ou se precisa converter
+                        if 'int' in str(coluna_tipo).lower() or 'float' in str(coluna_tipo).lower():
+                            # A coluna já está como numérica, então podemos filtrar diretamente
+                            logger.info("Utilizando coluna 'natureza_juridica' já convertida para numérico")
+                            
+                            # Tenta fazer a filtragem usando o método between
+                            try:
+                                dd_empresa_privada = dd_empresa[
+                                    dd_empresa['natureza_juridica'].between(2046, 2348, inclusive='both')
+                                ].copy()
+                                logger.info("Filtragem com between realizada com sucesso")
+                            except Exception as e:
+                                logger.warning(f"Erro ao usar between para filtrar: {e}")
+                                # Tenta uma alternativa usando comparação direta
+                                try:
+                                    dd_empresa_privada = dd_empresa[
+                                        (dd_empresa['natureza_juridica'] >= 2046) & 
+                                        (dd_empresa['natureza_juridica'] <= 2348)
+                                    ].copy()
+                                    logger.info("Filtragem com comparação direta realizada com sucesso")
+                                except Exception as e2:
+                                    logger.error(f"Todas as tentativas de filtragem falharam: {e2}")
+                                    raise
+                        else:
+                            # Precisamos converter para numérico antes de filtrar
+                            logger.warning(f"Coluna 'natureza_juridica' não está em formato numérico (tipo: {coluna_tipo}). Convertendo para filtragem.")
+                            
+                            # Criar coluna temporária para filtragem com log detalhado do processo
+                            try:
+                                # Primeiro, converte para numérico
+                                logger.info("Criando coluna temporária natureza_juridica_num...")
+                                dd_empresa['natureza_juridica_num'] = dd_empresa['natureza_juridica'].map_partitions(
+                                    pd.to_numeric, errors='coerce', meta=('natureza_juridica', 'float64') 
+                                ).astype('Int64')
+                                
+                                # Verifica se a conversão foi bem-sucedida
+                                temp_coluna_tipo = dd_empresa['natureza_juridica_num'].dtype
+                                logger.info(f"Coluna temporária criada. Tipo: {temp_coluna_tipo}")
+                                
+                                # Tenta ver uma amostra da nova coluna
+                                try:
+                                    amostra_temp = dd_empresa['natureza_juridica_num'].partitions[0].compute().head(10)
+                                    logger.info(f"Amostra de valores em natureza_juridica_num: {amostra_temp.tolist()}")
+                                except Exception as e:
+                                    logger.warning(f"Não foi possível obter amostra da coluna temporária: {e}")
+                                
+                                # Filtra utilizando a coluna temporária
+                                dd_empresa_privada = dd_empresa[
+                                    dd_empresa['natureza_juridica_num'].between(2046, 2348, inclusive='both')
+                                ].copy()
+                                logger.info("Filtragem com coluna temporária realizada com sucesso")
+                            except Exception as e:
+                                logger.error(f"Erro durante a criação/filtragem com coluna temporária: {e}")
+                                raise
 
-                        # Filtrar empresas privadas
-                        dd_empresa_privada = dd_empresa[
-                            dd_empresa['natureza_juridica_num'].between(2046, 2348, inclusive='both')
-                        ].copy() # .copy() para evitar SettingWithCopyWarning
+                        # Log do número de registros filtrados
+                        try:
+                            num_registros = dd_empresa_privada.shape[0].compute()
+                            logger.info(f"Número de empresas privadas filtradas: {num_registros}")
+                        except Exception as e:
+                            logger.warning(f"Não foi possível contar o número de registros filtrados: {e}")
                         
                         # Colunas a serem removidas (verificar se existem antes de dropar)
-                        cols_to_drop = ['qualificacao_responsavel', 'ente_federativo_responsavel', 'natureza_juridica_num']
+                        cols_to_drop = ['qualificacao_responsavel', 'ente_federativo_responsavel']
+                        # Adicionar natureza_juridica_num à lista se ela existe
+                        if 'natureza_juridica_num' in dd_empresa_privada.columns:
+                            cols_to_drop.append('natureza_juridica_num')
+                            
                         actual_cols_to_drop = [col for col in cols_to_drop if col in dd_empresa_privada.columns]
                         
                         if actual_cols_to_drop:
@@ -267,7 +403,6 @@ def process_empresa(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
                            logger.info(f"Colunas removidas para empresa_privada: {actual_cols_to_drop}")
                         else:
                             logger.warning("Nenhuma das colunas esperadas para drop ('qualificacao_responsavel', 'ente_federativo_responsavel') encontrada em empresa_privada.")
-
 
                         # Criar o parquet para empresas privadas
                         table_name_privada = 'empresa_privada'

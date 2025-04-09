@@ -61,10 +61,10 @@ class Config:
     empresa_dtypes: Dict[str, str] = field(default_factory=lambda: {
         'cnpj_basico': 'string',
         'razao_social': 'string',
-        'natureza_juridica': 'int',
-        'qualificacao_responsavel': 'int',
-        'capital_social': 'float',
-        'porte_empresa': 'int',
+        'natureza_juridica': 'string',
+        'qualificacao_responsavel': 'string',
+        'capital_social': 'string',
+        'porte_empresa': 'string',
         'ente_federativo_responsavel': 'string'
     })
 
@@ -82,15 +82,15 @@ class Config:
         'cnpj_basico': 'string',
         'cnpj_ordem': 'string',
         'cnpj_dv': 'string',
-        'matriz_filial': 'int',
+        'matriz_filial': 'string',
         'nome_fantasia': 'string',
-        'codigo_situacao_cadastral': 'int',
+        'codigo_situacao_cadastral': 'string',
         'data_situacao_cadastral': 'string',
-        'codigo_motivo_situacao_cadastral': 'int',
+        'codigo_motivo_situacao_cadastral': 'string',
         'nome_cidade_exterior': 'string',
         'pais': 'string',
         'data_inicio_atividades': 'string',
-        'codigo_cnae': 'int',
+        'codigo_cnae': 'string',
         'cnae_secundaria': 'string',
         'tipo_logradouro': 'string',
         'logradouro': 'string',
@@ -99,7 +99,7 @@ class Config:
         'bairro': 'string',
         'cep': 'string',
         'uf': 'string',
-        'codigo_municipio': 'int',
+        'codigo_municipio': 'string',
         'ddd1': 'string',
         'telefone1': 'string',
         'ddd2': 'string',
@@ -117,7 +117,7 @@ class Config:
     ])
 
     simples_dtypes: Dict[str, str] = field(default_factory=lambda: {
-        'cnpj_basico': 'int',
+        'cnpj_basico': 'string',
         'opcao_simples': 'string',
         'data_opcao_simples': 'string',
         'data_exclusao_simples': 'string',

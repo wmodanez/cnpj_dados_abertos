@@ -97,7 +97,17 @@ def apply_simples_transformations(ddf):
     ddf = ddf.rename(columns=actual_rename_mapping)
     logger.info(f"Colunas após renomear: {list(ddf.columns)}")
 
-    # 2. Converter colunas de data
+    # 2. Converter colunas para Int64 (permitir nulos)
+    # Converter cnpj_basico para Int64
+    if 'cnpj_basico' in ddf.columns:
+        logger.info("Convertendo coluna 'cnpj_basico' para Int64")
+        ddf['cnpj_basico'] = ddf['cnpj_basico'].map_partitions(
+            pd.to_numeric, errors='coerce', meta=('cnpj_basico', 'float64')
+        ).astype('Int64')
+    else:
+        logger.warning("Coluna 'cnpj_basico' não encontrada para conversão.")
+
+    # 3. Converter colunas de data
     date_cols_to_convert = [
         'data_opcao_simples', 'data_exclusao_simples', 
         'data_opcao_mei', 'data_exclusao_mei'
@@ -108,10 +118,15 @@ def apply_simples_transformations(ddf):
             # Substituir '00000000' por NaN antes de converter
             def convert_date_partition(series):
                 try:
-                    series = series.str.replace('00000000', '', regex=False)
-                except AttributeError:
-                    pass 
-                return pd.to_datetime(series, errors='coerce', format='%Y%m%d')
+                    # Converte para string primeiro caso seja outro tipo
+                    series = series.astype(str)
+                    # Substitui valores inválidos por vazio
+                    series = series.replace(['0', '00000000', 'nan', 'None', 'NaN'], '')
+                    # Converte para datetime, com erros como NaT
+                    return pd.to_datetime(series, errors='coerce', format='%Y%m%d')
+                except Exception as e:
+                    logger.warning(f"Erro ao converter coluna de data {col}: {str(e)}")
+                    return pd.Series(pd.NaT, index=series.index)
 
             meta = (col, 'datetime64[ns]') # Dask pode inferir a meta aqui
             ddf[col] = ddf[col].map_partitions(convert_date_partition, meta=meta)
@@ -119,20 +134,26 @@ def apply_simples_transformations(ddf):
         else:
              logger.warning(f"Coluna de data '{col}' não encontrada para conversão.")
 
-    # 3. Converter colunas de opção (Simples e MEI)
+    # 4. Converter colunas de opção (Simples e MEI)
     option_cols_to_convert = {'opcao_simples': 'Int64', 'opcao_mei': 'Int64'}
     for col, target_type in option_cols_to_convert.items():
         if col in ddf.columns:
             logger.info(f"Convertendo coluna de opção: {col}")
-            # Substituir S/N por 1/0 e converter para Int64
             def convert_option_partition(series):
-                return series.replace({'S': 1, 'N': 0})
+                try:
+                    # Converte para string primeiro caso seja outro tipo
+                    series = series.astype(str)
+                    # Substitui S/N por 1/0 usando o novo comportamento recomendado
+                    return pd.to_numeric(
+                        series.replace({'S': '1', 'N': '0', 's': '1', 'n': '0'}, regex=False),
+                        errors='coerce'
+                    ).astype('Int64')
+                except Exception as e:
+                    logger.warning(f"Erro ao converter opção {col}: {str(e)}")
+                    return series
                 
-            # Usar meta correspondente ao tipo final
-            meta = (col, 'int64') # Meta para .replace
+            meta = (col, 'Int64')  # Define meta como Int64 desde o início
             ddf[col] = ddf[col].map_partitions(convert_option_partition, meta=meta)
-            ddf[col] = ddf[col].map_partitions(pd.to_numeric, errors='coerce', meta=(col, 'float64')).astype(target_type)
-            logger.info(f"Coluna '{col}' convertida para {target_type}.")
         else:
              logger.warning(f"Coluna de opção '{col}' não encontrada para conversão.")
 
