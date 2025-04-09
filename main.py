@@ -18,6 +18,8 @@ from src.process.estabelecimento import process_estabelecimento
 from src.process.simples import process_simples
 from src.process.socio import process_socio
 from src.utils import check_basic_folders
+import dask
+from src.utils.dask_manager import DaskManager
 
 
 def setup_logging():
@@ -159,6 +161,26 @@ async def run_download_process(tipos_desejados: list[str] | None = None):
         return False, ""
 
 
+def setup_dask_cluster():
+    """Configura e retorna um cluster Dask otimizado."""
+    # Configurações de memória centralizadas
+    dask.config.set({
+        'distributed.worker.memory.target': 0.6,  # 60% memory target
+        'distributed.worker.memory.spill': 0.7,   # 70% memory spill
+        'distributed.worker.memory.pause': 0.8,   # 80% memory pause
+        'distributed.worker.memory.terminate': 0.95,  # 95% memory terminate
+        'distributed.comm.timeouts.connect': '30s',
+        'distributed.comm.timeouts.tcp': '30s',
+        'distributed.nanny.environ.MALLOC_TRIM_THRESHOLD_': '65536',
+    })
+    
+    return LocalCluster(
+        n_workers=config.dask.n_workers,
+        threads_per_worker=config.dask.threads_per_worker,
+        memory_limit=config.dask.memory_limit,
+        dashboard_address=config.dask.dashboard_address
+    )
+
 def main():
     """Função principal que orquestra todo o processo."""
     # Configuração dos argumentos de linha de comando
@@ -217,17 +239,16 @@ def main():
     # Converte os tipos de argumentos para os nomes reais dos arquivos
     tipos_desejados = [tipo_para_nome[t] for t in args.tipos] if args.tipos else None
 
-    # Configuração do Dask
+    # Configuração centralizada do Dask
     print_section("Iniciando configuração do Dask...")
     freeze_support()
-    cluster: LocalCluster = LocalCluster(
+    
+    dask_manager = DaskManager.initialize(
         n_workers=config.dask.n_workers,
-        threads_per_worker=config.dask.threads_per_worker,
         memory_limit=config.dask.memory_limit,
         dashboard_address=config.dask.dashboard_address
     )
-    client: Client = Client(cluster)
-    print_success(f"Cliente Dask inicializado com sucesso: {client}")
+    print_success(f"Cliente Dask inicializado com sucesso: {dask_manager.client}")
 
     # --- Etapa de Download Centralizada ---
     print_header("Iniciando Etapa de Download...")
@@ -236,7 +257,7 @@ def main():
     if not download_successful:
         print_error("A etapa de download falhou ou não encontrou arquivos. Abortando processamento subsequente.")
         # Opcional: encerrar Dask se já foi iniciado, ou sair
-        client.shutdown()
+        dask_manager.shutdown()
         return  # Sai da função main
 
     print_success("Etapa de Download concluída.")
@@ -278,13 +299,7 @@ def main():
     finally:
         print_section("Encerrando cliente Dask...")
         try:
-            # Fecha o cliente Dask
-            client.close()
-            # Aguarda um momento para garantir que todas as threads sejam encerradas
-            import time
-            time.sleep(1)
-            # Encerra o cluster
-            cluster.close()
+            dask_manager.shutdown()
             print_success("Cliente Dask encerrado com sucesso")
         except Exception as e:
             logger.error(f"Erro ao encerrar cliente Dask: {e}")

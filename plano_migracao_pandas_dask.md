@@ -116,9 +116,9 @@ Substituir todas as operações Pandas por equivalentes em Dask para garantir pr
 
 | #  | Etapa | Descrição | Concluído |
 |----|-------|-----------|-----------|
-| 1  | 1.1.1 | Listar todos os arquivos Python no projeto | [ ] |
-| 2  | 1.1.2 | Identificar importações de Pandas em cada arquivo | [ ] |
-| 3  | 1.1.3 | Criar spreadsheet com todos os arquivos que usam Pandas | [ ] |
+| 1  | 1.1.1 | Listar todos os arquivos Python no projeto | [X] |
+| 2  | 1.1.2 | Identificar importações de Pandas em cada arquivo | [X] |
+| 3  | 1.1.3 | Criar spreadsheet com todos os arquivos que usam Pandas | [X] |
 | 4  | 1.2.1 | Catalogar funções Pandas mais utilizadas | [ ] |
 | 5  | 1.2.2 | Identificar padrões de uso em transformações | [ ] |
 | 6  | 1.2.3 | Mapear operações de leitura/escrita | [ ] |
