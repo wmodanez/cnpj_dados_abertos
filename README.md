@@ -429,6 +429,7 @@ git checkout -b feature/parallel-extraction master
 ```
 
 #### Cache de Metadados
+
 - Implementar cache de metadados (SQLite ou arquivo JSON)
 - Evitar reprocessamento desnecessário, processando apenas o que mudou
 
@@ -440,6 +441,7 @@ git checkout -b feature/metadata-cache master
 ### 2. Modernização das Ferramentas
 
 #### Migração para PySpark
+
 - Implementar PySpark como ferramenta principal de processamento
 - Melhor otimizador de consultas
 - Ecossistema mais maduro e ampla comunidade
@@ -451,6 +453,7 @@ git checkout -b feature/pyspark-migration master
 ```
 
 #### Formato de Armazenamento Otimizado
+
 - Parquet otimizado via PySpark com compressão e estatísticas avançadas
 - Melhor compressão dos dados
 - Leitura mais rápida com estatísticas de coluna
@@ -461,6 +464,7 @@ git checkout -b feature/optimized-storage master
 ```
 
 #### Validação de Dados Integrada
+
 - Utilizar as ferramentas nativas do Spark para validação
 - Schema enforcement do Spark
 - Regras de qualidade via Spark SQL
@@ -474,6 +478,7 @@ git checkout -b feature/integrated-validation master
 ### 3. Resiliência e Monitoramento
 
 #### Checkpoints de Recuperação
+
 - Utilizar o sistema de checkpoints nativo do Spark
 - Capacidade de retomar de falhas sem reprocessamento completo
 
@@ -483,6 +488,7 @@ git checkout -b feature/recovery-checkpoints master
 ```
 
 #### Sistema de Monitoramento
+
 - Utilizar a interface web do Spark e integrá-la com ferramentas de observabilidade
 - Prometheus/Grafana para visualização
 
@@ -492,6 +498,7 @@ git checkout -b feature/monitoring-system master
 ```
 
 #### Tratamento Avançado de Erros
+
 - Aproveitar o mecanismo de validação do Spark para identificar e corrigir erros
 - Correção iterativa durante o processamento
 
@@ -503,6 +510,7 @@ git checkout -b feature/advanced-error-handling master
 ### 4. Arquitetura Geral
 
 #### Pipeline Modular
+
 - Arquitetura em etapas independentes
 - Facilidade de manutenção e possibilidade de executar apenas partes específicas
 
@@ -512,6 +520,7 @@ git checkout -b feature/modular-pipeline master
 ```
 
 #### Integração Direta com DuckDB
+
 - Utilizar conectores entre Spark e DuckDB para criação de views diretamente
 - Processo mais direto e eficiente de disponibilização dos dados para análise
 
