@@ -34,9 +34,10 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
   
   - [Sugestões de Otimização](#-sugestões-de-otimização)
   - [1. Paralelização e Desempenho](#1-paralelização-e-desempenho)
-  - [2. Modernização das Ferramentas](#2-modernização-das-ferramentas)
-  - [3. Resiliência e Monitoramento](#3-resiliência-e-monitoramento)
-  - [4. Arquitetura Geral](#4-arquitetura-geral)
+  - [2. Migração Completa para Dask](#2-migração-completa-para-dask)
+  - [3. Otimizações do Dask](#3-otimizações-do-dask)
+  - [4. Resiliência e Monitoramento](#4-resiliência-e-monitoramento)
+  - [5. Arquitetura Geral](#5-arquitetura-geral)
 </details>
 
 <details>
@@ -65,6 +66,7 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
   - [Tratamento Específico de Exceções](#tratamento-específico-de-exceções)
   - [Verificações de Segurança](#verificações-de-segurança)
   - [Limpeza de arquivos temporários](#limpeza-de-arquivos-temporários)
+  - [Melhorias na Conversão de Tipos](#melhorias-na-conversão-de-tipos)
 </details>
 
 <details>
@@ -288,6 +290,7 @@ flowchart TD
 - **Armazenamento Otimizado**: Dados em formato Parquet e DuckDB
 - **Logging Detalhado**: Rastreamento completo das operações
 - **Configurável**: Fácil adaptação às necessidades específicas
+- **Conversão Robusta de Tipos**: Tratamento avançado para campos numéricos, datas e valores monetários
 
 ## 📝 Logs e Monitoramento
 
@@ -351,10 +354,10 @@ config:
 flowchart TD
     %% Etapa 1: Inicialização e Verificação
     A[Início] --> B[Configuração do ambiente]
-    B --> C[Inicialização do Spark]
+    B --> C[Inicialização do Dask Cluster]
     C --> D[Verificação de novas versões de dados CNPJ]
     D --> D1{Novos dados CNPJ disponíveis?}
-    D1 -->|Não| P1[Encerramento do Spark]
+    D1 -->|Não| P1[Encerramento do Dask]
     P1 --> Z[Fim]
     
     %% Etapa 2: Preparação com Cache
@@ -366,24 +369,24 @@ flowchart TD
     F2 --> G
     G --> H[Atualização do cache]
     
-    %% Etapa 3: Loop de Processamento com PySpark
+    %% Etapa 3: Loop de Processamento com Dask otimizado
     H --> T[Loop por tipos de dados]
-    T --> I[Leitura e transformação com PySpark]
+    T --> I[Processamento e transformação com Dask]
     
     %% Conexão direta para validação
-    I --> J[Validação com ferramentas do Spark]
+    I --> J[Validação de dados avançada]
     J --> J1{Dados OK?}
-    J1 -->|Não| J2[Correção com transformações Spark]
+    J1 -->|Não| J2[Correção com transformações Dask]
     J2 --> J
     J1 -->|Sim| K[Armazenamento em Parquet otimizado]
     K --> T1{Mais tipos de dados?}
     T1 -->|Sim| T
     
     %% Etapa 4: Consolidação e Finalização
-    T1 -->|Não| L[Verificação dos arquivos Parquet com Spark]
+    T1 -->|Não| L[Verificação dos arquivos Parquet]
     L --> L1{Parquets completos?}
     L1 -->|Não| P1
-    L1 -->|Sim| M[Criação de views no DuckDB via Spark-DuckDB]
+    L1 -->|Sim| M[Criação de views otimizadas no DuckDB]
     M --> P1
     
     %% Estilos mais claros
@@ -393,13 +396,13 @@ flowchart TD
     classDef inicio fill:#cfe2ff,stroke:#084298,stroke-width:1px
     classDef fim fill:#f8d7da,stroke:#842029,stroke-width:1px
     classDef loop fill:#e0cffc,stroke:#6f42c1,stroke-width:1px
-    classDef spark fill:#f9d5e5,stroke:#862e9c,stroke-width:1px
+    classDef dask fill:#d5e5f9,stroke:#084298,stroke-width:1px
     
     class A,B inicio
     class D1,J1,T1,L1 decisao
     class F1,F2,G,J2,M novo
     class E,H processo
-    class C,I,J,K,L,P1 spark
+    class C,I,J,K,L,P1 dask
     class T loop
     class Z fim
     
@@ -438,25 +441,45 @@ git checkout -b feature/parallel-extraction master
 git checkout -b feature/metadata-cache master
 ```
 
-### 2. Modernização das Ferramentas
+### 2. Migração Completa para Dask
 
-#### Migração para PySpark
-
-- Implementar PySpark como ferramenta principal de processamento
-- Melhor otimizador de consultas
-- Ecossistema mais maduro e ampla comunidade
-- Integração nativa com diversas ferramentas de big data
+#### Substituição de Pandas por Dask
+- Identificar todas as partes do código que usam Pandas diretamente
+- Converter operações Pandas para suas equivalentes em Dask
+- Garantir que toda a pipeline de dados aproveite o processamento paralelo
 
 ```bash
-# Criar branch para migração para PySpark
-git checkout -b feature/pyspark-migration master
+# Criar branch para migração completa para Dask
+git checkout -b feature/pandas-to-dask master
+```
+
+#### Refatoração de Código para Processamento Lazy
+- Implementar padrões de processamento lazy/tardio
+- Evitar materialização desnecessária de DataFrames
+- Otimizar cadeia de transformações
+
+```bash
+# Criar branch para refatoração para processamento lazy
+git checkout -b feature/lazy-processing master
+```
+
+### 3. Otimizações do Dask
+
+#### Otimização do Dask
+- Melhorar a configuração e utilização do Dask
+- Implementar particionamento otimizado
+- Utilizar funcionalidades avançadas como Dask Bag para processamento inicial
+
+```bash
+# Criar branch para otimização do Dask
+git checkout -b feature/dask-optimization master
 ```
 
 #### Formato de Armazenamento Otimizado
 
-- Parquet otimizado via PySpark com compressão e estatísticas avançadas
-- Melhor compressão dos dados
-- Leitura mais rápida com estatísticas de coluna
+- Otimização avançada do Parquet com compressão e estatísticas
+- Melhoria de esquemas e particionamento de dados
+- Implementação de caching de resultados intermediários
 
 ```bash
 # Criar branch para implementação de armazenamento otimizado
@@ -465,21 +488,20 @@ git checkout -b feature/optimized-storage master
 
 #### Validação de Dados Integrada
 
-- Utilizar as ferramentas nativas do Spark para validação
-- Schema enforcement do Spark
-- Regras de qualidade via Spark SQL
-- Tratamento integrado de dados inválidos
+- Implementar validação integrada ao fluxo de processamento
+- Esquemas de validação para cada tipo de dados
+- Correção automática de problemas comuns
 
 ```bash
 # Criar branch para implementação de validação de dados integrada
 git checkout -b feature/integrated-validation master
 ```
 
-### 3. Resiliência e Monitoramento
+### 4. Resiliência e Monitoramento
 
 #### Checkpoints de Recuperação
 
-- Utilizar o sistema de checkpoints nativo do Spark
+- Implementar sistema de checkpoints para recuperação de falhas
 - Capacidade de retomar de falhas sem reprocessamento completo
 
 ```bash
@@ -489,8 +511,9 @@ git checkout -b feature/recovery-checkpoints master
 
 #### Sistema de Monitoramento
 
-- Utilizar a interface web do Spark e integrá-la com ferramentas de observabilidade
-- Prometheus/Grafana para visualização
+- Melhorar a integração com dashboard Dask
+- Adicionar métricas e monitoramento avançado
+- Integração com sistemas de observabilidade
 
 ```bash
 # Criar branch para implementação do sistema de monitoramento
@@ -499,15 +522,16 @@ git checkout -b feature/monitoring-system master
 
 #### Tratamento Avançado de Erros
 
-- Aproveitar o mecanismo de validação do Spark para identificar e corrigir erros
-- Correção iterativa durante o processamento
+- Melhorar o sistema de tratamento de erros
+- Logging detalhado com categorização de problemas
+- Estratégias de recuperação por tipo de erro
 
 ```bash
 # Criar branch para implementação de tratamento avançado de erros
 git checkout -b feature/advanced-error-handling master
 ```
 
-### 4. Arquitetura Geral
+### 5. Arquitetura Geral
 
 #### Pipeline Modular
 
@@ -519,27 +543,28 @@ git checkout -b feature/advanced-error-handling master
 git checkout -b feature/modular-pipeline master
 ```
 
-#### Integração Direta com DuckDB
+#### Integração Avançada com DuckDB
 
-- Utilizar conectores entre Spark e DuckDB para criação de views diretamente
-- Processo mais direto e eficiente de disponibilização dos dados para análise
+- Melhorar a integração entre Dask e DuckDB
+- Otimização de querys e carregamento
+- Criação de visualizações analíticas
 
 ```bash
 # Criar branch para implementação de integração com DuckDB
 git checkout -b feature/duckdb-integration master
 ```
 
-## 📊 Comparação de Tecnologias
+## 📊 Comparação de Tecnologias Atuais e Otimizadas
 
-| Aspecto | Atual | Sugestão | Benefício |
+| Aspecto | Atual | Sugestão de Otimização | Benefício |
 |---------|-------|----------|-----------|
-| Processamento Distribuído | Dask | PySpark | Melhor otimização, pipeline integrado |
-| Formato de Armazenamento | Parquet via Dask | Parquet otimizado via Spark | Melhor compressão e desempenho de leitura |
+| Processamento Distribuído | Dask básico com Pandas em algumas partes | Dask completo com particionamento adequado | Maior velocidade de processamento e uso eficiente de recursos |
+| Formato de Armazenamento | Parquet básico via Dask | Parquet otimizado com estatísticas e compressão | Melhor compressão e desempenho de leitura |
 | Download de Arquivos | PyCurl sequencial | asyncio/aiohttp paralelo | Redução de 60-80% no tempo de download |
 | Descompactação | zipfile sequencial | concurrent.futures paralelo | Redução significativa no tempo de extração |
-| Validação de Dados | Mínima | Ferramentas nativas do Spark | Validação integrada ao processamento |
-| Recuperação de Falhas | Inexistente | Sistema de checkpoints do Spark | Continuidade em caso de interrupções |
-| Monitoramento | Logs básicos | Interface web do Spark + métricas | Melhor observabilidade |
+| Validação de Dados | Mínima | Sistema integrado de validação | Maior qualidade dos dados e robustez |
+| Recuperação de Falhas | Inexistente | Sistema de checkpoints para retomada | Continuidade em caso de interrupções |
+| Monitoramento | Logs básicos | Dashboard Dask aprimorado + métricas | Melhor observabilidade |
 
 ## 📅 Plano de Implementação Progressiva
 
@@ -551,21 +576,27 @@ Para implementar estas melhorias de forma gradual e segura:
 - Adicionar descompactação em paralelo
 - Implementar cache básico de metadados
 
-### Fase 2: Migração para PySpark (2-3 semanas)
+### Fase 2: Migração Completa para Dask (2-3 semanas)
 
-- Configurar ambiente Spark
-- Adaptar scripts de processamento para PySpark
-- Implementar validação de dados com ferramentas do Spark
+- Identificar e substituir operações Pandas por Dask
+- Refatorar código para processamento lazy
+- Implementar padrões de processamento distribuído em toda a pipeline
 
-### Fase 3: Otimização de Fluxo (2-3 semanas)
+### Fase 3: Otimização do Dask (2-3 semanas)
 
-- Implementar o loop de processamento com validação e correção
+- Configurar particionamento otimizado do Dask
+- Melhorar utilização de recursos
+- Implementar validação de dados integrada
+
+### Fase 4: Otimização de Fluxo (2-3 semanas)
+
+- Implementar sistema de correção de dados
 - Adicionar sistema de checkpoints
 - Otimizar armazenamento Parquet
 
-### Fase 4: Refinamentos Finais (1-2 semanas)
+### Fase 5: Refinamentos Finais (1-2 semanas)
 
-- Implementar integração otimizada com DuckDB
+- Implementar integração avançada com DuckDB
 - Configurar monitoramento e métricas
 - Testes de desempenho e ajustes finais
 
@@ -577,14 +608,16 @@ Para implementar estas melhorias de forma gradual e segura:
 | 1    | feature/async-downloads     | Implementação de downloads assíncronos  | 10/04/2025  | 15/04/2025    | 08/04/2025     | ✅     | -            |
 | 1    | feature/parallel-extraction | Descompactação em paralelo de arquivos  | 09/04/2025  | 14/04/2025    | 08/04/2025     | ✅     | -            |
 | 1    | feature/metadata-cache      | Sistema de cache de metadados           | 15/04/2025  | 24/04/2025    | 08/04/2025     | ✅     | -            |
-| 2    | feature/pyspark-migration   | Migração do processamento para PySpark  | 09/04/2025  | 30/04/2025    | -              | 🚧     | -            |
-| 2    | feature/optimized-storage   | Otimização do formato de armazenamento  | 09/06/2025  | 13/06/2025    | -              | ⏳     | -            |
-| 2    | feature/integrated-validation | Validação integrada de dados com Spark  | 20/05/2025  | 26/05/2025    | -              | ⏳     | -            |
-| 3    | feature/recovery-checkpoints| Sistema de checkpoints para recuperação | 09/06/2025  | 12/06/2025    | -              | ⏳     | -            |
-| 3    | feature/monitoring-system   | Implementação de sistema de monitoramento| 23/06/2025  | 25/06/2025    | -              | ⏳     | -            |
-| 3    | feature/advanced-error-handling| Tratamento avançado de erros           | 20/05/2025  | 26/05/2025    | -              | ⏳     | -            |
-| 4    | feature/modular-pipeline    | Implementação de pipeline modular       | 03/07/2025  | 04/07/2025    | -              | ⏳     | -            |
-| 4    | feature/duckdb-integration  | Integração direta com DuckDB          | 23/06/2025  | 26/06/2025    | -              | ⏳     | -            |
+| 2    | feature/pandas-to-dask      | Migração de operações Pandas para Dask  | 25/04/2025  | 05/05/2025    | -              | ⏳     | -            |
+| 2    | feature/lazy-processing     | Refatoração para processamento lazy     | 06/05/2025  | 15/05/2025    | -              | ⏳     | feature/pandas-to-dask |
+| 3    | feature/dask-optimization   | Otimização do Dask e particionamento    | 16/05/2025  | 25/05/2025    | -              | ⏳     | feature/lazy-processing |
+| 3    | feature/optimized-storage   | Otimização do formato de armazenamento  | 26/05/2025  | 02/06/2025    | -              | ⏳     | feature/dask-optimization |
+| 3    | feature/integrated-validation | Validação integrada de dados  | 03/06/2025  | 10/06/2025    | -              | ⏳     | feature/dask-optimization |
+| 4    | feature/recovery-checkpoints| Sistema de checkpoints para recuperação | 11/06/2025  | 18/06/2025    | -              | ⏳     | feature/integrated-validation |
+| 4    | feature/advanced-error-handling| Tratamento avançado de erros         | 11/06/2025  | 18/06/2025    | -              | ⏳     | feature/integrated-validation |
+| 4    | feature/monitoring-system   | Implementação de sistema de monitoramento| 19/06/2025  | 26/06/2025    | -              | ⏳     | feature/recovery-checkpoints |
+| 5    | feature/modular-pipeline    | Implementação de pipeline modular       | 27/06/2025  | 04/07/2025    | -              | ⏳     | feature/monitoring-system |
+| 5    | feature/duckdb-integration  | Integração avançada com DuckDB          | 27/06/2025  | 04/07/2025    | -              | ⏳     | feature/monitoring-system |
 
 ### Diagrama de Gantt do Plano de Implementação
 
@@ -592,7 +625,7 @@ O diagrama abaixo ilustra a programação temporal das tarefas, suas interdepend
 
 ```mermaid
 gantt
-    title Cronograma de Implementação da Otimização do Fluxo CNPJ
+    title Cronograma de Implementação das Otimizações do Fluxo CNPJ
     dateFormat  YYYY-MM-DD
     axisFormat %d/%m
     excludes weekends 2025-04-17 2025-04-18 2025-04-21 2025-05-01 2025-05-02 2025-06-19 2025-06-20
@@ -614,35 +647,38 @@ gantt
     Implementar cache básico de metadados       :a4, after a2 a3, 5d
     Testes de performance da Fase 1             :a5, after a4, 2d
     
-    section Fase 2: Migração para PySpark
-    Configurar ambiente Spark                   :b1, after a5, 3d
-    Preparar infraestrutura                     :b2, after b1, 2d
-    Adaptar scripts para PySpark                :b3, after b2, 8d
-    Implementar validação de dados com Spark    :b4, after b3, 5d
-    Testes integrados dos componentes Spark     :b5, after b4, 3d
+    section Fase 2: Migração Completa para Dask
+    Identificar e substituir operações Pandas    :b1, after a5, 7d
+    Refatorar para processamento lazy            :b2, after b1, 6d
+    Testes de compatibilidade                    :b3, after b2, 3d
     
-    section Fase 3: Otimização de Fluxo
-    Implementar loop de processamento           :c1, after b5, 6d
-    Adicionar sistema de checkpoints            :c2, after c1, 4d
-    Otimizar armazenamento Parquet              :c3, after c1, 5d
-    Testes de carga do fluxo completo           :c4, after c2 c3, 3d
+    section Fase 3: Otimização do Dask
+    Configurar particionamento otimizado        :c1, after b3, 5d
+    Melhorar utilização de recursos             :c2, after c1, 3d
+    Implementar validação de dados integrada    :c3, after c2, 5d
+    Testes de otimização do Dask                :c4, after c3, 3d
     
-    section Fase 4: Refinamentos Finais
-    Implementar integração com DuckDB           :d1, after c4, 4d
-    Configurar monitoramento                    :d2, after c4, 3d
-    Configurar métricas de desempenho           :d3, after d2, 2d
-    Testes finais de desempenho                 :d4, after d1 d3, 3d
-    Documentação e treinamento                  :d5, after d4, 2d
+    section Fase 4: Otimização de Fluxo
+    Implementar sistema de correção de dados    :d1, after c4, 5d
+    Adicionar sistema de checkpoints            :d2, after d1, 4d
+    Otimizar armazenamento Parquet              :d3, after d1, 5d
+    Testes de carga do fluxo completo           :d4, after d2 d3, 3d
+    
+    section Fase 5: Refinamentos Finais
+    Implementar integração avançada com DuckDB  :e1, after d4, 4d
+    Configurar monitoramento e métricas         :e2, after d4, 4d
+    Testes finais de desempenho                 :e3, after e1 e2, 3d
+    Documentação e treinamento                  :e4, after e3, 2d
 ```
 
 O diagrama acima representa:
 
 - **Duração das tarefas**: Cada barra representa uma tarefa com sua duração estimada
 - **Dependências**: As tarefas conectadas mostram quais precisam ser concluídas antes de outras começarem
-- **Agrupamento**: As tarefas estão organizadas nas quatro fases do plano de implementação
+- **Agrupamento**: As tarefas estão organizadas nas cinco fases do plano de implementação
 - **Caminho crítico**: A sequência de tarefas que determina a duração total do projeto
 
-Este cronograma prevê aproximadamente 8-10 semanas para a implementação completa, considerando as dependências entre tarefas e tempos realistas para desenvolvimento e testes.
+Este cronograma prevê aproximadamente 12-14 semanas para a implementação completa, considerando as dependências entre tarefas e tempos realistas para desenvolvimento e testes.
 
 ## Otimizações de Processamento
 
@@ -694,6 +730,14 @@ Essa abordagem tem as seguintes vantagens:
 
 Todos os arquivos temporários descompactados são excluídos após o processamento, mesmo em caso de erro,
 garantindo que não fiquem arquivos residuais no sistema.
+
+### Melhorias na Conversão de Tipos
+
+- **Tratamento robusto para valores numéricos**: Conversão segura para Int64 com suporte para valores nulos
+- **Conversão avançada de datas**: Tratamento melhorado para valores inválidos (zeros, valores vazios, etc.)
+- **Processamento de valores monetários**: Conversão adequada de valores com vírgulas como separador decimal
+- **Validação de tipos após conversão**: Verificação da integridade dos dados pós-conversão
+- **Logs detalhados**: Rastreamento do processo de conversão para facilitar depuração
 
 ## 🤝 Contribuindo
 
