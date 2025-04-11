@@ -6,12 +6,13 @@ import numpy as np
 import shutil
 import pyarrow as pa
 from pyarrow import parquet as pq
+import dask.dataframe as dd
+from dask import delayed
 
 from ..config import config
 from ..utils import (
     file_delete, check_disk_space, estimate_zip_extracted_size,
-    process_csv_file_pandas, verify_csv_integrity, 
-    create_parquet_filename
+    verify_csv_integrity, create_parquet_filename
 )
 
 logger = logging.getLogger(__name__)
@@ -185,6 +186,43 @@ def process_csv_file_pandas(csv_path):
         return None
 
 
+def process_csv_file_dask(csv_path):
+    """
+    Processa um único arquivo CSV de simples usando Dask.
+    
+    Args:
+        csv_path: Caminho para o arquivo CSV
+        
+    Returns:
+        DataFrame Dask ou None em caso de erro
+    """
+    # Verifica a integridade do CSV
+    if not verify_csv_integrity(csv_path):
+        return None
+
+    # Usa colunas e dtypes da config
+    original_column_names = config.simples_columns
+    dtype_dict = config.simples_dtypes
+
+    try:
+        # Usa dask.dataframe.read_csv com os parâmetros apropriados
+        ddf = dd.read_csv(
+            csv_path,
+            sep=config.file.separator,
+            encoding=config.file.encoding,
+            names=original_column_names,
+            header=None,
+            dtype=str,  # Inicialmente lê tudo como string para evitar inferências incorretas
+            quoting=1,  # QUOTE_MINIMAL
+            blocksize="64MB",  # Tamanho do bloco para particionamento
+            na_filter=False
+        )
+        return ddf
+    except Exception as e:
+        logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)} com Dask: {str(e)}')
+        return None
+
+
 def apply_pandas_transformations(df):
     """Aplica transformações específicas para Simples Nacional usando Pandas."""
     logger.info("Aplicando transformações em Simples com Pandas...")
@@ -227,6 +265,146 @@ def apply_pandas_transformations(df):
             df[col] = pd.to_numeric(df[col], errors='coerce')
     
     return df
+
+
+def apply_dask_transformations(ddf):
+    """Aplica transformações específicas para Simples Nacional usando Dask."""
+    logger.info("Aplicando transformações em Simples com Dask...")
+    
+    # Renomeação de colunas
+    rename_mapping = {
+        'cnpj_basico': 'cnpj_basico',
+        'opcao_pelo_simples': 'opcao_simples',
+        'data_opcao_pelo_simples': 'data_opcao_simples',
+        'data_exclusao_do_simples': 'data_exclusao_simples',
+        'opcao_pelo_mei': 'opcao_mei',
+        'data_opcao_pelo_mei': 'data_opcao_mei',
+        'data_exclusao_do_mei': 'data_exclusao_mei'
+    }
+    
+    # Filtrar para incluir apenas colunas que existem no DataFrame
+    # Note: No Dask, verificamos as colunas de forma diferente
+    columns_set = set(ddf.columns)
+    actual_rename_mapping = {k: v for k, v in rename_mapping.items() if k in columns_set}
+    ddf = ddf.rename(columns=actual_rename_mapping)
+    
+    # Conversão de números
+    if 'cnpj_basico' in ddf.columns:
+        ddf['cnpj_basico'] = dd.to_numeric(ddf['cnpj_basico'], errors='coerce')
+    
+    # Conversão de datas
+    date_cols = ['data_opcao_simples', 'data_exclusao_simples', 
+                 'data_opcao_mei', 'data_exclusao_mei']
+    
+    for col in date_cols:
+        if col in ddf.columns:
+            # Substituir valores inválidos com NaN
+            ddf[col] = ddf[col].map(lambda x: pd.NA if x in ['0', '00000000', 'nan', 'None', 'NaN'] else x, meta=(col, 'object'))
+            # Converter para datetime para posterior conversão para date32 no PyArrow
+            ddf[col] = dd.to_datetime(ddf[col], format='%Y%m%d', errors='coerce')
+    
+    # Conversão de opções (S/N)
+    option_cols = ['opcao_simples', 'opcao_mei']
+    for col in option_cols:
+        if col in ddf.columns:
+            # Substituir S/N com 1/0
+            ddf[col] = ddf[col].map(lambda x: '1' if x in ['S', 's'] else ('0' if x in ['N', 'n'] else x), meta=(col, 'object'))
+            ddf[col] = dd.to_numeric(ddf[col], errors='coerce')
+    
+    return ddf
+
+
+def create_parquet(ddf, table_name, path_parquet):
+    """Salva um DataFrame Dask como parquet.
+    
+    Args:
+        ddf: DataFrame Dask
+        table_name: Nome da tabela
+        path_parquet: Caminho base para os arquivos parquet
+        
+    Returns:
+        True se sucesso, False caso contrário
+    """
+    try:
+        output_dir = os.path.join(path_parquet, table_name)
+        
+        # Limpa o diretório antes de criar os novos arquivos
+        try:
+            file_delete(output_dir)
+            logger.info(f'Diretório {output_dir} limpo antes de criar novos arquivos parquet')
+        except Exception as e:
+            logger.warning(f'Não foi possível limpar diretório {output_dir}: {str(e)}')
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Log das colunas antes de salvar
+        logger.info(f"Colunas do DataFrame Dask '{table_name}' antes de salvar em Parquet: {list(ddf.columns)}")
+        
+        # Salvar como parquet usando a função do Dask
+        ddf.to_parquet(
+            output_dir,
+            engine='pyarrow',
+            compression='snappy',
+            write_index=False
+        )
+        
+        logger.info(f"DataFrame Dask salvo como parquet em {output_dir}")
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao salvar DataFrame Dask como parquet: {str(e)}")
+        return False
+
+
+def create_parquet_with_dates(ddf, table_name, path_parquet):
+    """Salva um DataFrame Dask como parquet, preservando campos de data como date32.
+    
+    Args:
+        ddf: DataFrame Dask
+        table_name: Nome da tabela
+        path_parquet: Caminho base para os arquivos parquet
+        
+    Returns:
+        True se sucesso, False caso contrário
+    """
+    try:
+        output_dir = os.path.join(path_parquet, table_name)
+        
+        # Limpa o diretório antes de criar os novos arquivos
+        try:
+            file_delete(output_dir)
+            logger.info(f'Diretório {output_dir} limpo antes de criar novos arquivos parquet')
+        except Exception as e:
+            logger.warning(f'Não foi possível limpar diretório {output_dir}: {str(e)}')
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Log das colunas antes de salvar
+        logger.info(f"Colunas do DataFrame Dask '{table_name}' antes de salvar em Parquet: {list(ddf.columns)}")
+        
+        # Colunas de data que queremos converter para date32
+        date_cols = ['data_opcao_simples', 'data_exclusao_simples', 
+                    'data_opcao_mei', 'data_exclusao_mei']
+        
+        # Configurar esquema para colunas de data usando date32
+        schema = {}
+        for col in date_cols:
+            if col in ddf.columns:
+                schema[col] = pa.date32()
+        
+        # Salvar como parquet com o esquema personalizado
+        ddf.to_parquet(
+            output_dir,
+            engine='pyarrow',
+            compression='snappy',
+            write_index=False,
+            schema=schema
+        )
+        
+        logger.info(f"DataFrame Dask salvo como parquet em {output_dir} com colunas de data em formato date32")
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao salvar DataFrame Dask como parquet com date32: {str(e)}")
+        return False
 
 
 def process_single_zip_pandas(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str) -> bool:
@@ -284,6 +462,60 @@ def process_single_zip_pandas(zip_file: str, path_zip: str, path_unzip: str, pat
         
     except Exception as e:
         logger.error(f'Erro processando {zip_file}: {str(e)}')
+        return False
+
+
+@delayed
+def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str) -> bool:
+    """Processa um único arquivo ZIP usando Dask de forma distribuída."""
+    try:
+        zip_path = os.path.join(path_zip, zip_file)
+        
+        # Extração e processamento
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(path_unzip)
+        
+        # Processamento dos CSVs usando Dask
+        csv_files = [f for f in os.listdir(path_unzip) if 'CSV' in f]
+        
+        if not csv_files:
+            logger.warning(f"Nenhum arquivo CSV encontrado no ZIP {zip_file}")
+            return False
+        
+        # Lista para armazenar os DataFrames Dask
+        dask_dataframes = []
+        
+        # Processar cada arquivo CSV individualmente
+        for csv_file in csv_files:
+            try:
+                csv_path = os.path.join(path_unzip, csv_file)
+                ddf = process_csv_file_dask(csv_path)
+                
+                if ddf is not None:
+                    dask_dataframes.append(ddf)
+                    logger.info(f"CSV {csv_file} processado com sucesso usando Dask")
+            except Exception as e:
+                logger.error(f"Erro ao processar o CSV {csv_file} com Dask: {str(e)}")
+        
+        # Verificar se temos DataFrames para processar
+        if not dask_dataframes:
+            logger.warning(f"Nenhum DataFrame Dask válido gerado a partir do ZIP {zip_file}")
+            return False
+        
+        # Concatenar os DataFrames se houver mais de um
+        if len(dask_dataframes) > 1:
+            ddf = dd.concat(dask_dataframes)
+        else:
+            ddf = dask_dataframes[0]
+        
+        # Aplicar transformações
+        ddf = apply_dask_transformations(ddf)
+        
+        # Criar parquet usando nossa nova função que preserva tipos de data
+        return create_parquet_with_dates(ddf, 'simples', path_parquet)
+        
+    except Exception as e:
+        logger.error(f'Erro processando {zip_file} com Dask: {str(e)}')
         return False
 
 
