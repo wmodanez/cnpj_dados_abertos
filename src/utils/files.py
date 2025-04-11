@@ -70,7 +70,7 @@ def file_delete(folder: str, filename: str = '*') -> None:
     def delete_file(file_path: str) -> None:
         try:
             os.remove(file_path)
-            logger.info(f'Arquivo removido: {file_path}')
+            logger.debug(f'Arquivo removido: {file_path}')
         except Exception as e:
             logger.error(f'Erro ao remover arquivo {file_path}: {str(e)}')
 

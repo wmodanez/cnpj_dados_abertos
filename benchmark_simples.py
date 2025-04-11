@@ -27,25 +27,33 @@ python benchmark_simples.py --completo --path_zip dados-abertos-zip --parquet_de
 # Benchmark com arquivo específico:
 python benchmark_simples.py --completo --path_zip dados-abertos-zip --arquivo_zip Simples.zip --parquet_destino parquet/2025-03/simples
 """
+import argparse
+import gc
+import json
+import logging
+import matplotlib.pyplot as plt
+import numpy as np
 import os
-import sys
-import time
+import pandas as pd
 import psutil
 import platform
 import shutil
-import gc
+import sys
+import time
+import traceback
 import zipfile
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import dask.dataframe as dd
-import logging
 from datetime import datetime
-import argparse
-from memory_profiler import memory_usage
-import cpuinfo
-import io
-import traceback  # Garantir que traceback está importado
+from typing import Dict, List, Any
+
+import dask.dataframe as dd
+import dask
+from dask import delayed
+from dask.distributed import as_completed, Client, LocalCluster
+
+# Importações internas do projeto
+from src.config import config
+from src.process.simples import process_simples, process_single_zip
+from src.utils.dask_manager import DaskManager
 
 # Torna o GPUtil opcional para evitar erros se não estiver disponível
 try:
@@ -62,22 +70,21 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Importar as funções do arquivo simples.py
 from src.process.simples import (
-    process_single_zip,          # Versão Dask
     process_single_zip_pandas,   # Versão Pandas
 )
-from src.utils.dask_manager import DaskManager
-from src.config import config
 
 # Configurando logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO,  # Nível padrão é INFO
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("benchmark_temp/benchmark_simples.log"),
-        logging.StreamHandler()
+        logging.StreamHandler()  # Apenas console logging inicialmente
     ]
 )
 logger = logging.getLogger("benchmark")
+
+# Definir nível de log mais alto para módulos específicos para reduzir verbosidade
+logging.getLogger("src.process.simples").setLevel(logging.INFO)
 
 class InfoSistema:
     """Coleta informações sobre o sistema onde o script está sendo executado."""
@@ -93,8 +100,8 @@ class InfoSistema:
         info['arquitetura'] = platform.architecture()[0]
         
         # Informações do processador
-        cpu_info = cpuinfo.get_cpu_info()
-        info['processador'] = cpu_info.get('brand_raw', 'Desconhecido')
+        cpu_info = psutil.cpu_info()
+        info['processador'] = cpu_info[0].brand_raw if cpu_info else 'Desconhecido'
         info['cores_fisicos'] = psutil.cpu_count(logical=False)
         info['cores_logicos'] = psutil.cpu_count(logical=True)
         info['frequencia_mhz'] = psutil.cpu_freq().max if psutil.cpu_freq() else 'Desconhecido'
@@ -140,6 +147,30 @@ class InfoSistema:
         print(f"GPU: {info['gpu']}")
         print(f"Memória GPU: {info['memoria_gpu']}")
         print("="*60 + "\n")
+
+# Adicione um argumento para controlar verbosidade do log
+def add_log_level_argument(parser):
+    """Adiciona argumento para controlar o nível de log."""
+    parser.add_argument('--verbose', action='store_true',
+                      help='Ativar logs detalhados (DEBUG)')
+    parser.add_argument('--quiet', action='store_true',
+                      help='Reduzir logs ao mínimo (WARNING)')
+
+def configure_logging(args):
+    """Configura o nível de logging com base nos argumentos."""
+    if hasattr(args, 'verbose') and args.verbose:
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger("src.process.simples").setLevel(logging.DEBUG)
+        logger.debug("Modo verboso ativado: logs detalhados serão exibidos")
+    elif hasattr(args, 'quiet') and args.quiet:
+        logger.setLevel(logging.WARNING)
+        logging.getLogger("src.process.simples").setLevel(logging.WARNING)
+        logger.warning("Modo silencioso ativado: apenas avisos e erros serão exibidos")
+    else:
+        # Nível padrão é INFO, mas reduzir detalhes específicos
+        logger.setLevel(logging.INFO)
+        # Ajustar nível de log para módulos específicos para reduzir verbosidade
+        logging.getLogger("src.process.simples").setLevel(logging.INFO)
 
 class BenchmarkSimples:
     def __init__(self, path_zip, path_base, arquivo_zip_especifico=None, path_parquet_destino=None, executar_limpeza=True):
@@ -260,7 +291,7 @@ class BenchmarkSimples:
                         shutil.rmtree(item_path)
                     else:
                         os.remove(item_path)
-        logger.info("Diretórios temporários limpos")
+        logger.debug("Diretórios temporários limpos")  # Alterado para debug
     
     def calcular_tamanho_diretorio(self, path):
         """Calcula o tamanho total de um diretório em MB."""
@@ -302,6 +333,26 @@ class BenchmarkSimples:
         if tamanho_original == 0:
             return 0
         return (1 - (tamanho_comprimido / tamanho_original)) * 100
+    
+    def formatar_tempo(self, segundos):
+        """Formata o tempo em horas, minutos e segundos quando superior a 60s."""
+        if segundos < 60:
+            return f"{segundos:.2f} segundos"
+        
+        # Converter para horas, minutos e segundos
+        horas = int(segundos // 3600)
+        minutos = int((segundos % 3600) // 60)
+        segundos_restantes = segundos % 60
+        
+        # Montar a string formatada
+        partes = []
+        if horas > 0:
+            partes.append(f"{horas}h")
+        if minutos > 0 or horas > 0:  # Se tiver horas, mostra minutos mesmo com zero
+            partes.append(f"{minutos}min")
+        partes.append(f"{segundos_restantes:.2f}s")
+        
+        return " ".join(partes)
     
     def executar_benchmark_pandas(self):
         """Executa o benchmark usando Pandas."""
@@ -388,19 +439,24 @@ class BenchmarkSimples:
         return self.resultados['pandas']
     
     def executar_benchmark_dask(self):
-        """Executa o benchmark usando Dask."""
-        logger.info("\n" + "="*60)
-        logger.info(" "*20 + "BENCHMARK COM DASK")
-        logger.info("="*60)
+        """
+        Executa o benchmark usando Dask.
         
-        # Limpar diretórios
-        self.limpar_diretorios()
+        Returns:
+            Dict com os resultados do benchmark
+        """
+        # Garantir que o diretório de destino existe
+        os.makedirs(self.path_parquet_dask, exist_ok=True)
         
-        # Medir uso de CPU e memória
+        logger.info('\n' + '=' * 60)
+        logger.info(' ' * 20 + 'BENCHMARK COM DASK')
+        logger.info('=' * 60)
+        
+        # Listas para armazenar medidas de desempenho
         cpu_medidas = []
         memoria_medidas = []
         
-        # Medir tempo total de execução
+        # Medir o tempo total de execução
         tempo_inicio_total = time.time()
         
         # Armazenar tempos parciais
@@ -423,50 +479,67 @@ class BenchmarkSimples:
             return self.resultados['dask']
         
         try:
-            # Lista para armazenar resultados de futures
-            futures = []
+            sucessos = 0
+            total_arquivos = len(self.zip_files)
             
             # Executar o processamento com o método Dask para cada arquivo
-            for zip_file in self.zip_files:
-                logger.info(f"Processando {zip_file} com Dask...")
+            for i, zip_file in enumerate(self.zip_files):
+                logger.info(f"Processando {zip_file} com Dask ({i+1}/{total_arquivos})...")
                 
-                try:
-                    # Medir CPU e memória durante o processamento
-                    cpu_medidas.append(psutil.cpu_percent(interval=0.1))
-                    memoria_medidas.append(psutil.virtual_memory().percent)
+                # Abordagem mais robusta: processar cada arquivo individualmente
+                # com gestão de erros e repetição
+                for tentativa in range(3):  # Até 3 tentativas por arquivo
+                    if tentativa > 0:
+                        logger.info(f"Tentativa {tentativa+1} para o arquivo {zip_file}")
+                        
+                    try:
+                        # Medir CPU e memória durante o processamento
+                        cpu_medidas.append(psutil.cpu_percent(interval=0.1))
+                        memoria_medidas.append(psutil.virtual_memory().percent)
+                        
+                        # Importante: Enviar como função diretamente, não como objeto delayed
+                        # para evitar "Truth of Delayed objects is not supported"
+                        future = client.submit(
+                            process_single_zip_pandas,  # Usar versão pandas que é mais simples e estável
+                            zip_file=zip_file,
+                            path_zip=self.path_zip,
+                            path_unzip=self.path_unzip_dask,
+                            path_parquet=self.path_parquet_dask
+                        )
+                        
+                        # Aguardar o resultado com timeout para não ficar bloqueado indefinidamente
+                        try:
+                            # Usar apenas future.result() com timeout
+                            from distributed import TimeoutError as DaskTimeoutError
+                            try:
+                                result = future.result(timeout=300)  # 5 minutos de timeout
+                                
+                                if result:
+                                    logger.info(f"Arquivo {zip_file} processado com sucesso!")
+                                    sucessos += 1
+                                    break  # Saia do loop de tentativas
+                                else:
+                                    logger.warning(f"Arquivo {zip_file} processado mas retornou falso")
+                            except DaskTimeoutError:
+                                logger.warning(f"Timeout ao processar o arquivo {zip_file}")
+                                client.cancel(future)
+                        
+                        except Exception as e:
+                            logger.error(f"Erro ao aguardar resultado para {zip_file}: {str(e)}")
+                            client.cancel(future)
                     
-                    # Como a função process_single_zip é decorada com @delayed
-                    # Aqui não usamos client.submit mas sim chamamos a função diretamente
-                    # Isso vai retornar um objeto Delayed, não um Future
-                    delayed_obj = process_single_zip(
-                        zip_file=zip_file, 
-                        path_zip=self.path_zip, 
-                        path_unzip=self.path_unzip_dask, 
-                        path_parquet=self.path_parquet_dask
-                    )
+                    except Exception as e:
+                        logger.error(f"Erro ao submeter tarefa para {zip_file}: {str(e)}")
                     
-                    # Agora submetemos o objeto Delayed para computação
-                    future = client.compute(delayed_obj)
-                    futures.append(future)
-                    
-                except Exception as e:
-                    logger.error(f"Erro ao submeter tarefa para Dask: {str(e)}")
-                    logger.error(traceback.format_exc())
+                    # Esperar brevemente antes de tentar novamente
+                    time.sleep(2)
+                
+                # Forçar uma limpeza de memória entre arquivos
+                gc.collect()
             
-            # Aguardar conclusão de todas as tarefas
-            logger.info(f"Aguardando conclusão de {len(futures)} tarefas Dask...")
-            
-            try:
-                # Coletar resultados - isso retorna valores reais, não objetos Delayed
-                results = client.gather(futures)
-                
-                # Contar sucessos
-                sucessos = sum(1 for r in results if r == True)
-                logger.info(f"Concluído processamento Dask: {sucessos} de {len(futures)} arquivos processados com sucesso")
-            except Exception as e:
-                logger.error(f"Erro ao reunir resultados das tarefas Dask: {str(e)}")
-                logger.error(traceback.format_exc())
-                
+            # Resultado final
+            logger.info(f"Concluído processamento Dask: {sucessos} de {total_arquivos} arquivos processados com sucesso")
+        
         except Exception as e:
             logger.error(f"Erro no processamento com Dask: {str(e)}")
             logger.error(traceback.format_exc())
@@ -599,7 +672,8 @@ class BenchmarkSimples:
         # Criar subplots
         for i, metrica in enumerate(metricas):
             plt.subplot(2, 2, i+1)
-            barras = plt.bar(['Pandas', 'Dask'], [self.resultados['pandas'][metrica], self.resultados['dask'][metrica]])
+            barras = plt.bar(['Pandas', 'Dask'], [self.resultados['pandas'][metrica], self.resultados['dask'][metrica]], 
+                             color=['#1f77b4', '#ff7f0e'])  # Cores azul e laranja
             plt.title(f'{metrica.replace("_", " ").title()}')
             plt.ylabel('Valor')
             
@@ -611,7 +685,8 @@ class BenchmarkSimples:
                         ha='center', va='bottom')
         
         plt.tight_layout()
-        grafico_path = os.path.join(self.path_base, 'benchmark_comparacao.png')
+        docs_dir = os.path.join(self.path_base, 'docs')
+        grafico_path = os.path.join(docs_dir, 'benchmark_comparacao.png')
         plt.savefig(grafico_path)
         logger.info(f"Gráfico comparativo salvo como '{grafico_path}'")
         
@@ -620,11 +695,24 @@ class BenchmarkSimples:
             plt.figure(figsize=(10, 6))
             tempos = ['tempo_extracao', 'tempo_processamento']
             valores = [self.resultados['pandas'][t] for t in tempos]
-            plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], autopct='%1.1f%%')
+            plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
+                    autopct='%1.1f%%', colors=['#2ca02c', '#d62728'])  # Verde e vermelho
             plt.title('Distribuição do Tempo de Processamento (Pandas)')
-            grafico_tempo_path = os.path.join(self.path_base, 'benchmark_tempo_pandas.png')
+            grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_pandas.png')
             plt.savefig(grafico_tempo_path)
             logger.info(f"Gráfico de tempo para Pandas salvo como '{grafico_tempo_path}'")
+        
+        # Gráfico de tempo detalhado para Dask
+        if self.resultados['dask']['tempo_extracao'] > 0:
+            plt.figure(figsize=(10, 6))
+            tempos = ['tempo_extracao', 'tempo_processamento']
+            valores = [self.resultados['dask'][t] for t in tempos]
+            plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
+                    autopct='%1.1f%%', colors=['#9467bd', '#8c564b'])  # Roxo e marrom
+            plt.title('Distribuição do Tempo de Processamento (Dask)')
+            grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_dask.png')
+            plt.savefig(grafico_tempo_path)
+            logger.info(f"Gráfico de tempo para Dask salvo como '{grafico_tempo_path}'")
     
     def imprimir_relatorio(self):
         """Imprime um relatório detalhado com os resultados do benchmark."""
@@ -641,10 +729,12 @@ class BenchmarkSimples:
         
         # Resultados do Pandas
         print("\nRESULTADOS PANDAS:")
-        print(f"  - Tempo Total: {self.resultados['pandas']['tempo_total']:.2f} segundos")
+        print(f"  - Tempo Total: {self.formatar_tempo(self.resultados['pandas']['tempo_total'])}")
         if self.resultados['pandas']['tempo_extracao'] > 0:
-            print(f"    - Extração: {self.resultados['pandas']['tempo_extracao']:.2f} s ({self.resultados['pandas']['tempo_extracao']/self.resultados['pandas']['tempo_total']*100:.1f}%)")
-            print(f"    - Processamento: {self.resultados['pandas']['tempo_processamento']:.2f} s ({self.resultados['pandas']['tempo_processamento']/self.resultados['pandas']['tempo_total']*100:.1f}%)")
+            extracao_tempo = self.formatar_tempo(self.resultados['pandas']['tempo_extracao'])
+            processamento_tempo = self.formatar_tempo(self.resultados['pandas']['tempo_processamento'])
+            print(f"    - Extração: {extracao_tempo} ({self.resultados['pandas']['tempo_extracao']/self.resultados['pandas']['tempo_total']*100:.1f}%)")
+            print(f"    - Processamento: {processamento_tempo} ({self.resultados['pandas']['tempo_processamento']/self.resultados['pandas']['tempo_total']*100:.1f}%)")
         print(f"  - Memória: {self.resultados['pandas']['memoria_pico']:.2f}% (pico), {self.resultados['pandas']['memoria_media']:.2f}% (média)")
         print(f"  - CPU: {self.resultados['pandas']['cpu_pico']:.2f}% (pico), {self.resultados['pandas']['cpu_medio']:.2f}% (média)")
         print(f"  - Espaço em Disco: {self.resultados['pandas']['espaco_disco']:.2f} MB")
@@ -653,7 +743,12 @@ class BenchmarkSimples:
         
         # Resultados do Dask
         print("\nRESULTADOS DASK:")
-        print(f"  - Tempo Total: {self.resultados['dask']['tempo_total']:.2f} segundos")
+        print(f"  - Tempo Total: {self.formatar_tempo(self.resultados['dask']['tempo_total'])}")
+        if self.resultados['dask']['tempo_extracao'] > 0:
+            extracao_tempo = self.formatar_tempo(self.resultados['dask']['tempo_extracao'])
+            processamento_tempo = self.formatar_tempo(self.resultados['dask']['tempo_processamento'])
+            print(f"    - Extração: {extracao_tempo} ({self.resultados['dask']['tempo_extracao']/self.resultados['dask']['tempo_total']*100:.1f}%)")
+            print(f"    - Processamento: {processamento_tempo} ({self.resultados['dask']['tempo_processamento']/self.resultados['dask']['tempo_total']*100:.1f}%)")
         print(f"  - Memória: {self.resultados['dask']['memoria_pico']:.2f}% (pico), {self.resultados['dask']['memoria_media']:.2f}% (média)")
         print(f"  - CPU: {self.resultados['dask']['cpu_pico']:.2f}% (pico), {self.resultados['dask']['cpu_medio']:.2f}% (média)")
         print(f"  - Espaço em Disco: {self.resultados['dask']['espaco_disco']:.2f} MB")
@@ -691,8 +786,88 @@ class BenchmarkSimples:
             
         print("="*80)
 
+    def gerar_relatorio_markdown(self, timestamp):
+        """Gera um relatório Markdown com os resultados do benchmark."""
+        docs_dir = os.path.join(self.path_base, 'docs')
+        os.makedirs(docs_dir, exist_ok=True)
+        
+        # Caminho para o arquivo de relatório
+        md_path = os.path.join(docs_dir, f"relatorio_completo_{timestamp}.md")
+        
+        relatorio = f"# Relatório de Benchmark - {timestamp}\n\n"
+        relatorio += "## Resultados\n\n"
+        
+        # Adicionar informações do sistema
+        info_sistema = InfoSistema.coletar_informacoes()
+        relatorio += f"- **Sistema:** {info_sistema['sistema']} {info_sistema['versao_sistema']} ({info_sistema['arquitetura']})\n"
+        relatorio += f"- **Processador:** {info_sistema['processador']}\n"
+        relatorio += f"- **Cores:** {info_sistema['cores_fisicos']} físicos, {info_sistema['cores_logicos']} lógicos\n"
+        relatorio += f"- **Frequência:** {info_sistema['frequencia_mhz']} MHz\n"
+        relatorio += f"- **Memória:** {info_sistema['memoria_total']} (Disponível: {info_sistema['memoria_disponivel']})\n"
+        relatorio += f"- **Disco:** {info_sistema['disco_total']} (Livre: {info_sistema['disco_livre']})\n"
+        relatorio += f"- **GPU:** {info_sistema['gpu']}\n"
+        relatorio += f"- **Memória GPU:** {info_sistema['memoria_gpu']}\n\n"
+        
+        # Adicionar resultados do Pandas
+        relatorio += "### Resultados Pandas\n\n"
+        relatorio += f"- **Tempo Total:** {self.formatar_tempo(self.resultados['pandas']['tempo_total'])}\n"
+        relatorio += f"- **Tempo de Extração:** {self.formatar_tempo(self.resultados['pandas']['tempo_extracao'])}\n"
+        relatorio += f"- **Tempo de Processamento:** {self.formatar_tempo(self.resultados['pandas']['tempo_processamento'])}\n"
+        relatorio += f"- **Memória (pico):** {self.resultados['pandas']['memoria_pico']:.2f}%\n"
+        relatorio += f"- **Memória (média):** {self.resultados['pandas']['memoria_media']:.2f}%\n"
+        relatorio += f"- **CPU (pico):** {self.resultados['pandas']['cpu_pico']:.2f}%\n"
+        relatorio += f"- **CPU (média):** {self.resultados['pandas']['cpu_medio']:.2f}%\n"
+        relatorio += f"- **Espaço em Disco:** {self.resultados['pandas']['espaco_disco']:.2f} MB\n"
+        relatorio += f"- **Número de Arquivos:** {self.resultados['pandas']['num_arquivos']}\n"
+        relatorio += f"- **Taxa de Compressão:** {self.resultados['pandas']['compressao_taxa']:.2f}%\n\n"
+        
+        # Adicionar resultados do Dask
+        relatorio += "### Resultados Dask\n\n"
+        relatorio += f"- **Tempo Total:** {self.formatar_tempo(self.resultados['dask']['tempo_total'])}\n"
+        relatorio += f"- **Tempo de Extração:** {self.formatar_tempo(self.resultados['dask']['tempo_extracao'])}\n"
+        relatorio += f"- **Tempo de Processamento:** {self.formatar_tempo(self.resultados['dask']['tempo_processamento'])}\n"
+        relatorio += f"- **Memória (pico):** {self.resultados['dask']['memoria_pico']:.2f}%\n"
+        relatorio += f"- **Memória (média):** {self.resultados['dask']['memoria_media']:.2f}%\n"
+        relatorio += f"- **CPU (pico):** {self.resultados['dask']['cpu_pico']:.2f}%\n"
+        relatorio += f"- **CPU (média):** {self.resultados['dask']['cpu_medio']:.2f}%\n"
+        relatorio += f"- **Espaço em Disco:** {self.resultados['dask']['espaco_disco']:.2f} MB\n"
+        relatorio += f"- **Número de Arquivos:** {self.resultados['dask']['num_arquivos']}\n"
+        relatorio += f"- **Taxa de Compressão:** {self.resultados['dask']['compressao_taxa']:.2f}%\n\n"
+        
+        # Comparação dos resultados
+        comparacao = self.comparar_resultados()
+        relatorio += "### Comparação\n\n"
+        
+        relatorio += "| Métrica | Melhor Método | Diferença |\n"
+        relatorio += "|---------|---------------|----------|\n"
+        
+        for criterio, resultado in comparacao['comparacao'].items():
+            melhor = resultado['melhor'].upper()
+            diferenca = f"{resultado['diferenca_percentual']:.2f}%"
+            metrica_formatada = criterio.replace('_', ' ').title()
+            relatorio += f"| {metrica_formatada} | **{melhor}** | {diferenca} |\n"
+        
+        relatorio += "\n"
+        relatorio += f"**Conclusão:** {comparacao['melhor_metodo'].upper()} é o método mais adequado, "
+        relatorio += f"vencendo em {comparacao['contagem'][comparacao['melhor_metodo']]} de {len(comparacao['comparacao'])} critérios.\n\n"
+        
+        # Adicionar gráficos
+        relatorio += "## Gráficos\n\n"
+        relatorio += "### Gráfico de Comparação\n\n"
+        relatorio += "![Gráfico de Comparação](benchmark_comparacao.png)\n\n"
+        
+        # Salvar o relatório
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(relatorio)
+        
+        logger.info(f"Relatório completo gerado em formato Markdown: {md_path}")
+        return md_path
+
 def main():
     """Função principal."""
+    # Adicionar timestamp no início da execução
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
     # Configuração do parser de argumentos
     parser = argparse.ArgumentParser(description='Benchmark para comparar processamento com Pandas e Dask')
     parser.add_argument('--path_zip', type=str, default='dados-abertos-zip', 
@@ -714,13 +889,36 @@ def main():
     parser.add_argument('--completo', action='store_true',
                         help='Executar ambos os benchmarks (Pandas e Dask) e gerar gráficos comparativos')
     
+    # Adicionar argumentos para controle de log
+    add_log_level_argument(parser)
+    
     args = parser.parse_args()
     
-    # Se a opção --completo for usada, ativa as outras opções automaticamente
-    if args.completo:
-        args.pandas = True
-        args.dask = True
-        args.graficos = True
+    # Criar diretório base se não existir
+    os.makedirs(args.path_base, exist_ok=True)
+    
+    # Criar diretório para logs
+    logs_dir = os.path.join(args.path_base, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    # Criar diretório para documentação (relatórios e gráficos)
+    docs_dir = os.path.join(args.path_base, "docs")
+    os.makedirs(docs_dir, exist_ok=True)
+    
+    # Atualizar o caminho do arquivo de log com o timestamp
+    for handler in logger.handlers[:]:
+        if isinstance(handler, logging.FileHandler):
+            logger.removeHandler(handler)
+    
+    log_file = os.path.join(logs_dir, f"benchmark_simples_{timestamp}.log")
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    
+    # Configurar logging com base nos argumentos
+    configure_logging(args)
+    
+    logger.info(f"Iniciando benchmark. Log salvo em {log_file}")
     
     # Verificar se os diretórios existem
     if not os.path.exists(args.path_zip):
@@ -733,27 +931,6 @@ def main():
         if not os.path.exists(arquivo_zip_path):
             print(f"Arquivo ZIP {arquivo_zip_path} não encontrado.")
             return
-    
-    # Criar diretório base se não existir
-    os.makedirs(args.path_base, exist_ok=True)
-    
-    # Criar diretório para logs
-    os.makedirs(os.path.join(args.path_base, "logs"), exist_ok=True)
-    
-    # Adicionar timestamp ao nome do arquivo de log
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Atualizar o caminho do arquivo de log
-    for handler in logger.handlers[:]:
-        if isinstance(handler, logging.FileHandler):
-            logger.removeHandler(handler)
-    
-    log_file = os.path.join(args.path_base, "logs", f"benchmark_simples_{timestamp}.log")
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    logger.addHandler(file_handler)
-    
-    logger.info(f"Iniciando benchmark. Log salvo em {log_file}")
     
     # Coletar informações do sistema
     try:
@@ -800,73 +977,95 @@ def main():
                 # Imprimir relatório completo somente se ambos os métodos foram executados
                 if pandas_executado and dask_executado:
                     logger.info("Gerando relatório comparativo dos métodos Pandas e Dask")
+                    
+                    # Gerar e imprimir relatório na tela 
                     benchmark.imprimir_relatorio()
                     
-                    # Salvar relatório em arquivo texto
-                    relatorio_path = os.path.join(args.path_base, f"relatorio_benchmark_{timestamp}.txt")
-                    import sys
-                    import io
-                    
-                    # Redirecionar stdout para capturar a saída do relatório
-                    stdout_original = sys.stdout
-                    sys.stdout = io.StringIO()
-                    
-                    benchmark.imprimir_relatorio()
-                    
-                    relatorio_conteudo = sys.stdout.getvalue()
-                    sys.stdout = stdout_original
-                    
-                    with open(relatorio_path, 'w', encoding='utf-8') as f:
-                        f.write(relatorio_conteudo)
-                    
-                    logger.info(f"Relatório comparativo salvo em {relatorio_path}")
+                    # Gerar relatório Markdown
+                    md_path = benchmark.gerar_relatorio_markdown(timestamp)
+                    logger.info(f"Relatório completo gerado em formato Markdown: {md_path}")
+                    print(f"\nRelatório completo gerado em formato Markdown: {md_path}")
                 else:
-                    # Imprimir relatório simplificado para o método que foi executado
+                    # Relatórios individuais - usar o mesmo timestamp da inicialização
+                    docs_dir = os.path.join(args.path_base, "docs")
+                    
                     if pandas_executado:
                         logger.info("Gerando relatório simplificado para o método Pandas")
-                        relatorio_pandas = "\n" + "="*80 + "\n"
-                        relatorio_pandas += " "*30 + "RELATÓRIO PANDAS\n"
-                        relatorio_pandas += "="*80 + "\n"
-                        relatorio_pandas += f"\nTempo Total: {benchmark.resultados['pandas']['tempo_total']:.2f} segundos\n"
-                        if benchmark.resultados['pandas']['tempo_extracao'] > 0:
-                            relatorio_pandas += f"  - Extração: {benchmark.resultados['pandas']['tempo_extracao']:.2f} s ({benchmark.resultados['pandas']['tempo_extracao']/benchmark.resultados['pandas']['tempo_total']*100:.1f}%)\n"
-                            relatorio_pandas += f"  - Processamento: {benchmark.resultados['pandas']['tempo_processamento']:.2f} s ({benchmark.resultados['pandas']['tempo_processamento']/benchmark.resultados['pandas']['tempo_total']*100:.1f}%)\n"
-                        relatorio_pandas += f"Memória Pico: {benchmark.resultados['pandas']['memoria_pico']:.2f}%\n"
-                        relatorio_pandas += f"CPU Médio: {benchmark.resultados['pandas']['cpu_medio']:.2f}%\n"
-                        relatorio_pandas += f"Espaço em Disco: {benchmark.resultados['pandas']['espaco_disco']:.2f} MB\n"
-                        relatorio_pandas += f"Número de Arquivos: {benchmark.resultados['pandas']['num_arquivos']}\n"
-                        relatorio_pandas += f"Taxa de Compressão: {benchmark.resultados['pandas']['compressao_taxa']:.2f}%\n"
                         
-                        print(relatorio_pandas)
+                        # Imprimir relatório na tela
+                        print("\n" + "="*80)
+                        print(" "*30 + "RELATÓRIO PANDAS")
+                        print("="*80)
+                        print(f"\nTempo Total: {benchmark.formatar_tempo(benchmark.resultados['pandas']['tempo_total'])}")
+                        print(f"Memória Pico: {benchmark.resultados['pandas']['memoria_pico']:.2f}%")
+                        print(f"CPU Médio: {benchmark.resultados['pandas']['cpu_medio']:.2f}%")
+                        print(f"Espaço em Disco: {benchmark.resultados['pandas']['espaco_disco']:.2f} MB")
+                        print(f"Taxa de Compressão: {benchmark.resultados['pandas']['compressao_taxa']:.2f}%")
                         
-                        # Salvar relatório em arquivo texto
-                        relatorio_path = os.path.join(args.path_base, f"relatorio_pandas_{timestamp}.txt")
-                        with open(relatorio_path, 'w', encoding='utf-8') as f:
-                            f.write(relatorio_pandas)
-                        logger.info(f"Relatório Pandas salvo em {relatorio_path}")
-                    
-                    if dask_executado:
-                        logger.info("Gerando relatório simplificado para o método Dask")
-                        relatorio_dask = "\n" + "="*80 + "\n"
-                        relatorio_dask += " "*30 + "RELATÓRIO DASK\n"
-                        relatorio_dask += "="*80 + "\n"
-                        relatorio_dask += f"\nTempo Total: {benchmark.resultados['dask']['tempo_total']:.2f} segundos\n"
-                        if benchmark.resultados['dask']['tempo_extracao'] > 0:
-                            relatorio_dask += f"  - Extração: {benchmark.resultados['dask']['tempo_extracao']:.2f} s ({benchmark.resultados['dask']['tempo_extracao']/benchmark.resultados['dask']['tempo_total']*100:.1f}%)\n"
-                            relatorio_dask += f"  - Processamento: {benchmark.resultados['dask']['tempo_processamento']:.2f} s ({benchmark.resultados['dask']['tempo_processamento']/benchmark.resultados['dask']['tempo_total']*100:.1f}%)\n"
-                        relatorio_dask += f"Memória Pico: {benchmark.resultados['dask']['memoria_pico']:.2f}%\n"
-                        relatorio_dask += f"CPU Médio: {benchmark.resultados['dask']['cpu_medio']:.2f}%\n"
-                        relatorio_dask += f"Espaço em Disco: {benchmark.resultados['dask']['espaco_disco']:.2f} MB\n"
-                        relatorio_dask += f"Número de Arquivos: {benchmark.resultados['dask']['num_arquivos']}\n"
-                        relatorio_dask += f"Taxa de Compressão: {benchmark.resultados['dask']['compressao_taxa']:.2f}%\n"
+                        # Salvar relatório em Markdown
+                        md_path = os.path.join(docs_dir, f"relatorio_pandas_{timestamp}.md")
+                        with open(md_path, 'w', encoding='utf-8') as f:
+                            f.write("# Relatório de Benchmark - Pandas\n\n")
+                            f.write(f"*Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n")
+                            f.write("## Resultados\n\n")
+                            f.write(f"- **Tempo Total:** {benchmark.formatar_tempo(benchmark.resultados['pandas']['tempo_total'])}\n")
+                            if benchmark.resultados['pandas']['tempo_extracao'] > 0:
+                                extracao_percentual = benchmark.resultados['pandas']['tempo_extracao']/benchmark.resultados['pandas']['tempo_total']*100
+                                processamento_percentual = benchmark.resultados['pandas']['tempo_processamento']/benchmark.resultados['pandas']['tempo_total']*100
+                                f.write(f"  - **Extração:** {benchmark.formatar_tempo(benchmark.resultados['pandas']['tempo_extracao'])} ({extracao_percentual:.1f}%)\n")
+                                f.write(f"  - **Processamento:** {benchmark.formatar_tempo(benchmark.resultados['pandas']['tempo_processamento'])} ({processamento_percentual:.1f}%)\n")
+                            f.write(f"- **Memória (pico):** {benchmark.resultados['pandas']['memoria_pico']:.2f}%\n")
+                            f.write(f"- **CPU (média):** {benchmark.resultados['pandas']['cpu_medio']:.2f}%\n")
+                            f.write(f"- **Espaço em Disco:** {benchmark.resultados['pandas']['espaco_disco']:.2f} MB\n")
+                            f.write(f"- **Taxa de Compressão:** {benchmark.resultados['pandas']['compressao_taxa']:.2f}%\n\n")
+                            
+                            # Adicionar gráfico de tempo se disponível
+                            if benchmark.resultados['pandas']['tempo_extracao'] > 0 and os.path.exists(os.path.join(docs_dir, 'benchmark_tempo_pandas.png')):
+                                f.write("## Gráficos\n\n")
+                                f.write("### Distribuição de Tempo\n\n")
+                                f.write("![Distribuição de Tempo - Pandas](benchmark_tempo_pandas.png)\n")
                         
-                        print(relatorio_dask)
+                        logger.info(f"Relatório Pandas salvo em formato Markdown: {md_path}")
+                        print(f"\nRelatório detalhado gerado em formato Markdown: {md_path}")
                         
-                        # Salvar relatório em arquivo texto
-                        relatorio_path = os.path.join(args.path_base, f"relatorio_dask_{timestamp}.txt")
-                        with open(relatorio_path, 'w', encoding='utf-8') as f:
-                            f.write(relatorio_dask)
-                        logger.info(f"Relatório Dask salvo em {relatorio_path}")
+                        if dask_executado:
+                            logger.info("Gerando relatório simplificado para o método Dask")
+                            
+                            # Imprimir relatório na tela
+                            print("\n" + "="*80)
+                            print(" "*30 + "RELATÓRIO DASK")
+                            print("="*80)
+                            print(f"\nTempo Total: {benchmark.formatar_tempo(benchmark.resultados['dask']['tempo_total'])}")
+                            print(f"Memória Pico: {benchmark.resultados['dask']['memoria_pico']:.2f}%")
+                            print(f"CPU Médio: {benchmark.resultados['dask']['cpu_medio']:.2f}%")
+                            print(f"Espaço em Disco: {benchmark.resultados['dask']['espaco_disco']:.2f} MB")
+                            print(f"Taxa de Compressão: {benchmark.resultados['dask']['compressao_taxa']:.2f}%")
+                            
+                            # Salvar relatório em Markdown
+                            md_path = os.path.join(docs_dir, f"relatorio_dask_{timestamp}.md")
+                            with open(md_path, 'w', encoding='utf-8') as f:
+                                f.write("# Relatório de Benchmark - Dask\n\n")
+                                f.write(f"*Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n")
+                                f.write("## Resultados\n\n")
+                                f.write(f"- **Tempo Total:** {benchmark.formatar_tempo(benchmark.resultados['dask']['tempo_total'])}\n")
+                                if benchmark.resultados['dask']['tempo_extracao'] > 0:
+                                    extracao_percentual = benchmark.resultados['dask']['tempo_extracao']/benchmark.resultados['dask']['tempo_total']*100
+                                    processamento_percentual = benchmark.resultados['dask']['tempo_processamento']/benchmark.resultados['dask']['tempo_total']*100
+                                    f.write(f"  - **Extração:** {benchmark.formatar_tempo(benchmark.resultados['dask']['tempo_extracao'])} ({extracao_percentual:.1f}%)\n")
+                                    f.write(f"  - **Processamento:** {benchmark.formatar_tempo(benchmark.resultados['dask']['tempo_processamento'])} ({processamento_percentual:.1f}%)\n")
+                                f.write(f"- **Memória (pico):** {benchmark.resultados['dask']['memoria_pico']:.2f}%\n")
+                                f.write(f"- **CPU (média):** {benchmark.resultados['dask']['cpu_medio']:.2f}%\n")
+                                f.write(f"- **Espaço em Disco:** {benchmark.resultados['dask']['espaco_disco']:.2f} MB\n")
+                                f.write(f"- **Taxa de Compressão:** {benchmark.resultados['dask']['compressao_taxa']:.2f}%\n\n")
+                                
+                                # Adicionar gráfico de tempo se disponível
+                                if benchmark.resultados['dask']['tempo_extracao'] > 0 and os.path.exists(os.path.join(docs_dir, 'benchmark_tempo_dask.png')):
+                                    f.write("## Gráficos\n\n")
+                                    f.write("### Distribuição de Tempo\n\n")
+                                    f.write("![Distribuição de Tempo - Dask](benchmark_tempo_dask.png)\n")
+                            
+                            logger.info(f"Relatório Dask salvo em formato Markdown: {md_path}")
+                            print(f"\nRelatório detalhado gerado em formato Markdown: {md_path}")
                 
             except Exception as e:
                 logger.error(f"Erro ao gerar relatório: {str(e)}")
