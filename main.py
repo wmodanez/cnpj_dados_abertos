@@ -15,7 +15,7 @@ from src.config import config
 from src.database import create_duckdb_file
 from src.process.empresa import process_empresa
 from src.process.estabelecimento import process_estabelecimento
-from src.process.simples import process_simples
+from src.process.simples import process_simples, process_single_zip_pandas, process_single_zip_polars
 from src.process.socio import process_socio
 from src.utils import check_basic_folders
 import dask
@@ -187,6 +187,8 @@ def main():
     parser = argparse.ArgumentParser(description='Processa dados do CNPJ')
     parser.add_argument('--tipos', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
                         help='Tipos de dados a serem processados. Se não especificado, processa todos.')
+    parser.add_argument('--engine', choices=['pandas', 'dask', 'polars'], default='pandas',
+                        help='Motor de processamento a ser utilizado. Padrão: pandas')
     args = parser.parse_args()
 
     # Mapeia os tipos de argumentos para os nomes reais dos arquivos
@@ -274,7 +276,16 @@ def main():
         for tipo in args.tipos:
             process_func, nome = tipos_a_processar[tipo]
             print_section(f"Processando dados de {nome}...")
-            if process_func(PATH_ZIP, PATH_UNZIP, os.path.join(PATH_PARQUET, latest_folder)):
+            
+            # Escolha do motor de processamento
+            if tipo == 'simples' and args.engine == 'polars':
+                # Usar o processador Polars para Simples Nacional
+                success = process_simples_with_polars(PATH_ZIP, PATH_UNZIP, os.path.join(PATH_PARQUET, latest_folder))
+            else:
+                # Usar o processador padrão (Pandas ou Dask dependendo da configuração)
+                success = process_func(PATH_ZIP, PATH_UNZIP, os.path.join(PATH_PARQUET, latest_folder))
+                
+            if success:
                 is_create_db_parquet = True
                 print_success(f"Dados de {nome} processados com sucesso")
             else:
@@ -305,6 +316,43 @@ def main():
             logger.error(f"Erro ao encerrar cliente Dask: {e}")
         finally:
             print_success("Processo finalizado com sucesso!")
+
+
+def process_simples_with_polars(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
+    """Processa os dados do Simples Nacional usando Polars."""
+    logger.info('=' * 50)
+    logger.info('Iniciando processamento do SIMPLES NACIONAL com Polars')
+    logger.info('=' * 50)
+    
+    try:
+        zip_files = [f for f in os.listdir(path_zip) 
+                    if f.startswith('Simples') and f.endswith('.zip')]
+        
+        if not zip_files:
+            logger.warning('Nenhum arquivo ZIP do Simples encontrado.')
+            return True
+        
+        # Processar com Polars
+        success = False
+        for zip_file in zip_files:
+            result = process_single_zip_polars(
+                zip_file=zip_file,
+                path_zip=path_zip,
+                path_unzip=path_unzip,
+                path_parquet=path_parquet
+            )
+            if result:
+                success = True
+                logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars")
+        
+        if not success:
+            logger.warning("Nenhum arquivo processado com sucesso usando Polars.")
+        
+        return success
+            
+    except Exception as e:
+        logger.error(f'Erro no processamento com Polars: {str(e)}')
+        return False
 
 
 if __name__ == '__main__':

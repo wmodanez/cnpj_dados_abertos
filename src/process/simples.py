@@ -8,6 +8,7 @@ import pyarrow as pa
 from pyarrow import parquet as pq
 import dask.dataframe as dd
 from dask import delayed
+import polars as pl  # Importar Polars
 
 from ..config import config
 from ..utils import (
@@ -568,3 +569,215 @@ def limpar_diretorios(self):
                     shutil.rmtree(item_path)
                 else:
                     os.remove(item_path)
+
+def process_csv_file_polars(csv_path):
+    """
+    Processa um único arquivo CSV de simples usando Polars.
+    
+    Args:
+        csv_path: Caminho para o arquivo CSV
+        
+    Returns:
+        DataFrame Polars ou None em caso de erro
+    """
+    # Verifica a integridade do CSV
+    if not verify_csv_integrity(csv_path):
+        return None
+
+    # Usa colunas da config
+    original_column_names = config.simples_columns
+
+    try:
+        # Usa polars.read_csv com os parâmetros apropriados
+        df = pl.read_csv(
+            csv_path,
+            separator=config.file.separator,
+            encoding=config.file.encoding,
+            has_header=False,
+            new_columns=original_column_names,
+            infer_schema_length=0,  # Não inferir schema
+            dtypes={col: pl.Utf8 for col in original_column_names}  # Inicialmente lê tudo como string
+        )
+        return df
+    except Exception as e:
+        logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)} com Polars: {str(e)}')
+        return None
+
+
+def apply_polars_transformations(df):
+    """Aplica transformações específicas para Simples Nacional usando Polars."""
+    logger.info("Aplicando transformações em Simples com Polars...")
+    
+    # Renomeação de colunas
+    rename_mapping = {
+        'cnpj_basico': 'cnpj_basico',
+        'opcao_pelo_simples': 'opcao_simples',
+        'data_opcao_pelo_simples': 'data_opcao_simples',
+        'data_exclusao_do_simples': 'data_exclusao_simples',
+        'opcao_pelo_mei': 'opcao_mei',
+        'data_opcao_pelo_mei': 'data_opcao_mei',
+        'data_exclusao_do_mei': 'data_exclusao_mei'
+    }
+    
+    # Filtrar para incluir apenas colunas que existem no DataFrame
+    actual_rename_mapping = {k: v for k, v in rename_mapping.items() if k in df.columns}
+    df = df.rename(actual_rename_mapping)
+    
+    # Conversão de números
+    if 'cnpj_basico' in df.columns:
+        df = df.with_columns(pl.col('cnpj_basico').cast(pl.Int64, strict=False))
+    
+    # Conversão de datas
+    date_cols = ['data_opcao_simples', 'data_exclusao_simples', 
+                 'data_opcao_mei', 'data_exclusao_mei']
+    
+    for col in date_cols:
+        if col in df.columns:
+            # Substituir valores inválidos com null
+            df = df.with_columns(
+                pl.when(pl.col(col).is_in(['0', '00000000', 'nan', 'None', 'NaN']))
+                .then(None)
+                .otherwise(pl.col(col))
+                .alias(col)
+            )
+            # Converter para data
+            df = df.with_columns(
+                pl.col(col).str.strptime(pl.Date, format='%Y%m%d', strict=False).alias(col)
+            )
+    
+    # Conversão de opções (S/N)
+    option_cols = ['opcao_simples', 'opcao_mei']
+    for col in option_cols:
+        if col in df.columns:
+            df = df.with_columns(
+                pl.when(pl.col(col).is_in(['S', 's']))
+                .then(1)
+                .when(pl.col(col).is_in(['N', 'n']))
+                .then(0)
+                .otherwise(None)
+                .cast(pl.Int8, strict=False)
+                .alias(col)
+            )
+    
+    return df
+
+
+def create_parquet_polars(df, table_name, path_parquet):
+    """Salva um DataFrame Polars como parquet.
+    
+    Args:
+        df: DataFrame Polars
+        table_name: Nome da tabela
+        path_parquet: Caminho base para os arquivos parquet
+        
+    Returns:
+        True se sucesso, False caso contrário
+    """
+    try:
+        output_dir = os.path.join(path_parquet, table_name)
+        
+        # Limpa o diretório antes de criar os novos arquivos
+        try:
+            file_delete(output_dir)
+            logger.info(f'Diretório {output_dir} limpo antes de criar novos arquivos parquet')
+        except Exception as e:
+            logger.warning(f'Não foi possível limpar diretório {output_dir}: {str(e)}')
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Log das colunas antes de salvar
+        logger.info(f"Colunas do DataFrame Polars '{table_name}' antes de salvar em Parquet: {df.columns}")
+        
+        # Calcular número total de chunks baseado no tamanho
+        total_rows = df.height
+        chunk_size = 100000  # Mesmo tamanho usado nas outras funções
+        # Garantir pelo menos 2 chunks para ter múltiplos arquivos
+        num_chunks = max(2, int(np.ceil(total_rows / chunk_size)))
+        
+        # Ajustar o tamanho dos chunks para distribuir igualmente
+        adjusted_chunk_size = int(np.ceil(total_rows / num_chunks))
+        
+        logger.info(f"Dividindo DataFrame com {total_rows} linhas em {num_chunks} chunks")
+        
+        # Criar os arquivos parquet em chunks
+        for i in range(num_chunks):
+            start_idx = i * adjusted_chunk_size
+            end_idx = min((i + 1) * adjusted_chunk_size, total_rows)
+            
+            # Criar um chunk do DataFrame
+            df_chunk = df.slice(start_idx, end_idx - start_idx)
+            
+            # Criar nome do arquivo
+            file_name = create_parquet_filename(table_name, i)
+            file_path = os.path.join(output_dir, file_name)
+            
+            # Salvar o chunk como parquet
+            df_chunk.write_parquet(
+                file_path,
+                compression="snappy"
+            )
+            
+            logger.info(f"Chunk {i+1}/{num_chunks} salvo como {file_name} ({end_idx-start_idx} linhas)")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao salvar DataFrame Polars como parquet: {str(e)}")
+        return False
+
+
+def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str) -> bool:
+    """Processa um único arquivo ZIP usando Polars para eficiência."""
+    try:
+        zip_path = os.path.join(path_zip, zip_file)
+        
+        # Extração e processamento
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(path_unzip)
+        
+        # Processamento dos CSVs usando Polars
+        csv_files = [f for f in os.listdir(path_unzip) if 'CSV' in f]
+        
+        if not csv_files:
+            logger.warning(f"Nenhum arquivo CSV encontrado no ZIP {zip_file}")
+            return False
+        
+        # Lista para armazenar os DataFrames
+        dataframes = []
+        
+        # Processar cada arquivo CSV individualmente
+        for csv_file in csv_files:
+            try:
+                csv_path = os.path.join(path_unzip, csv_file)
+                df = process_csv_file_polars(csv_path)
+                
+                if df is not None and not df.is_empty():
+                    dataframes.append(df)
+                    logger.info(f"CSV {csv_file} processado com sucesso usando Polars: {df.height} linhas")
+            except Exception as e:
+                logger.error(f"Erro ao processar o CSV {csv_file} com Polars: {str(e)}")
+        
+        # Verificar se temos DataFrames para processar
+        if not dataframes:
+            logger.warning(f"Nenhum DataFrame Polars válido gerado a partir do ZIP {zip_file}")
+            return False
+        
+        # Concatenar os DataFrames se houver mais de um
+        if len(dataframes) > 1:
+            df = pl.concat(dataframes, how="vertical")
+        else:
+            df = dataframes[0]
+        
+        # Verificar se o DataFrame resultante tem dados
+        if df.is_empty():
+            logger.warning(f"DataFrame Polars vazio após concatenação para o ZIP {zip_file}")
+            return False
+        
+        # Aplicar transformações
+        df = apply_polars_transformations(df)
+        
+        # Criar múltiplos arquivos parquet com chunks
+        return create_parquet_polars(df, 'simples', path_parquet)
+        
+    except Exception as e:
+        logger.error(f'Erro processando {zip_file} com Polars: {str(e)}')
+        return False

@@ -15,4 +15,5 @@ distributed>=2025.2.0
 GPUtil==1.4.0
 matplotlib==3.8.0
 tqdm==4.67.0
-
+setuptools==67.6.1
+polars>=0.20.0

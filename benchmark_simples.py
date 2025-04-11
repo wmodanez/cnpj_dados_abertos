@@ -52,7 +52,7 @@ from dask.distributed import as_completed, Client, LocalCluster
 
 # Importações internas do projeto
 from src.config import config
-from src.process.simples import process_simples, process_single_zip
+from src.process.simples import process_simples, process_single_zip, process_single_zip_polars
 from src.utils.dask_manager import DaskManager
 
 # Torna o GPUtil opcional para evitar erros se não estiver disponível
@@ -71,6 +71,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Importar as funções do arquivo simples.py
 from src.process.simples import (
     process_single_zip_pandas,   # Versão Pandas
+    process_single_zip,          # Versão Dask (se existir)
+    process_single_zip_polars    # Versão Polars
 )
 
 # Configurando logging
@@ -196,17 +198,20 @@ class BenchmarkSimples:
         if path_parquet_destino:
             self.path_parquet_pandas = os.path.join(path_base, path_parquet_destino, "pandas")
             self.path_parquet_dask = os.path.join(path_base, path_parquet_destino, "dask")
+            self.path_parquet_polars = os.path.join(path_base, path_parquet_destino, "polars")
         else:
             self.path_parquet_pandas = os.path.join(path_base, "parquet_pandas")
             self.path_parquet_dask = os.path.join(path_base, "parquet_dask")
+            self.path_parquet_polars = os.path.join(path_base, "parquet_polars")
         
         # Criar diretórios para os testes
         self.path_unzip_pandas = os.path.join(path_base, "unzip_pandas")
         self.path_unzip_dask = os.path.join(path_base, "unzip_dask")
+        self.path_unzip_polars = os.path.join(path_base, "unzip_polars")
         
         # Criar diretórios se não existirem
-        for path in [self.path_unzip_pandas, self.path_unzip_dask, 
-                     self.path_parquet_pandas, self.path_parquet_dask]:
+        for path in [self.path_unzip_pandas, self.path_unzip_dask, self.path_unzip_polars,
+                     self.path_parquet_pandas, self.path_parquet_dask, self.path_parquet_polars]:
             os.makedirs(path, exist_ok=True)
         
         # Identificar arquivos ZIP do Simples Nacional
@@ -247,6 +252,19 @@ class BenchmarkSimples:
                 'memoria_media': 0,
                 'cpu_medio': 0, 
                 'cpu_pico': 0,
+                'espaco_disco': 0,
+                'num_arquivos': 0,
+                'arquivos_parquet': [],
+                'compressao_taxa': 0
+            },
+            'polars': {
+                'tempo_total': 0,
+                'tempo_extracao': 0,
+                'tempo_processamento': 0,
+                'memoria_pico': 0,
+                'memoria_media': 0,
+                'cpu_pico': 0,
+                'cpu_medio': 0,
                 'espaco_disco': 0,
                 'num_arquivos': 0,
                 'arquivos_parquet': [],
@@ -292,7 +310,7 @@ class BenchmarkSimples:
             return
             
         # Sempre limpar os diretórios de extração temporária
-        diretorios_extracao = [self.path_unzip_pandas, self.path_unzip_dask]
+        diretorios_extracao = [self.path_unzip_pandas, self.path_unzip_dask, self.path_unzip_polars]
         for path in diretorios_extracao:
             if os.path.exists(path):
                 print(f"Limpando diretório: {path}")
@@ -305,7 +323,7 @@ class BenchmarkSimples:
         
         # Limpar diretórios de parquet apenas se não estiver preservando
         if not preservar_parquet:
-            diretorios_parquet = [self.path_parquet_pandas, self.path_parquet_dask]
+            diretorios_parquet = [self.path_parquet_pandas, self.path_parquet_dask, self.path_parquet_polars]
             for path in diretorios_parquet:
                 if os.path.exists(path):
                     print(f"Limpando diretório: {path}")
@@ -653,32 +671,141 @@ class BenchmarkSimples:
         
         return self.resultados['dask']
     
+    def executar_benchmark_polars(self):
+        """Executa o benchmark usando Polars."""
+        logger.info("\nBENCHMARK COM POLARS")
+        
+        # Limpar diretórios (não preservar parquet antes de executar o benchmark)
+        self.limpar_diretorios(preservar_parquet=False)
+        
+        # Medir uso de CPU e memória
+        cpu_medidas = []
+        memoria_medidas = []
+        
+        # Medir tempo total de execução
+        tempo_inicio_total = time.time()
+        
+        # Armazenar tempos parciais
+        tempo_extracao = 0
+        tempo_processamento = 0
+        
+        # Executar o processamento para cada arquivo ZIP
+        for zip_file in self.zip_files:
+            logger.info(f"Processando {zip_file} com Polars...")
+            
+            # Mostrar progresso
+            print(f"\n[Polars] Processando arquivo: {zip_file}")
+            print("Status: Extraindo e processando CSV... ", end="", flush=True)
+            
+            try:
+                # Medir CPU e memória durante o processamento
+                cpu_medidas.append(psutil.cpu_percent(interval=0.1))
+                memoria_medidas.append(psutil.virtual_memory().percent)
+                
+                # Medir o tempo de processamento
+                tempo_arquivo_inicio = time.time()
+                
+                # Usar a função process_single_zip_polars
+                resultado = process_single_zip_polars(
+                    zip_file=zip_file, 
+                    path_zip=self.path_zip, 
+                    path_unzip=self.path_unzip_polars, 
+                    path_parquet=self.path_parquet_polars
+                )
+                
+                # Atualizar tempo de processamento
+                tempo_arquivo_total = time.time() - tempo_arquivo_inicio
+                
+                # Verificar resultado
+                if resultado:
+                    print("✓ Concluído!")
+                    logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars em {tempo_arquivo_total:.2f} segundos")
+                else:
+                    print("✗ Falha!")
+                    logger.warning(f"Falha ao processar {zip_file} com Polars após {tempo_arquivo_total:.2f} segundos")
+                    
+            except Exception as e:
+                print("✗ Erro!")
+                logger.error(f"Erro ao processar {zip_file} com Polars: {str(e)}")
+                logger.debug(traceback.format_exc())
+        
+        # Calcular tempo total
+        tempo_total = time.time() - tempo_inicio_total
+        
+        # Calcular uso de CPU e memória
+        cpu_medio = np.mean(cpu_medidas) if cpu_medidas else 0
+        cpu_pico = np.max(cpu_medidas) if cpu_medidas else 0
+        memoria_media = np.mean(memoria_medidas) if memoria_medidas else 0
+        memoria_pico = np.max(memoria_medidas) if memoria_medidas else 0
+        
+        # Verificar existência dos arquivos parquet
+        parquet_dir = os.path.join(self.path_parquet_polars, 'simples')
+        if os.path.exists(parquet_dir):
+            parquet_files = [f for f in os.listdir(parquet_dir) if f.endswith('.parquet')]
+            num_arquivos = len(parquet_files)
+        else:
+            parquet_files = []
+            num_arquivos = 0
+        
+        # Calcular espaço em disco dos arquivos parquet
+        espaco_disco = sum(os.path.getsize(os.path.join(parquet_dir, f)) for f in parquet_files) / (1024 * 1024) if parquet_files else 0
+        
+        # Calcular taxa de compressão
+        if self.info_arquivo and espaco_disco > 0:
+            tamanho_original = sum(info['tamanho_mb'] for info in self.info_arquivo.values())
+            compressao_taxa = 100 * (1 - (espaco_disco / tamanho_original)) if tamanho_original > 0 else 0
+        else:
+            compressao_taxa = 0
+        
+        # Guardar resultados
+        self.resultados['polars'] = {
+            'tempo_total': tempo_total,
+            'tempo_extracao': tempo_extracao,
+            'tempo_processamento': tempo_processamento,
+            'memoria_pico': memoria_pico,
+            'memoria_media': memoria_media,
+            'cpu_pico': cpu_pico,
+            'cpu_medio': cpu_medio,
+            'espaco_disco': espaco_disco,
+            'num_arquivos': num_arquivos,
+            'arquivos_parquet': parquet_files,
+            'compressao_taxa': compressao_taxa
+        }
+        
+        logger.info(f"Benchmark com Polars concluído em {tempo_total:.2f} segundos")
+        
+        # Forçar limpeza de memória
+        gc.collect()
+        
+        return self.resultados['polars']
+    
     def comparar_resultados(self):
         """Compara os resultados dos benchmarks e retorna o melhor método."""
         pandas_results = self.resultados['pandas']
         dask_results = self.resultados['dask']
+        polars_results = self.resultados['polars']
         
-        # Verificar se ambos os métodos geraram resultados válidos (arquivos parquet)
+        # Verificar se os métodos geraram resultados válidos (arquivos parquet)
         pandas_valido = pandas_results['num_arquivos'] > 0
         dask_valido = dask_results['num_arquivos'] > 0
+        polars_valido = polars_results['num_arquivos'] > 0
+        
+        # Contar quantos métodos geraram resultados válidos
+        metodos_validos = [('pandas', pandas_valido), ('dask', dask_valido), ('polars', polars_valido)]
+        validos = [m for m, v in metodos_validos if v]
         
         # Se apenas um método gerou resultados válidos, ele é automaticamente o melhor
-        if pandas_valido and not dask_valido:
+        if len(validos) == 1:
+            melhor = validos[0]
             return {
-                'comparacao': {'processamento_sucesso': {'melhor': 'pandas', 'diferenca_percentual': 100}},
-                'contagem': {'pandas': 1, 'dask': 0},
-                'melhor_metodo': 'pandas'
+                'comparacao': {'processamento_sucesso': {'melhor': melhor, 'diferenca_percentual': 100}},
+                'contagem': {m: 1 if m == melhor else 0 for m, _ in metodos_validos},
+                'melhor_metodo': melhor
             }
-        elif dask_valido and not pandas_valido:
-            return {
-                'comparacao': {'processamento_sucesso': {'melhor': 'dask', 'diferenca_percentual': 100}},
-                'contagem': {'pandas': 0, 'dask': 1},
-                'melhor_metodo': 'dask'
-            }
-        elif not pandas_valido and not dask_valido:
+        elif len(validos) == 0:
             return {
                 'comparacao': {'sem_dados': {'melhor': 'indeterminado', 'diferenca_percentual': 0}},
-                'contagem': {'pandas': 0, 'dask': 0},
+                'contagem': {m: 0 for m, _ in metodos_validos},
                 'melhor_metodo': 'indeterminado'
             }
         
@@ -706,49 +833,71 @@ class BenchmarkSimples:
         
         # Compara cada métrica apenas se existir nos resultados
         for metrica in metricas_para_comparar:
-            if metrica in pandas_results and metrica in dask_results:
-                # Se ambos são zero, não há diferença significativa
-                if pandas_results[metrica] == 0 and dask_results[metrica] == 0:
-                    continue
+            # Verificar se a métrica existe em todos os resultados válidos
+            valores = {}
+            if pandas_valido and metrica in pandas_results:
+                valores['pandas'] = pandas_results[metrica]
+            if dask_valido and metrica in dask_results:
+                valores['dask'] = dask_results[metrica]
+            if polars_valido and metrica in polars_results:
+                valores['polars'] = polars_results[metrica]
+            
+            if not valores:
+                continue
+            
+            # Determinar qual é melhor (menor valor é melhor, exceto para taxa de compressão)
+            if metrica == 'compressao_taxa':
+                # Para taxa de compressão, maior é melhor
+                melhor = max(valores.items(), key=lambda x: x[1])[0]
+            else:
+                # Para outras métricas, menor é melhor
+                melhor = min(valores.items(), key=lambda x: x[1])[0]
                 
-                # Determinar qual é melhor (menor valor é melhor, exceto para taxa de compressão)
-                if metrica == 'compressao_taxa':
-                    # Para taxa de compressão, maior é melhor
-                    melhor = 'pandas' if pandas_results[metrica] > dask_results[metrica] else 'dask'
+                # Nunca considerar um valor zero como melhor quando outro tem resultado válido
+                if valores[melhor] == 0:
+                    valores_sem_zero = {k: v for k, v in valores.items() if v > 0}
+                    if valores_sem_zero:
+                        melhor = min(valores_sem_zero.items(), key=lambda x: x[1])[0]
+            
+            # Calcular diferença percentual em relação ao segundo melhor
+            valores_ordenados = sorted(valores.items(), key=lambda x: x[1] if metrica != 'compressao_taxa' else -x[1])
+            if len(valores_ordenados) > 1:
+                melhor_valor = valores_ordenados[0][1]
+                segundo_valor = valores_ordenados[1][1]
+                
+                if melhor_valor == 0 and segundo_valor == 0:
+                    diferenca = 0
+                elif melhor_valor == 0:
+                    diferenca = 100
+                elif segundo_valor == 0:
+                    diferenca = 100
                 else:
-                    # Para outras métricas, menor é melhor
-                    melhor = 'pandas' if pandas_results[metrica] < dask_results[metrica] else 'dask'
-                    
-                    # Nunca considerar um valor zero como melhor quando o outro tem resultado válido
-                    if melhor == 'dask' and dask_results[metrica] == 0 and pandas_results[metrica] > 0:
-                        melhor = 'pandas'
-                    elif melhor == 'pandas' and pandas_results[metrica] == 0 and dask_results[metrica] > 0:
-                        melhor = 'dask'
-                
-                # Calcular diferença percentual
-                diferenca = calcular_diferenca_percentual(pandas_results[metrica], dask_results[metrica])
-                
-                # Adicionar à comparação
-                comparacao[metrica] = {
-                    'melhor': melhor,
-                    'diferenca_percentual': diferenca
-                }
+                    maximo = max(melhor_valor, segundo_valor)
+                    diferenca = abs(melhor_valor - segundo_valor) / maximo * 100
+            else:
+                diferenca = 100  # Se só há um método, a diferença é 100%
+            
+            # Adicionar à comparação
+            comparacao[metrica] = {
+                'melhor': melhor,
+                'diferenca_percentual': diferenca
+            }
         
         # Se não houver critérios para comparação, retorne um resultado padrão
         if not comparacao:
             return {
                 'comparacao': {'sem_dados': {'melhor': 'indeterminado', 'diferenca_percentual': 0}},
-                'contagem': {'pandas': 0, 'dask': 0},
+                'contagem': {'pandas': 0, 'dask': 0, 'polars': 0},
                 'melhor_metodo': 'indeterminado'
             }
         
         # Contar qual método ganhou em mais critérios
-        contagem = {'pandas': 0, 'dask': 0}
+        contagem = {'pandas': 0, 'dask': 0, 'polars': 0}
         for criterio, resultado in comparacao.items():
             contagem[resultado['melhor']] += 1
         
         # Determinar o melhor método
-        melhor_metodo = 'pandas' if contagem['pandas'] >= contagem['dask'] else 'dask'
+        melhor_metodo = max(contagem.items(), key=lambda x: x[1])[0]
         
         return {
             'comparacao': comparacao,
@@ -770,12 +919,13 @@ class BenchmarkSimples:
             metricas = ['tempo_total', 'memoria_pico', 'cpu_medio', 'espaco_disco']
             valores_pandas = [self.resultados['pandas'][m] for m in metricas]
             valores_dask = [self.resultados['dask'][m] for m in metricas]
+            valores_polars = [self.resultados['polars'][m] for m in metricas]
             
             # Criar subplots
             for i, metrica in enumerate(metricas):
                 plt.subplot(2, 2, i+1)
-                barras = plt.bar(['Pandas', 'Dask'], [self.resultados['pandas'][metrica], self.resultados['dask'][metrica]], 
-                                color=['#1f77b4', '#ff7f0e'])  # Cores azul e laranja
+                barras = plt.bar(['Pandas', 'Dask', 'Polars'], [self.resultados['pandas'][metrica], self.resultados['dask'][metrica], self.resultados['polars'][metrica]], 
+                                color=['#1f77b4', '#ff7f0e', '#2ca02c'])  # Cores azul, laranja e verde
                 plt.title(f'{metrica.replace("_", " ").title()}')
                 plt.ylabel('Valor')
                 
@@ -803,7 +953,7 @@ class BenchmarkSimples:
                     tempos = ['tempo_extracao', 'tempo_processamento']
                     valores = [self.resultados['pandas'][t] for t in tempos]
                     plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
-                            autopct='%1.1f%%', colors=['#2ca02c', '#d62728'])  # Verde e vermelho
+                            autopct='%1.1f%%', colors=['#2ca02c'])  # Verde
                     plt.title('Distribuição do Tempo (Pandas)')
                     grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_pandas.png')
                     plt.savefig(grafico_tempo_path)
@@ -820,7 +970,7 @@ class BenchmarkSimples:
                     tempos = ['tempo_extracao', 'tempo_processamento']
                     valores = [self.resultados['dask'][t] for t in tempos]
                     plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
-                            autopct='%1.1f%%', colors=['#9467bd', '#8c564b'])  # Roxo e marrom
+                            autopct='%1.1f%%', colors=['#ff7f0e'])  # Laranja
                     plt.title('Distribuição do Tempo (Dask)')
                     grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_dask.png')
                     plt.savefig(grafico_tempo_path)
@@ -829,7 +979,24 @@ class BenchmarkSimples:
                 except Exception as e:
                     logger.error(f"Erro ao criar gráfico de tempo Dask: {str(e)}")
                     graficos_criados['tempo_dask'] = False
-                    
+            
+            # Gráfico de tempo detalhado para Polars
+            if self.resultados['polars']['tempo_extracao'] > 0:
+                try:
+                    plt.figure(figsize=(10, 6))
+                    tempos = ['tempo_extracao', 'tempo_processamento']
+                    valores = [self.resultados['polars'][t] for t in tempos]
+                    plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
+                            autopct='%1.1f%%', colors=['#2ca02c'])  # Verde
+                    plt.title('Distribuição do Tempo (Polars)')
+                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_polars.png')
+                    plt.savefig(grafico_tempo_path)
+                    graficos_criados['tempo_polars'] = os.path.exists(grafico_tempo_path)
+                    logger.info(f"Gráfico tempo Polars salvo")
+                except Exception as e:
+                    logger.error(f"Erro ao criar gráfico de tempo Polars: {str(e)}")
+                    graficos_criados['tempo_polars'] = False
+            
             return graficos_criados
         except Exception as e:
             logger.error(f"Erro na geração de gráficos: {str(e)}")
@@ -864,6 +1031,14 @@ class BenchmarkSimples:
         print(f"  - CPU: {self.resultados['dask']['cpu_medio']:.1f}% (média)")
         print(f"  - Espaço: {self.resultados['dask']['espaco_disco']:.1f} MB")
         print(f"  - Compressão: {self.resultados['dask']['compressao_taxa']:.1f}%")
+        
+        # Resultados do Polars
+        print("\nRESULTADOS POLARS:")
+        print(f"  - Tempo Total: {self.formatar_tempo(self.resultados['polars']['tempo_total'])}")
+        print(f"  - Memória: {self.resultados['polars']['memoria_pico']:.1f}% (pico)")
+        print(f"  - CPU: {self.resultados['polars']['cpu_medio']:.1f}% (média)")
+        print(f"  - Espaço: {self.resultados['polars']['espaco_disco']:.1f} MB")
+        print(f"  - Compressão: {self.resultados['polars']['compressao_taxa']:.1f}%")
         
         # Comparação resumida
         print("\nCOMPARAÇÃO:")
@@ -920,6 +1095,18 @@ class BenchmarkSimples:
         relatorio += f"- **Espaço em Disco:** {self.resultados['dask']['espaco_disco']:.2f} MB\n"
         relatorio += f"- **Taxa de Compressão:** {self.resultados['dask']['compressao_taxa']:.2f}%\n\n"
         
+        # Adicionar resultados do Polars
+        relatorio += "### Resultados Polars\n\n"
+        relatorio += f"- **Tempo Total:** {self.formatar_tempo(self.resultados['polars']['tempo_total'])}\n"
+        relatorio += f"- **Tempo de Extração:** {self.formatar_tempo(self.resultados['polars']['tempo_extracao'])}\n"
+        relatorio += f"- **Tempo de Processamento:** {self.formatar_tempo(self.resultados['polars']['tempo_processamento'])}\n"
+        relatorio += f"- **Memória (pico):** {self.resultados['polars']['memoria_pico']:.2f}%\n"
+        relatorio += f"- **Memória (média):** {self.resultados['polars']['memoria_media']:.2f}%\n"
+        relatorio += f"- **CPU (pico):** {self.resultados['polars']['cpu_pico']:.2f}%\n"
+        relatorio += f"- **CPU (média):** {self.resultados['polars']['cpu_medio']:.2f}%\n"
+        relatorio += f"- **Espaço em Disco:** {self.resultados['polars']['espaco_disco']:.2f} MB\n"
+        relatorio += f"- **Taxa de Compressão:** {self.resultados['polars']['compressao_taxa']:.2f}%\n\n"
+        
         # Comparação dos resultados
         comparacao = self.comparar_resultados()
         relatorio += "### Comparação\n\n"
@@ -954,6 +1141,11 @@ class BenchmarkSimples:
             if os.path.exists(grafico_tempo_dask):
                 relatorio += "### Distribuição de Tempo - Dask\n\n"
                 relatorio += "![Tempo Dask](benchmark_tempo_dask.png)\n\n"
+            
+            grafico_tempo_polars = os.path.join(docs_dir, 'benchmark_tempo_polars.png')
+            if os.path.exists(grafico_tempo_polars):
+                relatorio += "### Distribuição de Tempo - Polars\n\n"
+                relatorio += "![Tempo Polars](benchmark_tempo_polars.png)\n\n"
         else:
             relatorio += "## Gráficos\n\n"
             relatorio += "*Não foi possível gerar gráficos para este relatório.*\n\n"
@@ -971,7 +1163,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Configuração do parser de argumentos
-    parser = argparse.ArgumentParser(description='Benchmark para comparar processamento com Pandas e Dask')
+    parser = argparse.ArgumentParser(description='Benchmark para comparar processamento com Pandas, Dask e Polars')
     parser.add_argument('--path_zip', type=str, default='dados-abertos-zip', 
                         help='Caminho para o diretório com os arquivos ZIP')
     parser.add_argument('--arquivo_zip', type=str, 
@@ -986,10 +1178,12 @@ def main():
                         help='Executar apenas o benchmark com Pandas')
     parser.add_argument('--dask', action='store_true', 
                         help='Executar apenas o benchmark com Dask')
+    parser.add_argument('--polars', action='store_true',  # Adicionando argumento para Polars
+                        help='Executar apenas o benchmark com Polars')
     parser.add_argument('--graficos', action='store_true', 
                         help='Gerar gráficos comparativos')
     parser.add_argument('--completo', action='store_true',
-                        help='Executar ambos os benchmarks e gerar gráficos')
+                        help='Executar todos os benchmarks e gerar gráficos')
     
     # Adicionar argumentos para controle de log
     add_log_level_argument(parser)
@@ -1033,6 +1227,7 @@ def main():
     # Flags para controlar quais métodos foram executados
     pandas_executado = False
     dask_executado = False
+    polars_executado = False  # Nova flag para Polars
     
     try:
         # Inicializar o benchmark
@@ -1051,52 +1246,76 @@ def main():
         
         # Executar os benchmarks
         try:
-            if not args.dask or args.pandas:
+            # Verificar que combinação de flags usar
+            executar_todos = args.completo
+            executar_especificos = args.pandas or args.dask or args.polars
+            
+            # Se nenhuma flag específica foi fornecida e não é completo, executar pandas por padrão
+            if not executar_especificos and not executar_todos:
+                args.pandas = True
+            
+            # Executa Pandas se solicitado ou se completo e não específico para outros
+            if args.pandas or (executar_todos and not (args.dask or args.polars)):
                 benchmark.executar_benchmark_pandas()
                 pandas_executado = True
                 
-            if not args.pandas or args.dask:
+            # Executa Dask se solicitado ou se completo e não específico para outros
+            if args.dask or (executar_todos and not (args.pandas or args.polars)):
                 benchmark.executar_benchmark_dask()
                 dask_executado = True
+                
+            # Executa Polars se solicitado ou se completo e não específico para outros  
+            if args.polars or (executar_todos and not (args.pandas or args.dask)):
+                benchmark.executar_benchmark_polars()
+                polars_executado = True
             
-            # Gerar gráficos comparativos somente se ambos os métodos foram executados
+            # Se --completo foi especificado explicitamente, executar todos os métodos não executados ainda
+            if args.completo:
+                if not pandas_executado:
+                    benchmark.executar_benchmark_pandas()
+                    pandas_executado = True
+                
+                if not dask_executado:
+                    benchmark.executar_benchmark_dask()
+                    dask_executado = True
+                
+                if not polars_executado:
+                    benchmark.executar_benchmark_polars()
+                    polars_executado = True
+            
+            # Gerar gráficos comparativos somente se mais de um método foi executado
             graficos_criados = {}
-            if args.graficos or args.completo:
-                if pandas_executado and dask_executado:
-                    try:
-                        graficos_criados = benchmark.gerar_graficos()
-                        if not graficos_criados.get('comparacao', False):
-                            logger.warning("Não foi possível gerar o gráfico de comparação")
-                    except Exception as e:
-                        logger.error(f"Erro ao gerar gráficos: {str(e)}")
-                        logger.debug(traceback.format_exc())
-                else:
-                    logger.warning("Gráficos comparativos requerem ambos os métodos")
+            metodos_executados = [m for m, flag in [('pandas', pandas_executado), 
+                                                   ('dask', dask_executado),
+                                                   ('polars', polars_executado)] if flag]
+            
+            if (args.graficos or args.completo) and len(metodos_executados) >= 2:
+                try:
+                    graficos_criados = benchmark.gerar_graficos()
+                    if not graficos_criados.get('comparacao', False):
+                        logger.warning("Não foi possível gerar o gráfico de comparação")
+                except Exception as e:
+                    logger.error(f"Erro ao gerar gráficos: {str(e)}")
+                    logger.debug(traceback.format_exc())
+            elif (args.graficos or args.completo) and len(metodos_executados) < 2:
+                logger.warning("Gráficos comparativos requerem pelo menos dois métodos")
             
             # Imprimir relatório final
-            if pandas_executado and dask_executado:
+            if len(metodos_executados) >= 2:
                 benchmark.imprimir_relatorio()
                 
                 # Gerar relatório Markdown
                 md_path = benchmark.gerar_relatorio_markdown(timestamp)
                 logger.info(f"Relatório: {md_path}")
             else:
-                # Relatório simplificado
-                if pandas_executado:
+                # Relatório simplificado para método único
+                for metodo in metodos_executados:
                     print("\n" + "="*40)
-                    print(" "*15 + "PANDAS")
+                    print(" "*15 + metodo.upper())
                     print("="*40)
-                    print(f"Tempo: {benchmark.formatar_tempo(benchmark.resultados['pandas']['tempo_total'])}")
-                    print(f"Memória: {benchmark.resultados['pandas']['memoria_pico']:.1f}%")
-                    print(f"Espaço: {benchmark.resultados['pandas']['espaco_disco']:.1f} MB")
-                
-                if dask_executado:
-                    print("\n" + "="*40)
-                    print(" "*15 + "DASK")
-                    print("="*40)
-                    print(f"Tempo: {benchmark.formatar_tempo(benchmark.resultados['dask']['tempo_total'])}")
-                    print(f"Memória: {benchmark.resultados['dask']['memoria_pico']:.1f}%")
-                    print(f"Espaço: {benchmark.resultados['dask']['espaco_disco']:.1f} MB")
+                    print(f"Tempo: {benchmark.formatar_tempo(benchmark.resultados[metodo]['tempo_total'])}")
+                    print(f"Memória: {benchmark.resultados[metodo]['memoria_pico']:.1f}%")
+                    print(f"Espaço: {benchmark.resultados[metodo]['espaco_disco']:.1f} MB")
             
             # Limpar diretórios temporários se solicitado
             if args.limpar:
