@@ -100,11 +100,22 @@ class InfoSistema:
         info['arquitetura'] = platform.architecture()[0]
         
         # Informações do processador
-        cpu_info = psutil.cpu_info()
-        info['processador'] = cpu_info[0].brand_raw if cpu_info else 'Desconhecido'
+        try:
+            # Usar platform em vez de psutil para obter informações do processador
+            info['processador'] = platform.processor()
+            if not info['processador']:
+                info['processador'] = platform.machine()
+        except Exception:
+            info['processador'] = 'Desconhecido'
+            
         info['cores_fisicos'] = psutil.cpu_count(logical=False)
         info['cores_logicos'] = psutil.cpu_count(logical=True)
-        info['frequencia_mhz'] = psutil.cpu_freq().max if psutil.cpu_freq() else 'Desconhecido'
+        
+        try:
+            cpu_freq = psutil.cpu_freq()
+            info['frequencia_mhz'] = f"{cpu_freq.max:.0f}" if cpu_freq and cpu_freq.max else 'Desconhecido'
+        except Exception:
+            info['frequencia_mhz'] = 'Desconhecido'
         
         # Informações de memória
         mem = psutil.virtual_memory()
@@ -277,13 +288,18 @@ class BenchmarkSimples:
                     
         return info
     
-    def limpar_diretorios(self):
-        """Limpa os diretórios temporários."""
+    def limpar_diretorios(self, preservar_parquet=True):
+        """Limpa os diretórios temporários.
+        
+        Args:
+            preservar_parquet: Se True, não limpa os diretórios de parquet.
+        """
         if not self.executar_limpeza:
             return
             
-        for path in [self.path_unzip_pandas, self.path_unzip_dask,
-                     self.path_parquet_pandas, self.path_parquet_dask]:
+        # Sempre limpar os diretórios de extração temporária
+        diretorios_extracao = [self.path_unzip_pandas, self.path_unzip_dask]
+        for path in diretorios_extracao:
             if os.path.exists(path):
                 for item in os.listdir(path):
                     item_path = os.path.join(path, item)
@@ -291,7 +307,20 @@ class BenchmarkSimples:
                         shutil.rmtree(item_path)
                     else:
                         os.remove(item_path)
-        logger.debug("Diretórios temporários limpos")  # Alterado para debug
+        
+        # Limpar diretórios de parquet apenas se não estiver preservando
+        if not preservar_parquet:
+            diretorios_parquet = [self.path_parquet_pandas, self.path_parquet_dask]
+            for path in diretorios_parquet:
+                if os.path.exists(path):
+                    for item in os.listdir(path):
+                        item_path = os.path.join(path, item)
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
+                        else:
+                            os.remove(item_path)
+            
+        logger.debug("Diretórios temporários limpos" + (" (preservando parquet)" if preservar_parquet else ""))
     
     def calcular_tamanho_diretorio(self, path):
         """Calcula o tamanho total de um diretório em MB."""
@@ -360,8 +389,8 @@ class BenchmarkSimples:
         logger.info(" "*20 + "BENCHMARK COM PANDAS")
         logger.info("="*60)
         
-        # Limpar diretórios
-        self.limpar_diretorios()
+        # Limpar diretórios (não preservar parquet antes de executar o benchmark)
+        self.limpar_diretorios(preservar_parquet=False)
         
         # Medir uso de CPU e memória
         cpu_medidas = []
@@ -486,50 +515,56 @@ class BenchmarkSimples:
             for i, zip_file in enumerate(self.zip_files):
                 logger.info(f"Processando {zip_file} com Dask ({i+1}/{total_arquivos})...")
                 
-                # Abordagem mais robusta: processar cada arquivo individualmente
-                # com gestão de erros e repetição
+                # Abordagem simplificada: processar cada arquivo diretamente
                 for tentativa in range(3):  # Até 3 tentativas por arquivo
                     if tentativa > 0:
                         logger.info(f"Tentativa {tentativa+1} para o arquivo {zip_file}")
-                        
+                    
                     try:
                         # Medir CPU e memória durante o processamento
                         cpu_medidas.append(psutil.cpu_percent(interval=0.1))
                         memoria_medidas.append(psutil.virtual_memory().percent)
                         
-                        # Importante: Enviar como função diretamente, não como objeto delayed
-                        # para evitar "Truth of Delayed objects is not supported"
-                        future = client.submit(
-                            process_single_zip_pandas,  # Usar versão pandas que é mais simples e estável
+                        # Processar diretamente com Dask, sem client.submit
+                        tempo_inicio_processamento = time.time()
+                        logger.info(f"Processando arquivo {zip_file} com Dask diretamente...")
+                        
+                        # Chamar a função diretamente
+                        resultado = process_single_zip(
                             zip_file=zip_file,
-                            path_zip=self.path_zip,
-                            path_unzip=self.path_unzip_dask,
+                            path_zip=self.path_zip, 
+                            path_unzip=self.path_unzip_dask, 
                             path_parquet=self.path_parquet_dask
                         )
                         
-                        # Aguardar o resultado com timeout para não ficar bloqueado indefinidamente
-                        try:
-                            # Usar apenas future.result() com timeout
-                            from distributed import TimeoutError as DaskTimeoutError
+                        # Verificar se o resultado é um objeto Delayed
+                        if hasattr(resultado, 'compute') and callable(getattr(resultado, 'compute')):
+                            logger.info(f"Detectado objeto Delayed, computando resultado para {zip_file}...")
                             try:
-                                result = future.result(timeout=300)  # 5 minutos de timeout
-                                
-                                if result:
-                                    logger.info(f"Arquivo {zip_file} processado com sucesso!")
-                                    sucessos += 1
-                                    break  # Saia do loop de tentativas
-                                else:
-                                    logger.warning(f"Arquivo {zip_file} processado mas retornou falso")
-                            except DaskTimeoutError:
-                                logger.warning(f"Timeout ao processar o arquivo {zip_file}")
-                                client.cancel(future)
+                                # Computar o objeto Delayed
+                                resultado = resultado.compute()
+                                logger.info(f"Computação finalizada para {zip_file}")
+                            except Exception as e:
+                                logger.error(f"Erro ao computar objeto Delayed para {zip_file}: {str(e)}")
+                                logger.error(traceback.format_exc())
+                                resultado = False
                         
-                        except Exception as e:
-                            logger.error(f"Erro ao aguardar resultado para {zip_file}: {str(e)}")
-                            client.cancel(future)
-                    
+                        # Calcular tempo de processamento
+                        tempo_processamento_arquivo = time.time() - tempo_inicio_processamento
+                        tempo_processamento += tempo_processamento_arquivo
+                        
+                        logger.info(f"Arquivo {zip_file} processado em {tempo_processamento_arquivo:.2f} segundos, resultado: {resultado}")
+                        
+                        if resultado is True:  # Verificar explicitamente se o resultado é True
+                            logger.info(f"Arquivo {zip_file} processado com sucesso!")
+                            sucessos += 1
+                            break  # Saia do loop de tentativas
+                        else:
+                            logger.warning(f"Arquivo {zip_file} processado mas retornou {resultado}")
+                                
                     except Exception as e:
-                        logger.error(f"Erro ao submeter tarefa para {zip_file}: {str(e)}")
+                        logger.error(f"Erro ao processar {zip_file}: {str(e)}")
+                        logger.error(traceback.format_exc())
                     
                     # Esperar brevemente antes de tentar novamente
                     time.sleep(2)
@@ -589,6 +624,30 @@ class BenchmarkSimples:
         pandas_results = self.resultados['pandas']
         dask_results = self.resultados['dask']
         
+        # Verificar se ambos os métodos geraram resultados válidos (arquivos parquet)
+        pandas_valido = pandas_results['num_arquivos'] > 0
+        dask_valido = dask_results['num_arquivos'] > 0
+        
+        # Se apenas um método gerou resultados válidos, ele é automaticamente o melhor
+        if pandas_valido and not dask_valido:
+            return {
+                'comparacao': {'processamento_sucesso': {'melhor': 'pandas', 'diferenca_percentual': 100}},
+                'contagem': {'pandas': 1, 'dask': 0},
+                'melhor_metodo': 'pandas'
+            }
+        elif dask_valido and not pandas_valido:
+            return {
+                'comparacao': {'processamento_sucesso': {'melhor': 'dask', 'diferenca_percentual': 100}},
+                'contagem': {'pandas': 0, 'dask': 1},
+                'melhor_metodo': 'dask'
+            }
+        elif not pandas_valido and not dask_valido:
+            return {
+                'comparacao': {'sem_dados': {'melhor': 'indeterminado', 'diferenca_percentual': 0}},
+                'contagem': {'pandas': 0, 'dask': 0},
+                'melhor_metodo': 'indeterminado'
+            }
+        
         comparacao = {}
         
         # Função auxiliar para evitar divisão por zero
@@ -624,9 +683,12 @@ class BenchmarkSimples:
                     melhor = 'pandas' if pandas_results[metrica] > dask_results[metrica] else 'dask'
                 else:
                     # Para outras métricas, menor é melhor
-                    melhor = 'pandas' if pandas_results[metrica] < dask_results[metrica] or dask_results[metrica] == 0 else 'dask'
-                    # Se dask_results for zero mas pandas_results não, pandas não deve ser considerado melhor
-                    if melhor == 'pandas' and pandas_results[metrica] > 0 and dask_results[metrica] == 0:
+                    melhor = 'pandas' if pandas_results[metrica] < dask_results[metrica] else 'dask'
+                    
+                    # Nunca considerar um valor zero como melhor quando o outro tem resultado válido
+                    if melhor == 'dask' and dask_results[metrica] == 0 and pandas_results[metrica] > 0:
+                        melhor = 'pandas'
+                    elif melhor == 'pandas' and pandas_results[metrica] == 0 and dask_results[metrica] > 0:
                         melhor = 'dask'
                 
                 # Calcular diferença percentual
@@ -769,20 +831,40 @@ class BenchmarkSimples:
         print("\nRECOMENDAÇÃO:")
         if comparacao['melhor_metodo'] == 'pandas':
             print("  Utilize o método PANDAS para processar os dados do Simples Nacional.")
-            print("  Vantagens principais: " + 
-                  ("menor tempo de execução, " if comparacao['comparacao']['tempo_total']['melhor'] == 'pandas' else "") +
-                  ("menor uso de memória, " if comparacao['comparacao']['memoria_pico']['melhor'] == 'pandas' else "") +
-                  ("menor uso de CPU, " if comparacao['comparacao']['cpu_medio']['melhor'] == 'pandas' else "") +
-                  ("menor espaço em disco, " if comparacao['comparacao']['espaco_disco']['melhor'] == 'pandas' else "") +
-                  ("melhor taxa de compressão" if comparacao['comparacao']['compressao_taxa']['melhor'] == 'pandas' else ""))
+            vantagens = []
+            if 'tempo_total' in comparacao['comparacao'] and comparacao['comparacao']['tempo_total']['melhor'] == 'pandas':
+                vantagens.append("menor tempo de execução")
+            if 'memoria_pico' in comparacao['comparacao'] and comparacao['comparacao']['memoria_pico']['melhor'] == 'pandas':
+                vantagens.append("menor uso de memória")
+            if 'cpu_medio' in comparacao['comparacao'] and comparacao['comparacao']['cpu_medio']['melhor'] == 'pandas':
+                vantagens.append("menor uso de CPU")
+            if 'espaco_disco' in comparacao['comparacao'] and comparacao['comparacao']['espaco_disco']['melhor'] == 'pandas':
+                vantagens.append("menor espaço em disco")
+            if 'compressao_taxa' in comparacao['comparacao'] and comparacao['comparacao']['compressao_taxa']['melhor'] == 'pandas':
+                vantagens.append("melhor taxa de compressão")
+            if 'processamento_sucesso' in comparacao['comparacao'] and comparacao['comparacao']['processamento_sucesso']['melhor'] == 'pandas':
+                vantagens.append("processamento bem-sucedido")
+            
+            if vantagens:
+                print(f"  Vantagens principais: {', '.join(vantagens)}")
         else:
             print("  Utilize o método DASK para processar os dados do Simples Nacional.")
-            print("  Vantagens principais: " + 
-                  ("menor tempo de execução, " if comparacao['comparacao']['tempo_total']['melhor'] == 'dask' else "") +
-                  ("menor uso de memória, " if comparacao['comparacao']['memoria_pico']['melhor'] == 'dask' else "") +
-                  ("menor uso de CPU, " if comparacao['comparacao']['cpu_medio']['melhor'] == 'dask' else "") +
-                  ("menor espaço em disco, " if comparacao['comparacao']['espaco_disco']['melhor'] == 'dask' else "") +
-                  ("melhor taxa de compressão" if comparacao['comparacao']['compressao_taxa']['melhor'] == 'dask' else ""))
+            vantagens = []
+            if 'tempo_total' in comparacao['comparacao'] and comparacao['comparacao']['tempo_total']['melhor'] == 'dask':
+                vantagens.append("menor tempo de execução")
+            if 'memoria_pico' in comparacao['comparacao'] and comparacao['comparacao']['memoria_pico']['melhor'] == 'dask':
+                vantagens.append("menor uso de memória")
+            if 'cpu_medio' in comparacao['comparacao'] and comparacao['comparacao']['cpu_medio']['melhor'] == 'dask':
+                vantagens.append("menor uso de CPU")
+            if 'espaco_disco' in comparacao['comparacao'] and comparacao['comparacao']['espaco_disco']['melhor'] == 'dask':
+                vantagens.append("menor espaço em disco")
+            if 'compressao_taxa' in comparacao['comparacao'] and comparacao['comparacao']['compressao_taxa']['melhor'] == 'dask':
+                vantagens.append("melhor taxa de compressão")
+            if 'processamento_sucesso' in comparacao['comparacao'] and comparacao['comparacao']['processamento_sucesso']['melhor'] == 'dask':
+                vantagens.append("processamento bem-sucedido")
+            
+            if vantagens:
+                print(f"  Vantagens principais: {', '.join(vantagens)}")
             
         print("="*80)
 
@@ -1074,7 +1156,7 @@ def main():
             
             # Limpar diretórios temporários se solicitado
             if args.limpar:
-                benchmark.limpar_diretorios()
+                benchmark.limpar_diretorios(preservar_parquet=True)  # Preservar diretórios de parquet
                 
         except Exception as e:
             logger.error(f"Erro durante o benchmark: {str(e)}")
