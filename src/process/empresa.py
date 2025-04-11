@@ -28,14 +28,14 @@ def create_parquet(df, table_name, path_parquet):
     # Limpa o diretório antes de criar os novos arquivos
     try:
         file_delete(output_dir)
-        logger.info(f'Diretório {output_dir} limpo antes de criar novos arquivos parquet')
+        logger.debug(f'Diretório {output_dir} limpo antes de criar novos arquivos parquet')
     except Exception as e:
         logger.warning(f'Não foi possível limpar diretório {output_dir}: {str(e)}')
 
     os.makedirs(output_dir, exist_ok=True)
 
     # Log das colunas antes de salvar
-    logger.info(f"Colunas do DataFrame '{table_name}' antes de salvar em Parquet: {list(df.columns)}")
+    logger.debug(f"Colunas do DataFrame '{table_name}' antes de salvar em Parquet: {list(df.columns)}")
 
     # Configura o nome dos arquivos parquet com prefixo da tabela
     df.to_parquet(
