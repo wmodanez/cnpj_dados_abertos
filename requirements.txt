@@ -1,6 +1,6 @@
 beautifulsoup4==4.12.3
-dask[complete]==2024.2.0
-distributed==2024.2.0
+dask[complete]==2025.2.0
+distributed==2025.2.0
 duckdb==0.10.0
 python-dotenv==1.0.1
 pycurl==7.45.4
@@ -10,3 +10,9 @@ aiofiles==23.2.1
 pandas==2.2.3
 rich==13.9.4
 pyarrow==19.0.1
+dask>=2025.2.0
+distributed>=2025.2.0
+GPUtil==1.4.0
+matplotlib==3.8.0
+tqdm==4.67.0
+
