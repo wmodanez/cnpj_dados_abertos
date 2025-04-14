@@ -228,10 +228,10 @@ def main():
 
     # Define quais tipos processar baseado nos argumentos
     tipos_a_processar = {
-        # 'empresas': (process_empresa, "EMPRESAS"),
-        # 'estabelecimentos': (process_estabelecimento, "ESTABELECIMENTOS"),
+        'empresas': (process_empresa, "EMPRESAS"),
+        'estabelecimentos': (process_estabelecimento, "ESTABELECIMENTOS"),
         'simples': (process_simples, "SIMPLES NACIONAL"),
-        # 'socios': (process_socio, "SÓCIOS")
+        'socios': (process_socio, "SÓCIOS")
     }
 
     # Se não especificou tipos, processa todos
@@ -278,11 +278,12 @@ def main():
             print_section(f"Processando dados de {nome}...")
             
             # Escolha do motor de processamento
-            if tipo == 'simples' and args.engine == 'polars':
-                # Usar o processador Polars para Simples Nacional
-                success = process_simples_with_polars(PATH_ZIP, PATH_UNZIP, os.path.join(PATH_PARQUET, latest_folder))
+            if tipo == 'empresas' and args.engine == 'pandas':
+                success = process_empresa_with_pandas(PATH_ZIP, PATH_UNZIP, os.path.join(PATH_PARQUET, latest_folder))
+            elif tipo == 'empresas' and args.engine == 'polars':
+                success = process_empresa_with_polars(PATH_ZIP, PATH_UNZIP, os.path.join(PATH_PARQUET, latest_folder))
             else:
-                # Usar o processador padrão (Pandas ou Dask dependendo da configuração)
+                # Usar o processador padrão
                 success = process_func(PATH_ZIP, PATH_UNZIP, os.path.join(PATH_PARQUET, latest_folder))
                 
             if success:
@@ -353,6 +354,17 @@ def process_simples_with_polars(path_zip: str, path_unzip: str, path_parquet: st
     except Exception as e:
         logger.error(f'Erro no processamento com Polars: {str(e)}')
         return False
+
+
+def process_empresa_with_pandas(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
+    """Wrapper para processar empresas com Pandas"""
+    from src.process.empresa import process_empresa_with_pandas as process_impl
+    return process_impl(path_zip, path_unzip, path_parquet)
+
+def process_empresa_with_polars(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
+    """Wrapper para processar empresas com Polars"""
+    from src.process.empresa import process_empresa_with_polars as process_impl
+    return process_impl(path_zip, path_unzip, path_parquet)
 
 
 if __name__ == '__main__':
