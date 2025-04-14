@@ -6,6 +6,12 @@ import numpy as np
 import dask.dataframe as dd
 from dask import delayed
 import polars as pl
+import gc
+import shutil
+import traceback
+import logging.handlers
+import sys
+import time
 
 from ..config import config
 from ..utils import (
@@ -16,6 +22,45 @@ from ..utils import (
 from src.utils.dask_manager import DaskManager
 
 logger = logging.getLogger(__name__)
+
+# Flag global para garantir que o logger do worker seja configurado apenas uma vez por processo
+_worker_logger_configured = False
+
+def configure_worker_logging(log_file):
+    """Configura o logger para o processo worker."""
+    global _worker_logger_configured
+    if _worker_logger_configured or log_file is None:
+        return
+    
+    try:
+        worker_logger = logging.getLogger() # Pega o logger raiz
+        # Remover handlers existentes para evitar duplicação se o worker for reutilizado?
+        # Não remover, pois pode afetar outros usos. Adicionar filtro?
+        # Ou verificar se handler já existe?
+        
+        # Verificar se já existe um FileHandler para este arquivo
+        handler_exists = False
+        for handler in worker_logger.handlers:
+            if isinstance(handler, logging.FileHandler) and handler.baseFilename == log_file:
+                handler_exists = True
+                break
+        
+        if not handler_exists:
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - [Worker:%(process)d] - %(message)s')
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setFormatter(formatter)
+            worker_logger.addHandler(file_handler)
+            # Definir o nível do logger raiz do worker (pode ser ajustado)
+            worker_logger.setLevel(logging.DEBUG) # Capturar tudo a partir de DEBUG
+            worker_logger.info(f"Logger do worker configurado para escrever em {log_file}")
+            _worker_logger_configured = True
+        else:
+             worker_logger.debug(f"FileHandler para {log_file} já existe neste worker.")
+             _worker_logger_configured = True # Marcar como configurado mesmo se já existia
+
+    except Exception as e:
+        # Usar print aqui pois o logging pode ter falhado
+        print(f"[Worker PID: {os.getpid()}] Erro ao configurar logging do worker para {log_file}: {e}", file=sys.stderr)
 
 
 def create_parquet(df, table_name, path_parquet):
@@ -334,72 +379,285 @@ def create_parquet_chunks_pandas(df, table_name, path_parquet, chunk_size=100000
     return True
 
 
-def process_single_zip_pandas(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str) -> bool:
-    """Processa um único arquivo ZIP usando Pandas para eficiência."""
+def process_single_zip_pandas(zip_file, path_zip, path_unzip, path_parquet, log_file=None):
+    """
+    Processa um único arquivo ZIP de empresas usando Pandas.
+    Lê o(s) arquivo(s) de dados em chunks, concatena e salva um único Parquet.
+    
+    Args:
+        zip_file: Nome do arquivo ZIP
+        path_zip: Caminho para o diretório com os arquivos ZIP
+        path_unzip: Caminho para extrair os arquivos
+        path_parquet: Caminho para salvar os arquivos parquet
+        log_file: Caminho para o arquivo de log principal (opcional)
+        
+    Returns:
+        dict: Dicionário com resultados {'sucesso': bool, 'tempo': float}
+    """
+    # Medir tempo do worker
+    start_time = time.time()
+    pid = os.getpid()
+    
+    # Configurar logging para este worker (se log_file for fornecido)
+    if log_file:
+        configure_worker_logging(log_file)
+        
+    # Obter o logger configurado (pode ser o raiz)
+    logger = logging.getLogger() 
+    
+    logger.info(f"[{pid}] Iniciando processamento Pandas para: {zip_file}")
+    path_extracao = ""
+    all_chunks = [] # Lista para guardar todos os chunks lidos do(s) CSV(s)
+    processamento_csv_ok = False # Flag para indicar se pelo menos um CSV foi lido
+    success = False # Flag de sucesso final
+
     try:
-        zip_path = os.path.join(path_zip, zip_file)
-        
-        # Extração e processamento
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(path_unzip)
-        
-        # Processamento dos CSVs usando Pandas
-        csv_files = [f for f in os.listdir(path_unzip) if 'CSV' in f]
-        
-        if not csv_files:
-            logger.warning(f"Nenhum arquivo CSV encontrado no ZIP {zip_file}")
-            return False
-        
-        # Lista para armazenar os DataFrames
-        dataframes = []
-        
-        # Processar cada arquivo CSV individualmente
-        for csv_file in csv_files:
+        # --- 1. Extração --- 
+        logger.debug(f"[{pid}] Fase 1: Extração")
+        nome_arquivo = os.path.splitext(zip_file)[0]
+        path_extracao = os.path.join(path_unzip, nome_arquivo)
+        logger.debug(f"[{pid}] Caminho de extração definido: {path_extracao}")
+        if os.path.exists(path_extracao):
+            logger.warning(f"[{pid}] Diretório de extração {path_extracao} já existe. Removendo.")
             try:
-                csv_path = os.path.join(path_unzip, csv_file)
-                df = process_csv_file_pandas(csv_path)
-                
-                if df is not None and not df.empty:
-                    dataframes.append(df)
-                    logger.info(f"CSV {csv_file} processado com sucesso com Pandas: {len(df)} linhas")
-            except Exception as e:
-                logger.error(f"Erro ao processar o CSV {csv_file} com Pandas: {str(e)}")
+                shutil.rmtree(path_extracao)
+                logger.debug(f"[{pid}] Diretório antigo removido.")
+            except Exception as e_rem_dir:
+                logger.error(f"[{pid}] Erro ao remover diretório de extração antigo {path_extracao}: {e_rem_dir}")
+                # Considerar se deve parar ou continuar
+                # return {'sucesso': False, 'tempo': time.time() - start_time}
         
-        # Verificar se temos DataFrames para processar
-        if not dataframes:
-            logger.warning(f"Nenhum DataFrame válido gerado a partir do ZIP {zip_file}")
-            return False
+        try:
+            os.makedirs(path_extracao, exist_ok=True)
+            logger.debug(f"[{pid}] Diretório de extração criado/garantido: {path_extracao}")
+        except Exception as e_make_dir:
+             logger.exception(f"[{pid}] Erro CRÍTICO ao criar diretório de extração {path_extracao}")
+             return {'sucesso': False, 'tempo': time.time() - start_time}
+
+        path_zip_file = os.path.join(path_zip, zip_file)
+        logger.info(f"[{pid}] Extraindo {zip_file} para {path_extracao}...")
+        try:
+            with zipfile.ZipFile(path_zip_file, 'r') as zip_ref:
+                arquivos_extraidos = zip_ref.namelist()
+                zip_ref.extractall(path_extracao)
+            logger.info(f"[{pid}] Extração de {zip_file} concluída. Arquivos na extração: {arquivos_extraidos}")
+        except Exception as e_zip:
+            logger.exception(f"[{pid}] Erro durante a extração do ZIP {path_zip_file}")
+            return {'sucesso': False, 'tempo': time.time() - start_time}
         
-        # Concatenar os DataFrames se houver mais de um
-        if len(dataframes) > 1:
-            df = pd.concat(dataframes, ignore_index=True)
+        # --- 2. Encontrar Arquivos de Dados --- 
+        logger.debug(f"[{pid}] Fase 2: Encontrar arquivos de dados")
+        data_files_encontrados = []
+        try:
+            for root, _, files in os.walk(path_extracao):
+                for file in files:
+                    # Procurar por arquivos que contenham 'csv' ou talvez outros padrões comuns
+                    if "csv" in file.lower(): 
+                        data_files_encontrados.append(os.path.join(root, file))
+            logger.debug(f"[{pid}] Busca em {path_extracao} concluída.")
+        except Exception as e_walk:
+             logger.exception(f"[{pid}] Erro ao percorrer o diretório de extração {path_extracao}")
+             return {'sucesso': False, 'tempo': time.time() - start_time}
+        
+        if not data_files_encontrados:
+            logger.error(f"[{pid}] Nenhum arquivo de dados (contendo 'csv') encontrado em {path_extracao}.")
+            # Listar conteúdo para depuração
+            try:
+                conteudo_dir = os.listdir(path_extracao)
+                logger.debug(f"[{pid}] Conteúdo do diretório de extração {path_extracao} (para depuração): {conteudo_dir}")
+            except Exception as e_list:
+                logger.warning(f"[{pid}] Não foi possível listar conteúdo de {path_extracao}: {e_list}")
+            # Não retorna False ainda, vai para o finally para limpar
         else:
-            df = dataframes[0]
-        
-        # Verificar se o DataFrame resultante tem dados
-        if df.empty:
-            logger.warning(f"DataFrame vazio após concatenação para o ZIP {zip_file}")
-            return False
-        
-        # Aplicar transformações
-        df = apply_empresa_transformations_pandas(df)
-        
-        # Criar parquets em chunks
-        success = create_parquet_chunks_pandas(df, 'empresas', path_parquet)
-        
-        # Processar empresas privadas
-        if 'natureza_juridica' in df.columns:
-            df_privada = df[
-                (df['natureza_juridica'] >= 2046) & 
-                (df['natureza_juridica'] <= 2348)
-            ]
-            success = success and create_parquet_chunks_pandas(df_privada, 'empresa_privada', path_parquet)
-        
-        return success
-        
-    except Exception as e:
-        logger.error(f'Erro processando {zip_file} com Pandas: {str(e)}')
-        return False
+            logger.info(f"[{pid}] Encontrados {len(data_files_encontrados)} arquivos de dados para processar: {data_files_encontrados}")
+
+            # --- 3. Ler e Processar Chunks de Todos os Arquivos --- 
+            logger.debug(f"[{pid}] Fase 3: Leitura e Processamento de Chunks")
+            dtype_dict = {
+                'CNPJ BÁSICO': 'str', 'RAZÃO SOCIAL': 'str',
+                'NATUREZA JURÍDICA': 'str', 'QUALIFICAÇÃO': 'str',
+                'CAPITAL SOCIAL': 'str', 'PORTE': 'str', 'ENTE FEDERATIVO': 'str'
+            }
+            colunas_numericas_potenciais = ['NATUREZA JURÍDICA', 'QUALIFICAÇÃO', 'PORTE']
+            coluna_float_potencial = 'CAPITAL SOCIAL'
+            chunks_lidos_total = 0
+
+            for data_path in data_files_encontrados:
+                data_file_name = os.path.basename(data_path)
+                logger.info(f"[{pid}] Lendo arquivo: {data_path}")
+                try:
+                    # Determinar chunksize...
+                    file_size_mb = os.path.getsize(data_path) / (1024 * 1024)
+                    if file_size_mb > 1000: chunksize = 50000
+                    elif file_size_mb > 500: chunksize = 100000
+                    elif file_size_mb > 100: chunksize = 250000
+                    else: chunksize = 500000
+                    logger.info(f"[{pid}] Lendo {data_file_name} (Tamanho: {file_size_mb:.2f} MB) em chunks de {chunksize} linhas")
+
+                    linhas_processadas_arquivo = 0
+                    chunk_iterator = pd.read_csv(
+                        data_path, sep=';', encoding='latin1', 
+                        dtype=dtype_dict, chunksize=chunksize, low_memory=True,
+                        na_values=['********', ''], keep_default_na=True,
+                        header=None, names=list(dtype_dict.keys())
+                    )
+                    
+                    for i, chunk in enumerate(chunk_iterator):
+                        chunks_lidos_total += 1
+                        # Aplicar transformações...
+                        for col in colunas_numericas_potenciais:
+                            if col in chunk.columns:
+                                chunk[col] = pd.to_numeric(chunk[col], errors='coerce').astype('Int64')
+                        if coluna_float_potencial in chunk.columns:
+                            chunk[coluna_float_potencial] = (
+                                chunk[coluna_float_potencial].astype(str)
+                                .str.replace(',', '.', regex=False)
+                                .pipe(lambda s: pd.to_numeric(s, errors='coerce'))
+                            )
+                        
+                        all_chunks.append(chunk)
+                        linhas_processadas_arquivo += len(chunk)
+                        # Logar progresso a cada 10 chunks ou no primeiro/último
+                        if i == 0 or (i + 1) % 10 == 0:
+                            logger.debug(f"[{pid}] Lendo {data_file_name}: Chunk {i+1} lido ({linhas_processadas_arquivo} linhas acumuladas no arquivo)")
+                        # Atualizar print no console
+                        print(f"\r[{pid}] Lendo {data_file_name}: Chunk {i+1} lido ({linhas_processadas_arquivo} linhas)", end="", flush=True)
+                    
+                    print(f"\r[{pid}] Leitura de {data_file_name} concluída. ({linhas_processadas_arquivo} linhas lidas)                          ") # Limpar linha
+                    processamento_csv_ok = True
+                    del chunk_iterator 
+                    gc.collect() 
+
+                except Exception as e_read:
+                    logger.exception(f"[{pid}] Erro ao ler ou processar chunks do arquivo {data_path}")
+                    # Pula para o próximo arquivo de dados se este falhar
+                    continue 
+            
+            # --- 4. Concatenar e Salvar Parquet --- 
+            logger.debug(f"[{pid}] Fase 4: Concatenação e Escrita do Parquet")
+            if not processamento_csv_ok or not all_chunks:
+                logger.error(f"[{pid}] Nenhum chunk de dados foi lido com sucesso para {zip_file}. Nenhum Parquet será gerado.")
+            else:
+                logger.info(f"[{pid}] Concatenando {len(all_chunks)} chunks de dados (total lido: {chunks_lidos_total}) para {zip_file}...")
+                final_df = None
+                try:
+                    start_concat_time = time.time()
+                    final_df = pd.concat(all_chunks, ignore_index=True)
+                    concat_time = time.time() - start_concat_time
+                    logger.debug(f"[{pid}] Tempo de concatenação: {concat_time:.2f}s")
+                    # Liberar memória da lista original o quanto antes
+                    del all_chunks
+                    all_chunks = [] # Resetar para garantir
+                    gc.collect()
+                    memoria_df_mb = final_df.memory_usage(deep=True).sum() / (1024*1024)
+                    logger.info(f"[{pid}] Concatenação concluída. DataFrame final com {len(final_df)} linhas e {memoria_df_mb:.2f} MB.")
+                    logger.debug(f"[{pid}] Tipos de dados do DataFrame final antes de salvar:\n{final_df.dtypes}")
+
+                except Exception as e_concat:
+                    logger.exception(f"[{pid}] Erro ao concatenar chunks para {zip_file}")
+                    if final_df is not None: del final_df
+                    all_chunks = [] 
+                    gc.collect()
+                
+                # Prosseguir apenas se a concatenação foi bem-sucedida
+                if final_df is not None:
+                    # Definir caminho e nome do Parquet
+                    parquet_dir = os.path.join(path_parquet, 'empresas')
+                    try:
+                        os.makedirs(parquet_dir, exist_ok=True)
+                    except Exception as e_make_parquet_dir:
+                        logger.exception(f"[{pid}] Erro ao criar diretório de destino do Parquet {parquet_dir}")
+                        final_df = None # Não tentar salvar
+                        
+                    if final_df is not None:
+                        parquet_file_name = f"{os.path.splitext(zip_file)[0]}.parquet"
+                        parquet_file = os.path.join(parquet_dir, parquet_file_name)
+                        logger.debug(f"[{pid}] Arquivo Parquet de destino definido: {parquet_file}")
+
+                        # Remover Parquet antigo
+                        if os.path.exists(parquet_file):
+                            logger.warning(f"[{pid}] Removendo Parquet existente: {parquet_file}")
+                            try: 
+                                os.remove(parquet_file)
+                                logger.debug(f"[{pid}] Parquet antigo removido.")
+                            except Exception as e_rem: 
+                                logger.error(f"[{pid}] Erro ao remover Parquet existente {parquet_file}: {e_rem}")
+                                final_df = None # Não tentar salvar
+                        
+                        if final_df is not None:
+                            logger.info(f"[{pid}] Salvando DataFrame final ({len(final_df)} linhas) em {parquet_file}...")
+                            try:
+                                start_write_time = time.time()
+                                final_df.to_parquet(parquet_file, index=False, engine='pyarrow', compression='snappy')
+                                write_time = time.time() - start_write_time
+                                logger.info(f"[{pid}] Chamada to_parquet concluída em {write_time:.2f}s.")
+                                
+                                # Verificação final pós-escrita
+                                tamanho_arquivo_gerado = -1
+                                existe = os.path.exists(parquet_file)
+                                if existe:
+                                    try:
+                                        tamanho_arquivo_gerado = os.path.getsize(parquet_file)
+                                    except Exception as e_size:
+                                        logger.error(f"[{pid}] Erro ao obter tamanho do arquivo {parquet_file}: {e_size}")
+                                
+                                if existe and tamanho_arquivo_gerado > 0:
+                                    logger.info(f"[{pid}] Arquivo Parquet {parquet_file} salvo com SUCESSO (Tamanho: {tamanho_arquivo_gerado / (1024*1024):.2f} MB).")
+                                    success = True # SUCESSO FINAL!
+                                elif existe and tamanho_arquivo_gerado == 0:
+                                    logger.error(f"[{pid}] FALHA ao salvar Parquet: Arquivo {parquet_file} foi criado mas está VAZIO (0 bytes).")
+                                    success = False
+                                    try: os.remove(parquet_file); logger.warning(f"[{pid}] Arquivo Parquet vazio removido.") 
+                                    except: pass
+                                else: # Não existe ou tamanho < 0 (erro)
+                                     logger.error(f"[{pid}] FALHA ao salvar Parquet: Arquivo {parquet_file} NÃO FOI ENCONTRADO após a escrita.")
+                                     success = False
+                                    
+                            except Exception as e_write:
+                                logger.exception(f"[{pid}] Erro CRÍTICO durante final_df.to_parquet() para {parquet_file}")
+                                success = False
+                                # Tentar remover arquivo potencialmente corrompido
+                                if os.path.exists(parquet_file): 
+                                    try: os.remove(parquet_file); logger.warning(f"[{pid}] Tentativa de remover arquivo Parquet potencialmente corrompido.") 
+                                    except: pass
+                    
+                    # Limpar memória do DataFrame final após tentativa de escrita
+                    logger.debug(f"[{pid}] Liberando memória do DataFrame final.")
+                    del final_df
+                    gc.collect()
+
+    except Exception as e_general:
+        logger.exception(f"[{pid}] Erro GERAL e inesperado processando {zip_file}")
+        success = False
+    
+    finally:
+        # --- 5. Limpeza Final --- 
+        logger.debug(f"[{pid}] Fase 5: Limpeza Final")
+        # Limpar lista de chunks remanescentes (em caso de erro na concatenação)
+        if 'all_chunks' in locals() and all_chunks:
+            logger.debug(f"[{pid}] Limpando lista de chunks remanescente.")
+            del all_chunks
+            gc.collect()
+            
+        if path_extracao and os.path.exists(path_extracao):
+            logger.info(f"[{pid}] Limpando diretório de extração: {path_extracao}")
+            try:
+                shutil.rmtree(path_extracao)
+                logger.debug(f"[{pid}] Diretório de extração removido.")
+            except Exception as e_clean:
+                logger.warning(f"[{pid}] Não foi possível limpar completamente o diretório de extração {path_extracao}: {e_clean} (Provavelmente devido a handles abertos no Windows - WinError 32). Isso pode ser ignorado se o processamento principal foi concluído.")
+        else:
+             logger.debug(f"[{pid}] Diretório de extração não existe ou caminho não definido, nada a limpar.")
+
+    end_time = time.time()
+    tempo_execucao = end_time - start_time
+    logger.info(f"[{pid}] Processamento Pandas para {zip_file} concluído em {tempo_execucao:.2f}s com status final: {success}")
+    
+    # Retornar dicionário como esperado pelo processo principal
+    return {
+        'sucesso': success,
+        'tempo': tempo_execucao,
+    }
 
 
 # ----- Implementação para Polars -----
@@ -629,7 +887,7 @@ def process_empresa_with_pandas(path_zip: str, path_unzip: str, path_parquet: st
                 path_unzip=path_unzip,
                 path_parquet=path_parquet
             )
-            if result:
+            if result['sucesso']:
                 success = True
                 logger.info(f"Arquivo {zip_file} processado com sucesso usando Pandas")
         
