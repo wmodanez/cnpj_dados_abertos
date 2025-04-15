@@ -91,6 +91,11 @@ logger = logging.getLogger()
 # Definir nível de log mais alto para módulos específicos para reduzir verbosidade
 logging.getLogger("src.process.simples").setLevel(logging.WARNING)
 
+# Definir o diretório do script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Definir o path base padrão relativo ao diretório do script
+DEFAULT_PATH_BASE = os.path.join(SCRIPT_DIR, 'benchmark_temp')
+
 
 class InfoSistema:
     """Coleta informações sobre o sistema onde o script está sendo executado."""
@@ -1276,8 +1281,9 @@ def main():
                         help='Caminho para o diretório com os arquivos ZIP')
     parser.add_argument('--arquivo_zip', type=str,
                         help='Arquivo ZIP específico para análise')
-    parser.add_argument('--path_base', type=str, default='benchmark_temp',
-                        help='Caminho base para criar diretórios temporários')
+    # Usar o DEFAULT_PATH_BASE calculado
+    parser.add_argument('--path_base', type=str, default=DEFAULT_PATH_BASE,
+                        help='Caminho base para criar diretórios temporários (padrão: benchmark_temp dentro do dir do script)')
     parser.add_argument('--parquet_destino', type=str, default='parquet',
                         help='Caminho relativo dentro de path_base para os arquivos parquet gerados')
     parser.add_argument('--limpar', action='store_true',
