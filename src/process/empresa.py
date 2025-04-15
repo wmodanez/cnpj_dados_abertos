@@ -128,43 +128,96 @@ def process_csv_file(csv_path):
         return None
 
 
-def apply_empresa_transformations(ddf):
-    """Aplica as transformações específicas para Empresas usando Dask."""
-    logger.info("Aplicando transformações em Empresas...")
-    
-    # Renomear colunas
-    rename_mapping = {
-        'cnpj_basico': 'cnpj',
-        'razao_social_nome_empresarial': 'razao_social',
-        'natureza_juridica': 'natureza_juridica',
-        'qualificacao_do_responsavel': 'qualificacao_responsavel',
-        'capital_social_da_empresa': 'capital_social',
-        'porte_da_empresa': 'porte_empresa',
-        'ente_federativo_responsavel': 'ente_federativo_responsavel'
-    }
-    
-    # Filtra mapeamento para colunas existentes
-    actual_rename_mapping = {k: v for k, v in rename_mapping.items() if k in ddf.columns}
-    ddf = ddf.rename(columns=actual_rename_mapping)
-    
-    # Conversão de tipos usando Dask
-    int_cols = ['natureza_juridica', 'qualificacao_responsavel', 'porte_empresa']
-    for col in int_cols:
+def apply_empresa_transformations_dask(ddf):
+    """Aplica transformações ao Dask DataFrame de empresas."""
+    # Renomear colunas para minúsculas
+    ddf.columns = ddf.columns.str.lower()
+
+    # Colunas para converter para numérico
+    colunas_numericas = [
+        'capital_social_da_empresa',
+        'cnpj', # Mantido como string
+        'cnae_fiscal_principal', # Geralmente string
+        'opcao_pelo_simples', # Tratar como string/categoria ou booleano?
+        'porte_da_empresa', # Geralmente string/categoria
+        # Adicione outras colunas numéricas se necessário
+    ]
+
+    # Colunas para converter para data
+    colunas_data = [
+        'data_de_inicio_atividade',
+        'data_situacao_cadastral',
+        'data_opcao_pelo_simples',
+        'data_exclusao_do_simples',
+        'data_opcao_pelo_mei',
+        'data_exclusao_do_mei'
+    ]
+
+    # Converter colunas numéricas diretamente no Dask DataFrame
+    for col in colunas_numericas:
         if col in ddf.columns:
-            ddf[col] = ddf[col].map_partitions(
-                lambda s: dd.to_numeric(s, errors='coerce'),
-                meta=(col, 'Int64')
-            )
-    
-    # Conversão do capital_social usando Dask
-    if 'capital_social' in ddf.columns:
-        def convert_monetary(s):
-            return (s.astype(str)
-                    .str.replace(',', '.', regex=False)
-                    .map_partitions(lambda x: dd.to_numeric(x, errors='coerce')))
-        
-        ddf['capital_social'] = convert_monetary(ddf['capital_social'])
-    
+            # Usar dd.to_numeric diretamente
+            # Especificar meta para ajudar na inferência, se necessário,
+            # mas geralmente dd.to_numeric lida bem com isso.
+            # Vamos assumir float64 como padrão para numéricos com possíveis NaNs
+            try:
+                 # Tenta converter diretamente, Dask deve inferir
+                 ddf[col] = dd.to_numeric(ddf[col], errors='coerce')
+                 # Opcional: Fornecer meta explicitamente se a inferência falhar
+                 # ddf[col] = dd.to_numeric(ddf[col], errors='coerce').astype('float64')
+                 # Ou usando map_partitions com meta (alternativa mais complexa):
+                 # ddf[col] = ddf[col].map_partitions(pd.to_numeric, errors='coerce', meta=pd.Series(dtype='float64'))
+            except Exception as e:
+                print(f"Aviso: Falha ao converter coluna numérica '{col}': {e}. Mantendo como object.")
+                logger.warning(f"Falha ao converter coluna numérica '{col}': {e}. Mantendo como object.")
+
+    # Converter colunas de data
+    for col in colunas_data:
+        if col in ddf.columns:
+             try:
+                 # Usar dd.to_datetime diretamente
+                 ddf[col] = dd.to_datetime(ddf[col], format='%Y%m%d', errors='coerce')
+                 # Opcional: Fornecer meta explicitamente se a inferência falhar
+                 # ddf[col] = dd.to_datetime(ddf[col], format='%Y%m%d', errors='coerce', meta=pd.Series(dtype='datetime64[ns]'))
+             except Exception as e:
+                 print(f"Aviso: Falha ao converter coluna de data '{col}': {e}. Mantendo como object.")
+                 logger.warning(f"Falha ao converter coluna de data '{col}': {e}. Mantendo como object.")
+
+    # Outras transformações específicas podem ser adicionadas aqui
+    # Exemplo: Converter colunas categóricas
+    colunas_categoricas = [
+        'natureza_juridica', 'qualificacao_do_responsavel', 'situacao_cadastral',
+        'motivo_situacao_cadastral', 'ente_federativo_responsavel', 'opcao_pelo_mei'
+    ]
+    for col in colunas_categoricas:
+        if col in ddf.columns:
+             # NÃO converter 'ente_federativo_responsavel' para categoria por enquanto
+             if col == 'ente_federativo_responsavel':
+                 logger.warning(f"Mantendo coluna '{col}' como string/object para evitar erro de schema Parquet.")
+                 continue # Pula a conversão para esta coluna
+
+             # Usar astype('category') que Dask geralmente lida bem para as outras
+             ddf[col] = ddf[col].astype('category')
+             # Opcional: com meta se necessário
+             # ddf[col] = ddf[col].astype('category').cat.as_known()
+
+    # --- Tratamento específico para ente_federativo_responsavel ---
+    col_efr = 'ente_federativo_responsavel'
+    if col_efr in ddf.columns:
+        logger.info(f"Aplicando tratamento especial para coluna: {col_efr}")
+        try:
+            # 1. Tentar converter para numérico, erros viram NaN
+            ddf[col_efr] = dd.to_numeric(ddf[col_efr], errors='coerce')
+            # 2. Preencher NaN (nulos/vazios/erros de conversão) com 999999
+            ddf[col_efr] = ddf[col_efr].fillna(999999)
+            # 3. Garantir que a coluna seja float64 (ou int64 se preferir, mas float é mais seguro pós-fillna)
+            ddf[col_efr] = ddf[col_efr].astype('float64') # Ou int64 se tiver certeza que não haverá floats
+            logger.info(f"Coluna '{col_efr}' convertida para numérico com nulos substituídos por 999999.")
+        except Exception as e:
+            logger.error(f"Erro ao aplicar tratamento especial para '{col_efr}': {e}. Coluna pode permanecer como object.")
+            # Opcional: Adicionar fallback ou deixar como está
+
+    logger.debug("Transformações Dask aplicadas.")
     return ddf
 
 
@@ -229,7 +282,7 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
         ])
         
         # Aplicar transformações
-        ddf = apply_empresa_transformations(ddf)
+        ddf = apply_empresa_transformations_dask(ddf)
         
         # Criar parquets
         create_parquet(ddf, 'empresas', path_parquet)

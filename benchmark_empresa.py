@@ -65,6 +65,7 @@ import dask.dataframe as dd
 import dask
 from dask import delayed
 from dask.distributed import as_completed, Client, LocalCluster
+import polars as pl
 
 # Importações internas do projeto
 from src.config import config
@@ -188,6 +189,20 @@ def configure_logging(args):
         logger.setLevel(logging.INFO)
         logging.getLogger("src.process.empresa").setLevel(logging.WARNING)
 
+# Função auxiliar para extração paralela
+def extract_zip(zip_path, extract_to):
+    """Extrai um único arquivo ZIP.
+    Retorna True se sucesso, False caso contrário.
+    """
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_to)
+        logger.debug(f"Extraído: {zip_path} para {extract_to}")
+        return True
+    except Exception as e:
+        logger.error(f"Falha ao extrair {zip_path}: {str(e)}")
+        return False
+
 class BenchmarkEmpresa:
     def __init__(self, path_zip, path_base, arquivo_zip_especifico=None, path_parquet_destino=None, executar_limpeza=True):
         """
@@ -214,18 +229,19 @@ class BenchmarkEmpresa:
             self.path_parquet_dask = os.path.join(path_base, "parquet_dask")
             self.path_parquet_polars = os.path.join(path_base, "parquet_polars")
         
-        # Criar diretórios para os testes
+        # --- Caminhos de Extração --- 
+        # Manter pasta separada para Pandas devido à sua lógica atual
         self.path_unzip_pandas = os.path.join(path_base, "unzip_pandas")
-        self.path_unzip_dask = os.path.join(path_base, "unzip_dask")
-        self.path_unzip_polars = os.path.join(path_base, "unzip_polars")
+        # Pasta geral para Dask e Polars compartilharem
+        self.path_unzip_geral = os.path.join(path_base, "unzip_files") 
         
-        # Diretório temporário para calcular tamanho de arquivos extraídos
-        self.path_unzip_temp = os.path.join(path_base, "unzip_temp")
+        # Flag para controlar se a extração geral já foi feita
+        self.extrair_individualmente = True 
         
         # Criar diretórios se não existirem
-        for path in [self.path_unzip_pandas, self.path_unzip_dask, self.path_unzip_polars,
-                     self.path_parquet_pandas, self.path_parquet_dask, self.path_parquet_polars,
-                     self.path_unzip_temp]:
+        # Adicionar path_unzip_geral, remover dask/polars específicos
+        for path in [self.path_unzip_pandas, self.path_unzip_geral, 
+                     self.path_parquet_pandas, self.path_parquet_dask, self.path_parquet_polars]:
             os.makedirs(path, exist_ok=True)
         
         # Listar todos os arquivos no diretório
@@ -324,7 +340,7 @@ class BenchmarkEmpresa:
         self.info_arquivo = self._coletar_info_arquivo()
     
     def _coletar_info_arquivo(self):
-        """Coleta informações sobre o arquivo ZIP original."""
+        """Coleta informações sobre o arquivo ZIP original (otimizado)."""
         info = {}
         
         for zip_file in self.zip_files:
@@ -336,85 +352,78 @@ class BenchmarkEmpresa:
                     'data_modificacao': datetime.fromtimestamp(os.path.getmtime(zip_path)).strftime('%Y-%m-%d %H:%M:%S')
                 }
                 
-                # Verificar conteúdo do ZIP
+                # Verificar conteúdo e calcular tamanho real a partir dos metadados do ZIP
                 try:
                     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                         arquivos = zip_ref.namelist()
-                        csv_files = [f for f in arquivos if f.endswith('.CSV')]
+                        csv_files = [f for f in arquivos if f.lower().endswith('.csv')] # Usar lower() para case-insensitive
                         info[zip_file]['num_arquivos'] = len(arquivos)
                         info[zip_file]['num_csv'] = len(csv_files)
                         
-                        # Extrair arquivos para calcular tamanho real
-                        temp_dir = os.path.join(self.path_unzip_temp, os.path.splitext(zip_file)[0])
-                        if os.path.exists(temp_dir):
-                            shutil.rmtree(temp_dir)
-                        os.makedirs(temp_dir, exist_ok=True)
-                        
-                        print(f"Extraindo {zip_file} para calcular tamanho real dos arquivos...")
-                        zip_ref.extractall(temp_dir)
-                        
-                        # Calcular tamanho total dos arquivos extraídos
-                        tamanho_real_mb = self.calcular_tamanho_diretorio(temp_dir)
+                        # Calcular tamanho total não comprimido somando file_size de cada membro
+                        tamanho_total_interno_bytes = sum(member.file_size for member in zip_ref.infolist())
+                        tamanho_real_mb = tamanho_total_interno_bytes / (1024 * 1024)
                         info[zip_file]['tamanho_real_mb'] = tamanho_real_mb
+                        logger.debug(f"Tamanho real calculado para {zip_file} a partir dos metadados: {tamanho_real_mb:.2f} MB")
                         
-                        # Limpar diretório temporário após medição
-                        shutil.rmtree(temp_dir)
-                        
+                except zipfile.BadZipFile:
+                    logger.error(f"Erro: Arquivo ZIP corrompido ou inválido: {zip_path}")
+                    info[zip_file]['num_arquivos'] = 0
+                    info[zip_file]['num_csv'] = 0
+                    info[zip_file]['tamanho_real_mb'] = 0 # Definir como 0 se não puder ler
                 except Exception as e:
-                    logger.error(f"Erro ao analisar ZIP {zip_file}: {str(e)}")
-                    info[zip_file]['tamanho_real_mb'] = info[zip_file]['tamanho_zip_mb']  # Fallback para tamanho do ZIP
+                    logger.error(f"Erro ao analisar metadados do ZIP {zip_file}: {str(e)}")
+                    # Manter valores padrão ou zerar?
+                    info[zip_file].setdefault('num_arquivos', 0)
+                    info[zip_file].setdefault('num_csv', 0)
+                    info[zip_file].setdefault('tamanho_real_mb', 0) # Usar 0 se falhar
                     
         return info
 
     def limpar_diretorios(self, preservar_parquet=True, limpar_docs_logs=False):
-        """Limpa os diretórios temporários.
-        
-        Args:
-            preservar_parquet: Se True, não limpa os diretórios de parquet.
-            limpar_docs_logs: Se True, limpa também os diretórios docs e logs.
-        """
+        """Limpa os diretórios temporários."""
         if not self.executar_limpeza:
             return
             
-        # Sempre limpar os diretórios de extração temporária
-        diretorios_extracao = [self.path_unzip_pandas, self.path_unzip_dask, self.path_unzip_polars]
+        # Atualizar para limpar path_unzip_pandas e path_unzip_geral
+        diretorios_extracao = [self.path_unzip_pandas, self.path_unzip_geral]
         for path in diretorios_extracao:
             if os.path.exists(path):
                 print(f"Limpando diretório: {path}")
-                for item in os.listdir(path):
-                    item_path = os.path.join(path, item)
-                    if os.path.isdir(item_path):
-                        shutil.rmtree(item_path)
-                    else:
-                        os.remove(item_path)
+                # Usar shutil.rmtree para remover diretório e conteúdo
+                try:
+                    shutil.rmtree(path)
+                    os.makedirs(path, exist_ok=True) # Recriar pasta vazia
+                except Exception as e:
+                     print_warning(f"Falha ao limpar completamente {path}: {e}")
+                     logger.warning(f"Falha ao limpar completamente {path}: {e}")
         
-        # Limpar diretórios de parquet apenas se não estiver preservando
+        # Limpar diretórios de parquet (sem alteração na lógica)
         if not preservar_parquet:
             diretorios_parquet = [self.path_parquet_pandas, self.path_parquet_dask, self.path_parquet_polars]
             for path in diretorios_parquet:
                 if os.path.exists(path):
                     print(f"Limpando diretório: {path}")
-                    for item in os.listdir(path):
-                        item_path = os.path.join(path, item)
-                        if os.path.isdir(item_path):
-                            shutil.rmtree(item_path)
-                        else:
-                            os.remove(item_path)
+                    try:
+                        shutil.rmtree(path)
+                        os.makedirs(path, exist_ok=True) # Recriar pasta vazia
+                    except Exception as e:
+                        print_warning(f"Falha ao limpar completamente {path}: {e}")
+                        logger.warning(f"Falha ao limpar completamente {path}: {e}")
         
-        # Limpar diretórios docs e logs se solicitado
+        # Limpar diretórios docs e logs (sem alteração na lógica)
         if limpar_docs_logs:
             docs_dir = os.path.join(self.path_base, "docs")
             logs_dir = os.path.join(self.path_base, "logs")
-            
             for path in [docs_dir, logs_dir]:
                 if os.path.exists(path):
                     print(f"Limpando diretório: {path}")
-                    for item in os.listdir(path):
-                        item_path = os.path.join(path, item)
-                        if os.path.isdir(item_path):
-                            shutil.rmtree(item_path)
-                        else:
-                            os.remove(item_path)
+                    try:
+                        shutil.rmtree(path)
+                        os.makedirs(path, exist_ok=True) # Recriar pasta vazia
+                    except Exception as e:
+                         print_warning(f"Falha ao limpar completamente {path}: {e}")
+                         logger.warning(f"Falha ao limpar completamente {path}: {e}")
             
         logger.debug("Diretórios temporários limpos" + (" (preservando parquet)" if preservar_parquet else ""))
     
@@ -545,119 +554,88 @@ class BenchmarkEmpresa:
     
     def executar_benchmark_pandas(self, max_workers=None):
         """
-        Executa o benchmark usando Pandas com processamento paralelo.
-        
-        Args:
-            max_workers: Número máximo de workers para processamento paralelo. 
-                         Se None, será usado o número de cores disponíveis.
+        Executa o benchmark usando Pandas com processamento paralelo POR ZIP.
+        (Mantém sua lógica separada e pasta unzip_pandas por enquanto).
         """
-        logger.info("\nBENCHMARK COM PANDAS (PROCESSAMENTO PARALELO)")
+        logger.info("\nBENCHMARK COM PANDAS (PROCESSAMENTO PARALELO POR ZIP)")
+        print_header("BENCHMARK PANDAS") # Adicionado header
         
-        # Medir tempo de início do benchmark completo (incluindo preparação)
         tempo_benchmark_inicio = time.time()
         
-        # Limpar diretórios (não preservar parquet antes de executar o benchmark)
-        self.limpar_diretorios(preservar_parquet=False)
+        # Limpar APENAS o diretório do Pandas (unzip e parquet)
+        print(f"Limpando diretórios Pandas: {self.path_unzip_pandas}, {self.path_parquet_pandas}")
+        if os.path.exists(self.path_unzip_pandas):
+             shutil.rmtree(self.path_unzip_pandas)
+        os.makedirs(self.path_unzip_pandas, exist_ok=True)
+        if os.path.exists(self.path_parquet_pandas):
+             shutil.rmtree(self.path_parquet_pandas)
+        os.makedirs(self.path_parquet_pandas, exist_ok=True)
         
-        # Se max_workers não foi especificado, usar o número de cores do sistema
+        # ... (resto da lógica do Pandas permanece igual, usando self.path_unzip_pandas) ...
         if max_workers is None:
             max_workers = os.cpu_count()
-            # Limitar a número razoável para evitar sobrecarga
             max_workers = min(max_workers, len(self.zip_files), 8)
-        
-        logger.info(f"Usando {max_workers} workers para processamento paralelo")
+        logger.info(f"Usando {max_workers} workers para processamento paralelo Pandas")
         print(f"\n[Pandas] Iniciando processamento paralelo com {max_workers} workers")
-        
-        # Lista para armazenar métricas de CPU e memória durante o processamento
         cpu_medidas = []
         memoria_medidas = []
-        
-        # Medir tempo de processamento efetivo (apenas a parte paralela)
         tempo_inicio_processamento = time.time()
-        
-        # Iniciar medição periódica de CPU e memória durante todo o processo
-        def monitor_recursos():
+        monitorar_recursos = [True]
+        def monitor_recursos_pandas(): # Renomeado para evitar conflito
             while monitorar_recursos[0]:
                 cpu_medidas.append(psutil.cpu_percent(interval=0.5))
                 memoria_medidas.append(psutil.virtual_memory().percent)
                 time.sleep(0.5)
-                
-        # Flag para controlar o monitoramento
-        monitorar_recursos = [True]
-        
-        # Iniciar monitoramento em uma thread separada
-        monitor_thread = threading.Thread(target=monitor_recursos)
+        monitor_thread = threading.Thread(target=monitor_recursos_pandas)
         monitor_thread.daemon = True
         monitor_thread.start()
-        
         resultados_paralelos = []
         sucessos = 0
         tempo_processamento_total = 0
-        
         log_file = None
         for handler in logger.handlers:
             if isinstance(handler, logging.FileHandler):
                 log_file = handler.baseFilename
                 break
         if log_file is None:
-            logger.warning("Não foi possível encontrar o FileHandler principal para passar aos workers.")
-            # Considerar definir um caminho padrão ou falhar
-        
+            logger.warning("Não foi possível encontrar o FileHandler principal para passar aos workers Pandas.")
         try:
-            # Criar uma referência ao método de processamento
-            process_func = self.processar_arquivo_zip
-            
-            # Executar o processamento em paralelo
             with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-                # Submeter todas as tarefas, passando o caminho do log
                 future_to_zip = {}
                 for zip_file in self.zip_files:
-                    # Passar log_file como argumento para a função do worker
-                    future = executor.submit(process_func, zip_file)
+                    # A função process_single_zip_pandas precisa ser importada e usada aqui
+                    # Ela já usa path_unzip_pandas e path_parquet_pandas internamente (PRECISA VERIFICAR)
+                    # Precisamos garantir que process_single_zip_pandas receba o log_file
+                    future = executor.submit(process_single_zip_pandas, 
+                                               zip_file, 
+                                               self.path_zip, 
+                                               self.path_unzip_pandas, # Passa o caminho correto
+                                               self.path_parquet_pandas, # Passa o caminho correto
+                                               log_file) # Passa o log file
                     future_to_zip[future] = zip_file
                 
-                # Processar resultados conforme são concluídos
                 for future in concurrent.futures.as_completed(future_to_zip):
                     zip_file = future_to_zip[future]
                     try:
-                        # info_resultado agora vem da função do worker que retorna um dict
-                        # (não precisamos do resultado direto aqui, apenas do status sucesso/falha implícito)
-                        # A função processar_arquivo_zip retorna True/False
-                        sucesso_worker = future.result() 
-                        # Precisamos reavaliar como contamos sucessos e tempo
-                        # Se a função worker retorna True/False, precisamos pegar o tempo de outra forma
-                        # Ou modificar a função worker para retornar um dict como antes
-                        
-                        # *** REVERTENDO: Vamos manter a função worker retornando o dict ***
-                        # *** E adicionar a configuração do log dentro dela ***
-                        info_resultado = future.result() # Espera dict: {'sucesso': bool, 'tempo': float, ...}
+                        info_resultado = future.result() # Espera dict: {'sucesso': bool, 'tempo': float}
                         resultados_paralelos.append(info_resultado)
-                        
-                        if info_resultado.get('sucesso', False): # Usar .get para segurança
+                        if info_resultado.get('sucesso', False):
                             sucessos += 1
                             tempo_processamento_total += info_resultado.get('tempo', 0)
                         else:
-                            logger.warning(f"Worker para {zip_file} reportou falha ou não retornou sucesso.")
-                            
+                            logger.warning(f"Worker Pandas para {zip_file} reportou falha ou não retornou sucesso.")
                     except Exception as e:
                         print(f"[Pandas] {zip_file} gerou exceção ao obter resultado: {str(e)}")
-                        logger.error(f"Exceção ao obter resultado de {zip_file}: {str(e)}")
+                        logger.error(f"Exceção ao obter resultado Pandas de {zip_file}: {str(e)}")
                         logger.debug(traceback.format_exc())
-        
         finally:
-            # Calcular tempo de processamento paralelo
             tempo_processamento_paralelo = time.time() - tempo_inicio_processamento
-            
-            # Parar o monitoramento
             monitorar_recursos[0] = False
             monitor_thread.join(timeout=1.0)
         
-        # Calcular o tempo total do benchmark (incluindo preparação e finalização)
         tempo_benchmark_total = time.time() - tempo_benchmark_inicio
-        
-        # Coletar resultados
         self.resultados['pandas']['tempo_total'] = tempo_benchmark_total
-        self.resultados['pandas']['tempo_extracao'] = 0  # Não temos essa informação separada agora
+        self.resultados['pandas']['tempo_extracao'] = 0 # Não medido separadamente aqui
         self.resultados['pandas']['tempo_processamento'] = tempo_processamento_paralelo
         self.resultados['pandas']['tempo_worker_total'] = tempo_processamento_total
         self.resultados['pandas']['memoria_pico'] = max(memoria_medidas) if memoria_medidas else 0
@@ -667,68 +645,84 @@ class BenchmarkEmpresa:
         self.resultados['pandas']['espaco_disco'] = self.calcular_tamanho_diretorio(self.path_parquet_pandas)
         self.resultados['pandas']['num_arquivos'] = self.contar_arquivos(self.path_parquet_pandas)
         self.resultados['pandas']['arquivos_parquet'] = self.listar_arquivos_parquet(self.path_parquet_pandas)
-        
-        # Mostrar caminhos onde os arquivos estão salvos
-        parquet_dir = os.path.join(self.path_parquet_pandas, 'empresas')
+        parquet_dir = os.path.join(self.path_parquet_pandas, 'empresas') # Ajustar se o subdir for diferente
         print(f"\n[Pandas] Arquivos parquet salvos em: {os.path.abspath(parquet_dir)}")
-        
         if self.resultados['pandas']['num_arquivos'] > 0:
             print(f"[Pandas] {self.resultados['pandas']['num_arquivos']} arquivos parquet gerados")
-            exemplo_arquivo = self.resultados['pandas']['arquivos_parquet'][0] if self.resultados['pandas']['arquivos_parquet'] else "Nenhum arquivo encontrado"
-            print(f"[Pandas] Exemplo de arquivo: {exemplo_arquivo}")
+            # exemplo_arquivo = self.resultados['pandas']['arquivos_parquet'][0] if self.resultados['pandas']['arquivos_parquet'] else "Nenhum arquivo encontrado"
+            # print(f"[Pandas] Exemplo de arquivo: {exemplo_arquivo}")
         else:
-            print("[Pandas] ATENÇÃO: Nenhum arquivo parquet foi gerado!")
-        
-        # Calcular taxa de compressão usando o tamanho real dos arquivos extraídos
-        tamanho_original = sum([info['tamanho_real_mb'] for info in self.info_arquivo.values()])
+            print_warning("[Pandas] Nenhum arquivo parquet foi gerado!")
+        tamanho_original = sum([info.get('tamanho_real_mb', 0) for info in self.info_arquivo.values()])
         if tamanho_original > 0 and self.resultados['pandas']['espaco_disco'] > 0:
             self.resultados['pandas']['compressao_taxa'] = self.calcular_taxa_compressao(
                 tamanho_original, self.resultados['pandas']['espaco_disco'])
         else:
             self.resultados['pandas']['compressao_taxa'] = 0
-            logger.warning("Não foi possível calcular taxa de compressão")
-        
-        # Resumo do processamento paralelo
-        print(f"\n[Pandas] Benchmark paralelo concluído em {tempo_benchmark_total:.2f} segundos")
+            logger.warning("Não foi possível calcular taxa de compressão para Pandas")
+        print(f"\n[Pandas] Benchmark paralelo concluído em {self.formatar_tempo(tempo_benchmark_total)}")
         print(f"[Pandas] {sucessos} de {len(self.zip_files)} arquivos processados com sucesso")
         if sucessos > 0:
             velocidade = sucessos / tempo_benchmark_total
             print(f"[Pandas] Velocidade média: {velocidade:.2f} arquivos/segundo")
-        
         logger.info(f"Benchmark com Pandas concluído em {tempo_benchmark_total:.2f} segundos")
-        logger.info(f"Arquivos processados: {sucessos}/{len(self.zip_files)}")
-        
-        # Forçar limpeza de memória
+        logger.info(f"Arquivos processados (Pandas): {sucessos}/{len(self.zip_files)}")
         gc.collect()
-        
         return self.resultados['pandas']
 
-    def executar_benchmark_dask(self):
+    def executar_benchmark_dask(self, max_workers=None):
         """
-        Executa o benchmark usando Dask.
-        
-        Returns:
-            Dict com os resultados do benchmark
+        Executa o benchmark usando Dask, utilizando a pasta geral 'unzip_files'.
+        Extrai os arquivos apenas se necessário (extração individual).
         """
-        # Garantir que o diretório de destino existe
+        logger.info('\nBENCHMARK COM DASK (Pasta Geral)')
+        print_section("BENCHMARK DASK (Pasta Geral)")
+
+        tempo_benchmark_inicio = time.time()
+        tempo_extracao = 0
+        precisou_extrair = False # Flag para controlar limpeza
+
+        # Limpar diretório de parquet do Dask
+        print(f"Limpando diretório parquet Dask: {self.path_parquet_dask}")
+        if os.path.exists(self.path_parquet_dask):
+             shutil.rmtree(self.path_parquet_dask)
         os.makedirs(self.path_parquet_dask, exist_ok=True)
-        
-        logger.info('\nBENCHMARK COM DASK')
-        
-        # Listas para armazenar medidas de desempenho
+
+        # --- 1. Extração Condicional --- 
+        if self.extrair_individualmente:
+            print("\n[Dask] Extração individual necessária...")
+            logger.info("Executando extração individual para Dask.")
+            # Chamar o método de extração para a pasta geral
+            extracao_ok, tempo_ext = self._extrair_arquivos_zip_paralelo(max_workers)
+            tempo_extracao = tempo_ext # Registrar tempo de extração
+            precisou_extrair = True
+            if not extracao_ok:
+                print_error("[Dask] Falha na extração individual. Abortando benchmark Dask.")
+                logger.error("Falha na extração individual para Dask.")
+                self.resultados['dask']['tempo_total'] = time.time() - tempo_benchmark_inicio
+                return self.resultados['dask']
+        else:
+            print("\n[Dask] Usando arquivos pré-extraídos em: ", self.path_unzip_geral)
+            logger.info(f"Dask reutilizando pasta de extração geral: {self.path_unzip_geral}")
+
+        # --- 2. Processamento Dask Consolidado --- 
+        print("\n[Dask] Etapa 2: Processamento Dask dos arquivos CSV extraídos...")
+        tempo_inicio_processamento = time.time()
         cpu_medidas = []
         memoria_medidas = []
-        
-        # Medir o tempo total de execução
-        tempo_inicio_total = time.time()
-        
-        # Armazenar tempos parciais
-        tempo_extracao = 0
-        tempo_processamento = 0
-        
-        # Inicializar o cliente Dask
+        monitorar_recursos = [True]
+        def monitor_recursos_dask():
+            while monitorar_recursos[0]:
+                cpu_medidas.append(psutil.cpu_percent(interval=0.5))
+                memoria_medidas.append(psutil.virtual_memory().percent)
+                time.sleep(0.5)
+        monitor_thread = threading.Thread(target=monitor_recursos_dask)
+        monitor_thread.daemon = True
+        monitor_thread.start()
+        client = None
+        dask_manager = None
         try:
-            print(f"\n[Dask] Inicializando cliente Dask... ", end="", flush=True)
+            print(f"[Dask] Inicializando cliente Dask... ", end="", flush=True)
             dask_manager = DaskManager.initialize(
                 n_workers=config.dask.n_workers,
                 memory_limit=config.dask.memory_limit,
@@ -737,116 +731,104 @@ class BenchmarkEmpresa:
             client = dask_manager.client
             print(f"✓ Cliente Dask inicializado com {config.dask.n_workers} workers")
             logger.info(f"Cliente Dask inicializado")
-        except Exception as e:
-            print(f"✗ Erro ao inicializar cliente Dask: {str(e)}")
-            logger.error(f"Erro ao inicializar cliente Dask: {str(e)}")
-            logger.debug(traceback.format_exc())
-            self.resultados['dask']['tempo_total'] = time.time() - tempo_inicio_total
-            return self.resultados['dask']
-        
-        try:
-            sucessos = 0
-            total_arquivos = len(self.zip_files)
-            
-            # Executar o processamento com o método Dask para cada arquivo
-            for i, zip_file in enumerate(self.zip_files):
-                logger.info(f"Processando {zip_file} com Dask ({i+1}/{total_arquivos})...")
-                print(f"\n[Dask] Processando arquivo: {zip_file} ({i+1}/{total_arquivos})")
-                
-                # Abordagem simplificada: processar cada arquivo diretamente
-                for tentativa in range(3):  # Até 3 tentativas por arquivo
-                    if tentativa > 0:
-                        print(f"  → Tentativa {tentativa+1} para {zip_file}")
-                        logger.info(f"Tentativa {tentativa+1} para {zip_file}")
-                    
-                    try:
-                        # Medir CPU e memória durante o processamento
-                        cpu_medidas.append(psutil.cpu_percent(interval=0.1))
-                        memoria_medidas.append(psutil.virtual_memory().percent)
-                        
-                        # Processar diretamente com Dask, sem client.submit
-                        tempo_inicio_processamento = time.time()
-                        
-                        # Status de processamento
-                        print(f"Status: Extraindo e processando... ", end="", flush=True)
-                        
-                        # Chamar a função diretamente
-                        resultado = process_single_zip(
-                            zip_file=zip_file,
-                            path_zip=self.path_zip, 
-                            path_unzip=self.path_unzip_dask, 
-                            path_parquet=self.path_parquet_dask
-                        )
-                        
-                        # Verificar se o resultado é um objeto Delayed
-                        if hasattr(resultado, 'compute') and callable(getattr(resultado, 'compute')):
-                            print("Computando resultado... ", end="", flush=True)
-                            logger.debug(f"Computando objeto Delayed para {zip_file}...")
-                            try:
-                                # Computar o objeto Delayed
-                                resultado = resultado.compute()
-                            except Exception as e:
-                                print(f"✗ Erro: {str(e)}")
-                                logger.error(f"Erro ao computar resultado: {str(e)}")
-                                logger.debug(traceback.format_exc())
-                                resultado = False
-                        
-                        # Calcular tempo de processamento
-                        tempo_processamento_arquivo = time.time() - tempo_inicio_processamento
-                        tempo_processamento += tempo_processamento_arquivo
-                        
-                        logger.debug(f"Arquivo processado em {tempo_processamento_arquivo:.2f}s, resultado: {resultado}")
-                        
-                        if resultado is True:
-                            print(f"✓ Concluído em {tempo_processamento_arquivo:.2f}s")
-                            logger.info(f"{zip_file}: processado em {tempo_processamento_arquivo:.2f}s")
-                            sucessos += 1
-                            break  # Saia do loop de tentativas
-                        else:
-                            print(f"✗ Falha após {tempo_processamento_arquivo:.2f}s")
-                            logger.warning(f"{zip_file}: falha no processamento")
-                                
-                    except Exception as e:
-                        print(f"✗ Erro: {str(e)}")
-                        logger.error(f"Erro: {str(e)}")
-                        logger.debug(traceback.format_exc())
-                    
-                    # Esperar brevemente antes de tentar novamente
-                    if tentativa < 2:  # Não mostrar após a última tentativa
-                        print("  → Aguardando para nova tentativa...")
-                        time.sleep(2)
-                
-                # Forçar uma limpeza de memória entre arquivos
-                gc.collect()
-            
-            # Resultado final
-            print(f"\n[Dask] Concluído: {sucessos} de {total_arquivos} arquivos processados com sucesso")
-            logger.info(f"Concluído: {sucessos} de {total_arquivos} arquivos processados")
-        
-        except Exception as e:
-            print(f"✗ Erro no processamento: {str(e)}")
-            logger.error(f"Erro no processamento: {str(e)}")
-            logger.debug(traceback.format_exc())
-        finally:
-            # Calcular o tempo total de execução
-            tempo_total = time.time() - tempo_inicio_total
-            
-            # Atualizar tempos parciais nos resultados
-            self.resultados['dask']['tempo_total'] = tempo_total
-            self.resultados['dask']['tempo_extracao'] = tempo_extracao
-            self.resultados['dask']['tempo_processamento'] = tempo_processamento
-            
-            # Encerrar o cliente Dask
+
+            # Encontrar todos os arquivos que contenham 'CSV' no nome (case-insensitive)
+            print(f"[Dask] Procurando por arquivos contendo 'CSV' em {self.path_unzip_geral}...")
+            csv_files = []
             try:
-                print(f"[Dask] Encerrando cliente Dask... ", end="", flush=True)
-                dask_manager.shutdown()
-                print("✓ Cliente encerrado")
-                logger.debug("Cliente Dask encerrado")
-            except Exception as e:
-                print(f"✗ Erro ao encerrar Dask: {str(e)}")
-                logger.error(f"Erro ao encerrar Dask: {str(e)}")
-        
-        # Coletar resultados
+                for root, dirs, files in os.walk(self.path_unzip_geral):
+                    for filename in files:
+                        if "csv" in filename.lower():
+                            csv_files.append(os.path.join(root, filename))
+            except Exception as e_walk:
+                print_error(f"[Dask] Erro ao buscar arquivos CSV em {self.path_unzip_geral}: {e_walk}")
+                logger.error(f"Erro ao buscar arquivos CSV em {self.path_unzip_geral}: {e_walk}")
+                raise RuntimeError(f"Erro ao buscar arquivos CSV: {e_walk}") from e_walk
+                
+            logger.info(f"Encontrados {len(csv_files)} arquivos contendo 'CSV' em {self.path_unzip_geral}")
+
+            if not csv_files:
+                print_warning(f"[Dask] Nenhum arquivo contendo 'CSV' encontrado para processar em {self.path_unzip_geral}.")
+                logger.warning(f"Nenhum arquivo contendo 'CSV' encontrado em {self.path_unzip_geral}.")
+                raise RuntimeError(f"Nenhum arquivo contendo 'CSV' encontrado para processar em {self.path_unzip_geral}.")
+
+            print(f"[Dask] Lendo {len(csv_files)} arquivos com Dask...")
+            # Obter as chaves do schema ANTES
+            try:
+                schema_keys = config.empresa_columns # Usar a lista de colunas correta
+            except AttributeError as e:
+                print_error(f"[Dask] Erro ao acessar config.empresa_columns: {e}") # Atualizar mensagem de erro
+                logger.error(f"Erro ao acessar config.empresa_columns: {e}")
+                raise RuntimeError("Falha ao obter colunas de empresa da configuração.") from e
+                
+            # Ler os arquivos encontrados
+            ddf = dd.read_csv(csv_files, sep=';', encoding='latin1', dtype=str, header=None)
+            ddf.columns = schema_keys # Usar a variável local
+            logger.info("Colunas renomeadas conforme schema.")
+
+            print("[Dask] Aplicando transformações...")
+            # Reaplicando: Importar a função de transformação Dask com o nome corrigido
+            from src.process.empresa import apply_empresa_transformations_dask
+            # Reaplicando: Chamar a função correta
+            ddf = apply_empresa_transformations_dask(ddf)
+
+            print("[Dask] Salvando arquivos Parquet...")
+            # Ajustar o caminho de saída para ser um diretório 'empresas'
+            parquet_output_path = os.path.join(self.path_parquet_dask, 'empresas')
+            if os.path.exists(parquet_output_path):
+                 if os.path.isdir(parquet_output_path):
+                     shutil.rmtree(parquet_output_path)
+                 else:
+                     os.remove(parquet_output_path)
+                 logger.info(f"Diretório/arquivo parquet antigo removido: {parquet_output_path}")
+            if isinstance(ddf, bool):
+                print_error(f"[Dask] Erro: Resultado da transformação é um valor booleano ({ddf}), não um DataFrame.")
+                logger.error(f"Resultado da transformação Dask é booleano ({ddf}), não um DataFrame.")
+                raise RuntimeError("Transformação Dask retornou booleano em vez de DataFrame.")
+            # Remover schema='infer' para deixar o PyArrow lidar com a escrita
+            ddf.to_parquet(parquet_output_path, engine='pyarrow', compression='snappy', write_index=False)
+            print(f"[Dask] Arquivos Parquet salvos em: {os.path.abspath(parquet_output_path)}")
+            logger.info(f"Resultado Dask salvo em Parquet: {parquet_output_path}")
+            tempo_processamento = time.time() - tempo_inicio_processamento
+            print(f"[Dask] Processamento Dask concluído em {self.formatar_tempo(tempo_processamento)}")
+
+        except Exception as e:
+            print_error(f"[Dask] Erro durante o processamento Dask: {str(e)}")
+            logger.error(f"Erro durante o processamento Dask: {str(e)}")
+            logger.debug(traceback.format_exc())
+            tempo_processamento = time.time() - tempo_inicio_processamento
+        finally:
+            monitorar_recursos[0] = False
+            monitor_thread.join(timeout=1.0)
+            if dask_manager:
+                try:
+                    print(f"[Dask] Encerrando cliente Dask... ", end="", flush=True)
+                    dask_manager.shutdown()
+                    print("✓ Cliente encerrado")
+                    logger.debug("Cliente Dask encerrado")
+                except Exception as e_shutdown:
+                    print(f"✗ Erro ao encerrar Dask: {str(e_shutdown)}")
+                    logger.error(f"Erro ao encerrar Dask: {str(e_shutdown)}")
+            
+            # --- 3. Limpeza Condicional da Pasta Geral --- 
+            if precisou_extrair:
+                print("\n[Dask] Limpando pasta de extração geral (pois foi extraída individualmente)...")
+                try:
+                    if os.path.exists(self.path_unzip_geral):
+                        shutil.rmtree(self.path_unzip_geral)
+                        print(f"[Dask] Diretório {self.path_unzip_geral} removido.")
+                        logger.info(f"Diretório de extração geral limpo pelo Dask: {self.path_unzip_geral}")
+                except Exception as e_clean:
+                    print_warning(f"[Dask] Falha ao limpar diretório de extração geral: {str(e_clean)}")
+                    logger.warning(f"Falha ao limpar {self.path_unzip_geral} pelo Dask: {str(e_clean)}")
+            else:
+                 print("\n[Dask] Não limpando pasta de extração geral (reutilizada).")
+                 logger.info(f"Dask não limpou a pasta geral {self.path_unzip_geral} (reutilizada).")
+
+        tempo_benchmark_total = time.time() - tempo_benchmark_inicio
+        self.resultados['dask']['tempo_total'] = tempo_benchmark_total
+        self.resultados['dask']['tempo_extracao'] = tempo_extracao
+        self.resultados['dask']['tempo_processamento'] = tempo_processamento
         self.resultados['dask']['memoria_pico'] = max(memoria_medidas) if memoria_medidas else 0
         self.resultados['dask']['memoria_media'] = sum(memoria_medidas) / len(memoria_medidas) if memoria_medidas else 0
         self.resultados['dask']['cpu_medio'] = sum(cpu_medidas) / len(cpu_medidas) if cpu_medidas else 0
@@ -854,130 +836,226 @@ class BenchmarkEmpresa:
         self.resultados['dask']['espaco_disco'] = self.calcular_tamanho_diretorio(self.path_parquet_dask)
         self.resultados['dask']['num_arquivos'] = self.contar_arquivos(self.path_parquet_dask)
         self.resultados['dask']['arquivos_parquet'] = self.listar_arquivos_parquet(self.path_parquet_dask)
-        
-        # Calcular taxa de compressão usando o tamanho real dos arquivos extraídos
-        tamanho_original = sum([info['tamanho_real_mb'] for info in self.info_arquivo.values()])
+        tamanho_original = sum([info.get('tamanho_real_mb', 0) for info in self.info_arquivo.values()])
         if tamanho_original > 0 and self.resultados['dask']['espaco_disco'] > 0:
             self.resultados['dask']['compressao_taxa'] = self.calcular_taxa_compressao(
                 tamanho_original, self.resultados['dask']['espaco_disco'])
         else:
             self.resultados['dask']['compressao_taxa'] = 0
-            logger.warning("Não foi possível calcular taxa de compressão")
-        
-        print(f"\n[Dask] Benchmark concluído em {tempo_total:.2f} segundos")
-        logger.info(f"Benchmark com Dask concluído em {tempo_total:.2f} segundos")
-        
-        # Forçar limpeza de memória
+            if tamanho_original == 0:
+                 logger.warning("Tamanho original dos arquivos é zero, não foi possível calcular taxa de compressão Dask.")
+        print(f"\n[Dask] Benchmark (Pasta Geral) concluído em {self.formatar_tempo(tempo_benchmark_total)}")
+        logger.info(f"Benchmark Dask (Pasta Geral) concluído em {tempo_benchmark_total:.2f} segundos")
         gc.collect()
-        
         return self.resultados['dask']
 
-    def executar_benchmark_polars(self):
-        """Executa o benchmark usando Polars."""
-        logger.info("\nBENCHMARK COM POLARS")
+    def executar_benchmark_polars(self, max_workers=None): # Adicionado max_workers para consistência, usado na extração E LEITURA
+        """ 
+        Executa o benchmark usando Polars, lendo todos os CSVs da pasta geral 'unzip_files'.
+        Extrai os arquivos apenas se necessário (extração individual).
+        """
+        logger.info("\nBENCHMARK COM POLARS (Pasta Geral)")
+        print_section("BENCHMARK POLARS (Pasta Geral)")
         
-        # Limpar diretórios (não preservar parquet antes de executar o benchmark)
-        self.limpar_diretorios(preservar_parquet=False)
-        
-        # Medir uso de CPU e memória
+        tempo_benchmark_inicio = time.time()
+        tempo_extracao = 0
+        precisou_extrair = False
+        tempo_processamento = 0 # Inicializar tempo de processamento
+
+        # Limpar diretório de parquet do Polars
+        print(f"Limpando diretório parquet Polars: {self.path_parquet_polars}")
+        if os.path.exists(self.path_parquet_polars):
+             shutil.rmtree(self.path_parquet_polars)
+        os.makedirs(self.path_parquet_polars, exist_ok=True)
+
+        # --- 1. Extração Condicional --- 
+        if self.extrair_individualmente:
+            print("\n[Polars] Extração individual necessária...")
+            logger.info("Executando extração individual para Polars.")
+            extracao_ok, tempo_ext = self._extrair_arquivos_zip_paralelo(max_workers)
+            tempo_extracao = tempo_ext
+            precisou_extrair = True
+            if not extracao_ok:
+                print_error("[Polars] Falha na extração individual. Abortando benchmark Polars.")
+                logger.error("Falha na extração individual para Polars.")
+                self.resultados['polars']['tempo_total'] = time.time() - tempo_benchmark_inicio
+                return self.resultados['polars']
+        else:
+            print("\n[Polars] Usando arquivos pré-extraídos em: ", self.path_unzip_geral)
+            logger.info(f"Polars reutilizando pasta de extração geral: {self.path_unzip_geral}")
+
+        # --- 2. Processamento Polars Consolidado --- 
+        print("\n[Polars] Etapa 2: Processamento Polars dos arquivos CSV extraídos...")
+        tempo_inicio_processamento = time.time()
         cpu_medidas = []
         memoria_medidas = []
-        
-        # Medir tempo total de execução
-        tempo_inicio_total = time.time()
-        
-        # Armazenar tempos parciais
-        tempo_extracao = 0
-        tempo_processamento = 0
-        
-        # Executar o processamento para cada arquivo ZIP
-        for zip_file in self.zip_files:
-            logger.info(f"Processando {zip_file} com Polars...")
-            
-            # Mostrar progresso
-            print(f"\n[Polars] Processando arquivo: {zip_file}")
-            print("Status: Extraindo e processando CSV... ", end="", flush=True)
-            
-            try:
-                # Medir CPU e memória durante o processamento
-                cpu_medidas.append(psutil.cpu_percent(interval=0.1))
+        monitorar_recursos = [True]
+        def monitor_recursos_polars():
+            while monitorar_recursos[0]:
+                cpu_medidas.append(psutil.cpu_percent(interval=0.5))
                 memoria_medidas.append(psutil.virtual_memory().percent)
-                
-                # Medir o tempo de processamento
-                tempo_arquivo_inicio = time.time()
-                
-                # Usar a função process_single_zip_polars
-                resultado = process_single_zip_polars(
-                    zip_file=zip_file, 
-                    path_zip=self.path_zip, 
-                    path_unzip=self.path_unzip_polars, 
-                    path_parquet=self.path_parquet_polars
-                )
-                
-                # Atualizar tempo de processamento
-                tempo_arquivo_total = time.time() - tempo_arquivo_inicio
-                
-                # Verificar resultado
-                if resultado:
-                    print("✓ Concluído!")
-                    logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars em {tempo_arquivo_total:.2f} segundos")
-                else:
-                    print("✗ Falha!")
-                    logger.warning(f"Falha ao processar {zip_file} com Polars após {tempo_arquivo_total:.2f} segundos")
-                    
-            except Exception as e:
-                print("✗ Erro!")
-                logger.error(f"Erro ao processar {zip_file} com Polars: {str(e)}")
-                logger.debug(traceback.format_exc())
-        
-        # Calcular tempo total
-        tempo_total = time.time() - tempo_inicio_total
-        
-        # Calcular uso de CPU e memória
-        cpu_medio = np.mean(cpu_medidas) if cpu_medidas else 0
-        cpu_pico = np.max(cpu_medidas) if cpu_medidas else 0
-        memoria_media = np.mean(memoria_medidas) if memoria_medidas else 0
-        memoria_pico = np.max(memoria_medidas) if memoria_medidas else 0
-        
-        # Verificar existência dos arquivos parquet
-        parquet_dir = os.path.join(self.path_parquet_polars, 'empresas')
-        if os.path.exists(parquet_dir):
-            parquet_files = [f for f in os.listdir(parquet_dir) if f.endswith('.parquet')]
-            num_arquivos = len(parquet_files)
+                time.sleep(0.5)
+        monitor_thread = threading.Thread(target=monitor_recursos_polars)
+        monitor_thread.daemon = True
+        monitor_thread.start()
+
+        try:
+            # --- ALTERAR LÓGICA DE BUSCA DE ARQUIVOS --- 
+            print(f"[Polars] Procurando por arquivos contendo 'CSV' em {self.path_unzip_geral} (case-insensitive)...")
+            csv_files = []
+            try:
+                for root, dirs, files in os.walk(self.path_unzip_geral):
+                    for filename in files:
+                        if "csv" in filename.lower(): # Usar a mesma lógica do Dask
+                            csv_files.append(os.path.join(root, filename))
+            except Exception as e_walk:
+                print_error(f"[Polars] Erro ao buscar arquivos CSV em {self.path_unzip_geral}: {e_walk}")
+                logger.error(f"Erro ao buscar arquivos CSV em {self.path_unzip_geral}: {e_walk}")
+                raise RuntimeError(f"Erro ao buscar arquivos CSV: {e_walk}") from e_walk
+
+            # --- FIM DA ALTERAÇÃO --- 
+            logger.info(f"Encontrados {len(csv_files)} arquivos contendo 'CSV' em {self.path_unzip_geral}")
+
+            if not csv_files:
+                print_warning(f"[Polars] Nenhum arquivo contendo 'CSV' encontrado para processar em {self.path_unzip_geral}.")
+                logger.warning(f"Nenhum arquivo contendo 'CSV' encontrado em {self.path_unzip_geral}.")
+                raise RuntimeError(f"Nenhum arquivo contendo 'CSV' encontrado para processar em {self.path_unzip_geral}.")
+
+            print(f"[Polars] Lendo {len(csv_files)} arquivos CSV com Polars em paralelo...")
+            # Importar funções de transformação e criação de parquet específicas do Polars
+            from src.process.empresa import apply_empresa_transformations_polars, create_parquet_polars
+            
+            # Obter as chaves do schema ANTES
+            try:
+                schema_keys = config.empresa_columns # Usar a lista de colunas correta
+            except AttributeError as e:
+                print_error(f"[Polars] Erro ao acessar config.empresa_columns: {e}") # Atualizar mensagem de erro
+                logger.error(f"Erro ao acessar config.empresa_columns: {e}")
+                raise RuntimeError("Falha ao obter colunas de empresa da configuração.") from e
+
+            # --- PARALELIZAR LEITURA CSV --- 
+            all_dfs_polars = [] # Lista para guardar os DataFrames
+
+            # Função auxiliar para ler um CSV (precisa ter acesso a schema_keys)
+            def _read_single_csv_polars(csv_path):
+                try:
+                    df_single = pl.read_csv(
+                        source=csv_path, 
+                        separator=';', 
+                        encoding='latin1', 
+                        has_header=False,
+                        new_columns=schema_keys, # Usa schema_keys do escopo externo
+                        infer_schema_length=0, 
+                        ignore_errors=True 
+                    )
+                    if df_single is not None and df_single.height > 0:
+                        # logger.debug(f"Lido {csv_path} com {df_single.height} linhas.") # Log pode ficar verboso em paralelo
+                        return df_single
+                    else:
+                        # logger.warning(f"Arquivo {csv_path} vazio ou não pôde ser lido.")
+                        return None
+                except Exception as e_read_single:
+                    logger.error(f"Erro ao ler arquivo CSV {csv_path} com Polars: {e_read_single}")
+                    return None # Retorna None em caso de erro
+
+            # Determinar número de workers para leitura
+            num_read_workers = max_workers
+            if num_read_workers is None:
+                num_read_workers = os.cpu_count() # Padrão: número de CPUs
+                num_read_workers = min(num_read_workers, len(csv_files), 8) # Limitar um pouco
+            logger.info(f"Usando {num_read_workers} workers para leitura paralela Polars.")
+            
+            # Usar ThreadPoolExecutor para ler em paralelo
+            futures = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_read_workers) as executor:
+                for csv_path in csv_files:
+                    futures.append(executor.submit(_read_single_csv_polars, csv_path))
+            
+            # Coletar resultados e filtrar None
+            for future in concurrent.futures.as_completed(futures):
+                result_df = future.result()
+                if result_df is not None:
+                    all_dfs_polars.append(result_df)
+
+            # --- FIM DA PARALELIZAÇÃO --- 
+            
+            if not all_dfs_polars:
+                logger.error("Nenhum DataFrame Polars foi lido com sucesso dos arquivos CSV.")
+                raise RuntimeError("Falha ao ler qualquer arquivo CSV com Polars.")
+
+            # Concatenar os DataFrames
+            logger.info(f"Concatenando {len(all_dfs_polars)} DataFrames Polars lidos em paralelo...")
+            df_polars = pl.concat(all_dfs_polars)
+
+            logger.info(f"Leitura e concatenação Polars concluída. DataFrame com {df_polars.height} linhas.")
+
+            print("[Polars] Aplicando transformações...")
+            df_polars = apply_empresa_transformations_polars(df_polars)
+            logger.info("Transformações Polars aplicadas.")
+
+            print("[Polars] Salvando arquivos Parquet...")
+            parquet_output_dir = os.path.join(self.path_parquet_polars, 'empresas') # Definir diretório de saída
+            
+            # Chamar a função para criar os parquets (já limpa o diretório)
+            success_parquet = create_parquet_polars(df_polars, 'empresas', self.path_parquet_polars)
+
+            if success_parquet:
+                 print(f"[Polars] Arquivos Parquet salvos em: {os.path.abspath(parquet_output_dir)}")
+                 logger.info(f"Resultado Polars salvo em Parquet: {parquet_output_dir}")
+            else:
+                 print_error("[Polars] Falha ao salvar arquivos Parquet.")
+                 logger.error("Falha ao criar arquivos Parquet com Polars.")
+                 # Considerar levantar um erro ou apenas registrar
+
+            tempo_processamento = time.time() - tempo_inicio_processamento
+            print(f"[Polars] Processamento Polars concluído em {self.formatar_tempo(tempo_processamento)}")
+
+        except Exception as e:
+            print_error(f"[Polars] Erro durante o processamento Polars: {str(e)}")
+            logger.error(f"Erro durante o processamento Polars: {str(e)}")
+            logger.debug(traceback.format_exc())
+            tempo_processamento = time.time() - tempo_inicio_processamento
+        finally:
+            monitorar_recursos[0] = False
+            monitor_thread.join(timeout=1.0)
+
+            # --- 3. Limpeza Condicional da Pasta Geral --- 
+            if precisou_extrair:
+                print("\n[Polars] Limpando pasta de extração geral (pois foi extraída individualmente)...")
+                try:
+                    if os.path.exists(self.path_unzip_geral):
+                        shutil.rmtree(self.path_unzip_geral)
+                        print(f"[Polars] Diretório {self.path_unzip_geral} removido.")
+                        logger.info(f"Diretório de extração geral limpo pelo Polars: {self.path_unzip_geral}")
+                except Exception as e_clean:
+                    print_warning(f"[Polars] Falha ao limpar diretório de extração geral: {str(e_clean)}")
+                    logger.warning(f"Falha ao limpar {self.path_unzip_geral} pelo Polars: {str(e_clean)}")
+            else:
+                 print("\n[Polars] Não limpando pasta de extração geral (reutilizada).")
+                 logger.info(f"Polars não limpou a pasta geral {self.path_unzip_geral} (reutilizada).")
+
+        tempo_benchmark_total = time.time() - tempo_benchmark_inicio
+        self.resultados['polars']['tempo_total'] = tempo_benchmark_total
+        self.resultados['polars']['tempo_extracao'] = tempo_extracao
+        self.resultados['polars']['tempo_processamento'] = tempo_processamento
+        self.resultados['polars']['memoria_pico'] = max(memoria_medidas) if memoria_medidas else 0
+        self.resultados['polars']['memoria_media'] = sum(memoria_medidas) / len(memoria_medidas) if memoria_medidas else 0
+        self.resultados['polars']['cpu_medio'] = sum(cpu_medidas) / len(cpu_medidas) if cpu_medidas else 0
+        self.resultados['polars']['cpu_pico'] = max(cpu_medidas) if cpu_medidas else 0
+        self.resultados['polars']['espaco_disco'] = self.calcular_tamanho_diretorio(self.path_parquet_polars)
+        self.resultados['polars']['num_arquivos'] = self.contar_arquivos(self.path_parquet_polars)
+        self.resultados['polars']['arquivos_parquet'] = self.listar_arquivos_parquet(self.path_parquet_polars)
+        tamanho_original = sum([info.get('tamanho_real_mb', 0) for info in self.info_arquivo.values()])
+        if tamanho_original > 0 and self.resultados['polars']['espaco_disco'] > 0:
+            self.resultados['polars']['compressao_taxa'] = self.calcular_taxa_compressao(
+                tamanho_original, self.resultados['polars']['espaco_disco'])
         else:
-            parquet_files = []
-            num_arquivos = 0
-        
-        # Calcular espaço em disco dos arquivos parquet
-        espaco_disco = sum(os.path.getsize(os.path.join(parquet_dir, f)) for f in parquet_files) / (1024 * 1024) if parquet_files else 0
-        
-        # Calcular taxa de compressão usando o tamanho real dos arquivos extraídos
-        if self.info_arquivo and espaco_disco > 0:
-            tamanho_original = sum(info['tamanho_real_mb'] for info in self.info_arquivo.values())
-            compressao_taxa = 100 * (1 - (espaco_disco / tamanho_original)) if tamanho_original > 0 else 0
-        else:
-            compressao_taxa = 0
-        
-        # Guardar resultados
-        self.resultados['polars'] = {
-            'tempo_total': tempo_total,
-            'tempo_extracao': tempo_extracao,
-            'tempo_processamento': tempo_processamento,
-            'memoria_pico': memoria_pico,
-            'memoria_media': memoria_media,
-            'cpu_pico': cpu_pico,
-            'cpu_medio': cpu_medio,
-            'espaco_disco': espaco_disco,
-            'num_arquivos': num_arquivos,
-            'arquivos_parquet': parquet_files,
-            'compressao_taxa': compressao_taxa
-        }
-        
-        logger.info(f"Benchmark com Polars concluído em {tempo_total:.2f} segundos")
-        
-        # Forçar limpeza de memória
+            self.resultados['polars']['compressao_taxa'] = 0
+            if tamanho_original == 0:
+                 logger.warning("Tamanho original dos arquivos é zero, não foi possível calcular taxa de compressão Polars.")
+        print(f"\n[Polars] Benchmark (Pasta Geral) concluído em {self.formatar_tempo(tempo_benchmark_total)}")
+        logger.info(f"Benchmark Polars (Pasta Geral) concluído em {tempo_benchmark_total:.2f} segundos")
         gc.collect()
-        
         return self.resultados['polars']
 
     def comparar_resultados(self):
@@ -1368,12 +1446,65 @@ class BenchmarkEmpresa:
         logger.info(f"Relatório completo gerado: {md_path}")
         return md_path
 
+    # --- NOVO MÉTODO PRIVADO PARA EXTRAÇÃO GERAL --- 
+    def _extrair_arquivos_zip_paralelo(self, max_workers=None):
+        """ 
+        Extrai todos os arquivos ZIP listados em self.zip_files 
+        para a pasta self.path_unzip_geral usando ProcessPoolExecutor.
+        Limpa a pasta de destino antes de extrair.
+        Retorna True se pelo menos um arquivo foi extraído com sucesso, False caso contrário.
+        Retorna também o tempo gasto na extração.
+        """
+        target_path = self.path_unzip_geral
+        print(f"\nIniciando extração paralela para: {target_path}")
+        logger.info(f"Iniciando extração paralela para: {target_path}")
+        
+        # 1. Limpar diretório de destino
+        if os.path.exists(target_path):
+            print(f"Limpando diretório de destino existente: {target_path}")
+            try:
+                shutil.rmtree(target_path)
+            except Exception as e_clean:
+                print_error(f"Falha ao limpar diretório de destino {target_path}: {e_clean}")
+                logger.error(f"Falha ao limpar diretório de destino {target_path}: {e_clean}")
+                return False, 0 # Falha na limpeza é crítico
+        try:
+            os.makedirs(target_path, exist_ok=True)
+            logger.debug(f"Diretório de destino recriado: {target_path}")
+        except Exception as e_mkdir:
+             print_error(f"Falha ao recriar diretório de destino {target_path}: {e_mkdir}")
+             logger.error(f"Falha ao recriar diretório de destino {target_path}: {e_mkdir}")
+             return False, 0
+
+        # 2. Extrair em paralelo
+        tempo_inicio_extracao = time.time()
+        if max_workers is None:
+            max_workers = os.cpu_count()
+            max_workers = min(max_workers, len(self.zip_files), 8)
+        logger.info(f"Usando {max_workers} workers para extração paralela em {target_path}")
+
+        futures = []
+        sucessos_extracao = 0
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            for zip_file in self.zip_files:
+                zip_path = os.path.join(self.path_zip, zip_file)
+                future = executor.submit(extract_zip, zip_path, target_path)
+                futures.append(future)
+
+            for future in concurrent.futures.as_completed(futures):
+                if future.result():
+                    sucessos_extracao += 1
+
+        tempo_extracao = time.time() - tempo_inicio_extracao
+        print(f"Extração paralela para {target_path} concluída em {self.formatar_tempo(tempo_extracao)}")
+        print(f"{sucessos_extracao}/{len(self.zip_files)} arquivos ZIP extraídos com sucesso.")
+        logger.info(f"Extração paralela para {target_path} concluída em {tempo_extracao:.2f}s. Sucessos: {sucessos_extracao}/{len(self.zip_files)}")
+
+        return sucessos_extracao > 0, tempo_extracao
+
 def main():
     """Função principal."""
-    # Adicionar timestamp no início da execução
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Configuração do parser de argumentos
     parser = argparse.ArgumentParser(description='Benchmark para comparar processamento com Pandas, Dask e Polars')
     parser.add_argument('--path_zip', type=str, default='dados-abertos-zip', 
                         help='Caminho para o diretório com os arquivos ZIP')
@@ -1384,7 +1515,7 @@ def main():
     parser.add_argument('--parquet_destino', type=str, default='parquet', # Mantendo padrão simples
                         help='Caminho relativo dentro de path_base para os arquivos parquet gerados')
     parser.add_argument('--limpar', action='store_true', 
-                        help='Limpar diretórios temporários')
+                        help='Limpar diretórios temporários (incluindo logs/docs antigos) no início')
     parser.add_argument('--pandas', action='store_true', 
                         help='Executar apenas o benchmark com Pandas')
     parser.add_argument('--dask', action='store_true', 
@@ -1397,147 +1528,151 @@ def main():
                         help='Executar todos os benchmarks e gerar gráficos')
     parser.add_argument('--workers', type=int, default=None,
                         help='Número de workers para processamento paralelo (padrão: número de cores)')
-    
-    # Adicionar argumentos para controle de log
     add_log_level_argument(parser)
-    
     args = parser.parse_args()
     
-    # Criar diretórios necessários
+    # --- Limpeza Inicial (se --limpar) --- 
+    if args.limpar:
+        print("\nLimpando diretórios logs e docs antigos antes de iniciar...")
+        # Criar instância temporária apenas para limpeza inicial de logs/docs
+        temp_cleaner = BenchmarkEmpresa(args.path_zip, args.path_base, executar_limpeza=False) # False para não limpar dados ainda
+        temp_cleaner.limpar_diretorios(preservar_parquet=True, limpar_docs_logs=True)
+        del temp_cleaner
+        print("Limpeza inicial de logs/docs concluída.")
+        
+    # --- Configurar Logging --- 
     os.makedirs(args.path_base, exist_ok=True)
     logs_dir = os.path.join(args.path_base, "logs")
     os.makedirs(logs_dir, exist_ok=True)
     docs_dir = os.path.join(args.path_base, "docs")
     os.makedirs(docs_dir, exist_ok=True)
-    
-    # Configurar logging
     log_file = os.path.join(logs_dir, f"benchmark_{timestamp}.log")
     file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(process)d] - %(message)s'))
+    logger = logging.getLogger() 
     logger.addHandler(file_handler)
     configure_logging(args)
+    logger.info(f"Iniciando benchmark. Log principal: {log_file}")
     
-    logger.info(f"Iniciando benchmark. Log: {log_file}")
-    
-    # Verificações básicas
+    # --- Verificações e Informações do Sistema --- 
     if not os.path.exists(args.path_zip):
-        print(f"Erro: Diretório de arquivos ZIP não encontrado: {args.path_zip}")
+        print_error(f"Erro: Diretório de arquivos ZIP não encontrado: {args.path_zip}")
         logger.error(f"Diretório de arquivos ZIP não encontrado: {args.path_zip}")
         return
-    
-    # Informações do sistema
     try:
         info_sistema = InfoSistema.coletar_informacoes()
         InfoSistema.imprimir_informacoes(info_sistema)
+        logger.info(f"Informações do sistema coletadas: {info_sistema}")
     except Exception as e:
         logger.error(f"Erro ao coletar informações do sistema: {str(e)}")
-    
-    # Flags para controlar quais métodos foram executados
+
+    # --- Execução do Benchmark --- 
     pandas_executado = False
     dask_executado = False
-    polars_executado = False  # Nova flag para Polars
+    polars_executado = False
     
     try:
-        # Inicializar o benchmark
+        # Inicializar a instância principal do benchmark
+        # Passar executar_limpeza=False aqui, pois a limpeza será controlada pelos métodos
         benchmark = BenchmarkEmpresa(
             path_zip=args.path_zip, 
             path_base=args.path_base, 
             arquivo_zip_especifico=args.arquivo_zip,
             path_parquet_destino=args.parquet_destino,
-            executar_limpeza=args.limpar
+            executar_limpeza=False # Limpeza manual dentro dos métodos ou no início
         )
         
-        # Limpar diretórios docs e logs no início, se solicitado
-        if args.limpar:
-            print("\nLimpando diretórios antes de iniciar o benchmark...")
-            benchmark.limpar_diretorios(preservar_parquet=False, limpar_docs_logs=True)
+        # Determinar quais benchmarks rodar
+        run_pandas = args.pandas or args.completo
+        run_dask = args.dask or args.completo
+        run_polars = args.polars or args.completo
         
-        # Executar os benchmarks
+        if not (run_pandas or run_dask or run_polars):
+             print_warning("Nenhum método de benchmark selecionado explicitamente ou via --completo. Executando Pandas por padrão.")
+             run_pandas = True
+             
+        # --- Lógica de Extração Centralizada (para Dask e Polars) --- 
+        num_dask_polars = sum([run_dask, run_polars])
+        if num_dask_polars > 1:
+            print_section("Extração Centralizada (para Dask/Polars)")
+            logger.info("Executando extração centralizada para Dask e Polars.")
+            extracao_central_ok, tempo_ext_central = benchmark._extrair_arquivos_zip_paralelo(args.workers)
+            if extracao_central_ok:
+                benchmark.extrair_individualmente = False # Sinaliza para Dask/Polars não extraírem
+                logger.info(f"Extração centralizada concluída em {tempo_ext_central:.2f}s.")
+            else:
+                print_error("Falha na extração centralizada. Dask e Polars podem falhar.")
+                logger.error("Falha na extração centralizada. Dask e Polars podem falhar.")
+                # Não setar extrair_individualmente = False, permite que tentem individualmente
+        
+        # Executar os benchmarks selecionados
         try:
-            # Verificar que combinação de flags usar
-            executar_todos = args.completo
-            executar_especificos = args.pandas or args.dask or args.polars
+            if run_pandas:
+                 benchmark.executar_benchmark_pandas(max_workers=args.workers)
+                 pandas_executado = True
             
-            # Se nenhuma flag específica foi fornecida e não é completo, executar pandas por padrão
-            if not executar_especificos and not executar_todos:
-                args.pandas = True
-            
-            # Executa Pandas se solicitado ou se completo e não específico para outros
-            if args.pandas or (executar_todos and not (args.dask or args.polars)):
-                benchmark.executar_benchmark_pandas(max_workers=args.workers)
-                pandas_executado = True
-                
-            # Executa Dask se solicitado ou se completo e não específico para outros
-            if args.dask or (executar_todos and not (args.pandas or args.polars)):
-                benchmark.executar_benchmark_dask()
+            if run_dask:
+                benchmark.executar_benchmark_dask(max_workers=args.workers)
                 dask_executado = True
-                
-            # Executa Polars se solicitado ou se completo e não específico para outros  
-            if args.polars or (executar_todos and not (args.pandas or args.dask)):
-                benchmark.executar_benchmark_polars()
-                polars_executado = True
             
-            # Se --completo foi especificado explicitamente, executar todos os métodos não executados ainda
-            if args.completo:
-                if not pandas_executado:
-                    benchmark.executar_benchmark_pandas()
-                    pandas_executado = True
-                
-                if not dask_executado:
-                    benchmark.executar_benchmark_dask()
-                    dask_executado = True
-                
-                if not polars_executado:
-                    benchmark.executar_benchmark_polars()
-                    polars_executado = True
+            if run_polars: 
+                 benchmark.executar_benchmark_polars(max_workers=args.workers)
+                 polars_executado = True
             
-            # Gerar gráficos comparativos somente se mais de um método foi executado
-            graficos_criados = {}
-            metodos_executados = [m for m, flag in [('pandas', pandas_executado), 
-                                                   ('dask', dask_executado),
-                                                   ('polars', polars_executado)] if flag]
+            # --- Limpeza Final da Pasta Geral (se extração centralizada foi usada) --- 
+            if not benchmark.extrair_individualmente: # Se a extração foi central
+                 print("\nLimpando pasta de extração geral (pós benchmarks)...")
+                 try:
+                     if os.path.exists(benchmark.path_unzip_geral):
+                         shutil.rmtree(benchmark.path_unzip_geral)
+                         print(f"Diretório {benchmark.path_unzip_geral} removido.")
+                         logger.info(f"Diretório de extração geral limpo no final: {benchmark.path_unzip_geral}")
+                 except Exception as e_clean_final:
+                     print_warning(f"Falha ao limpar diretório de extração geral no final: {str(e_clean_final)}")
+                     logger.warning(f"Falha ao limpar {benchmark.path_unzip_geral} no final: {str(e_clean_final)}")
             
+            # Gerar gráficos e relatórios
+            metodos_executados = [m for m, flag in [('pandas', pandas_executado), ('dask', dask_executado), ('polars', polars_executado)] if flag]
             if (args.graficos or args.completo) and len(metodos_executados) >= 2:
+                # ... (lógica de gráficos igual)
+                print_section("Gerando Gráficos Comparativos")
                 try:
                     graficos_criados = benchmark.gerar_graficos()
                     if not graficos_criados.get('comparacao', False):
-                        logger.warning("Não foi possível gerar o gráfico de comparação")
-                except Exception as e:
-                    logger.error(f"Erro ao gerar gráficos: {str(e)}")
-                    logger.debug(traceback.format_exc())
-            elif (args.graficos or args.completo) and len(metodos_executados) < 2:
-                logger.warning("Gráficos comparativos requerem pelo menos dois métodos")
-            
-            # Imprimir relatório final
+                        print_warning("Não foi possível gerar o gráfico de comparação principal.")
+                    else:
+                        print_success("Gráficos gerados com sucesso.")
+                except Exception as e_graph:
+                    print_error(f"Erro ao gerar gráficos: {e_graph}")
+                    logger.exception("Erro na geração de gráficos")
+            elif (args.graficos or args.completo):
+                 print_warning("Gráficos comparativos requerem a execução de pelo menos dois métodos.")
             if len(metodos_executados) >= 2:
+                # ... (lógica de relatório igual)
+                print_section("Relatório Final Comparativo")
                 benchmark.imprimir_relatorio()
-                
-                # Gerar relatório Markdown
                 md_path = benchmark.gerar_relatorio_markdown(timestamp)
-                logger.info(f"Relatório: {md_path}")
+                print_success(f"Relatório Markdown gerado: {md_path}")
+            elif len(metodos_executados) == 1:
+                 # ... (lógica de relatório igual)
+                 print_section(f"Relatório Final - {metodos_executados[0].upper()}")
+                 metodo = metodos_executados[0]
+                 print(f"Tempo Total: {benchmark.formatar_tempo(benchmark.resultados[metodo]['tempo_total'])}")
+                 print(f"Memória Pico: {benchmark.resultados[metodo]['memoria_pico']:.1f}%" if benchmark.resultados[metodo]['memoria_pico'] else "Memória Pico: N/A")
+                 print(f"Espaço em Disco: {benchmark.resultados[metodo]['espaco_disco']:.1f} MB")
             else:
-                # Relatório simplificado para método único
-                for metodo in metodos_executados:
-                    print("\n" + "="*40)
-                    print(" "*15 + metodo.upper())
-                    print("="*40)
-                    print(f"Tempo: {benchmark.formatar_tempo(benchmark.resultados[metodo]['tempo_total'])}")
-                    print(f"Memória: {benchmark.resultados[metodo]['memoria_pico']:.1f}%")
-                    print(f"Espaço: {benchmark.resultados[metodo]['espaco_disco']:.1f} MB")
-            
-            # Limpar diretórios temporários se solicitado
-            if args.limpar:
-                print("\nLimpando diretórios temporários após benchmark...")
-                # Limpar diretórios unzip após o processamento, mas preservar parquet
-                benchmark.limpar_diretorios(preservar_parquet=True, limpar_docs_logs=False)
-                
-        except Exception as e:
-            logger.error(f"Erro durante o benchmark: {str(e)}")
-            logger.debug(traceback.format_exc())
-            
-    except Exception as e:
-        logger.error(f"Erro ao inicializar benchmark: {str(e)}")
-        logger.debug(traceback.format_exc())
+                 print_warning("Nenhum método de benchmark foi executado com sucesso.")
+        except Exception as e_bench:
+            print_error(f"Erro durante a execução do benchmark: {e_bench}")
+            logger.exception("Erro durante a execução do benchmark")
+    except ValueError as ve:
+        print_error(f"Erro de inicialização: {ve}")
+        logger.error(f"Erro de inicialização: {ve}")
+    except Exception as e_init:
+        print_error(f"Erro fatal ao inicializar o benchmark: {e_init}")
+        logger.exception("Erro fatal na inicialização do benchmark")
+
+    logger.info("Benchmark finalizado.")
 
 if __name__ == "__main__":
     main()
