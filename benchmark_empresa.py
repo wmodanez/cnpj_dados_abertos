@@ -1216,7 +1216,7 @@ class BenchmarkEmpresa:
                             ha='center', va='bottom')
             
             plt.tight_layout()
-            grafico_path = os.path.join(docs_dir, 'benchmark_comparacao.png')
+            grafico_path = os.path.join(docs_dir, 'benchmark_empresa_comparacao.png')
             plt.savefig(grafico_path)
             logger.info(f"Gráfico comparativo salvo: {grafico_path}")
             
@@ -1234,7 +1234,7 @@ class BenchmarkEmpresa:
                     plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
                             autopct='%1.1f%%', colors=['#2ca02c'])  # Verde
                     plt.title('Distribuição do Tempo (Pandas)')
-                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_pandas.png')
+                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_empresa_tempo_pandas.png')
                     plt.savefig(grafico_tempo_path)
                     graficos_criados['tempo_pandas'] = os.path.exists(grafico_tempo_path)
                     logger.info(f"Gráfico tempo Pandas salvo")
@@ -1251,7 +1251,7 @@ class BenchmarkEmpresa:
                     plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
                             autopct='%1.1f%%', colors=['#ff7f0e'])  # Laranja
                     plt.title('Distribuição do Tempo (Dask)')
-                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_dask.png')
+                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_empresa_tempo_dask.png')
                     plt.savefig(grafico_tempo_path)
                     graficos_criados['tempo_dask'] = os.path.exists(grafico_tempo_path)
                     logger.info(f"Gráfico tempo Dask salvo")
@@ -1268,7 +1268,7 @@ class BenchmarkEmpresa:
                     plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
                             autopct='%1.1f%%', colors=['#2ca02c'])  # Verde
                     plt.title('Distribuição do Tempo (Polars)')
-                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_polars.png')
+                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_empresa_tempo_polars.png')
                     plt.savefig(grafico_tempo_path)
                     graficos_criados['tempo_polars'] = os.path.exists(grafico_tempo_path)
                     logger.info(f"Gráfico tempo Polars salvo")
@@ -1334,7 +1334,7 @@ class BenchmarkEmpresa:
         os.makedirs(docs_dir, exist_ok=True)
         
         # Caminho para o arquivo de relatório
-        md_path = os.path.join(docs_dir, f"relatorio_completo_{timestamp}.md")
+        md_path = os.path.join(docs_dir, f"relatorio_empresa_completo_{timestamp}.md")
         
         relatorio = f"# Relatório de Benchmark - {timestamp}\n\n"
         relatorio += "## Resultados\n\n"
@@ -1414,27 +1414,27 @@ class BenchmarkEmpresa:
         relatorio += f"vencendo em {comparacao['contagem'][comparacao['melhor_metodo']]} de {len(comparacao['comparacao'])} critérios.\n\n"
         
         # Verificar se os gráficos existem antes de incluí-los no relatório
-        grafico_comparacao_path = os.path.join(docs_dir, 'benchmark_comparacao.png')
+        grafico_comparacao_path = os.path.join(docs_dir, 'benchmark_empresa_comparacao.png')
         if os.path.exists(grafico_comparacao_path):
             relatorio += "## Gráficos\n\n"
             relatorio += "### Gráfico de Comparação\n\n"
-            relatorio += "![Gráfico de Comparação](benchmark_comparacao.png)\n\n"
+            relatorio += "![Gráfico de Comparação](benchmark_empresa_comparacao.png)\n\n"
             
             # Adicionar gráficos de tempo se existirem
-            grafico_tempo_pandas = os.path.join(docs_dir, 'benchmark_tempo_pandas.png')
+            grafico_tempo_pandas = os.path.join(docs_dir, 'benchmark_empresa_tempo_pandas.png')
             if os.path.exists(grafico_tempo_pandas):
                 relatorio += "### Distribuição de Tempo - Pandas\n\n"
-                relatorio += "![Tempo Pandas](benchmark_tempo_pandas.png)\n\n"
+                relatorio += "![Tempo Pandas](benchmark_empresa_tempo_pandas.png)\n\n"
                 
-            grafico_tempo_dask = os.path.join(docs_dir, 'benchmark_tempo_dask.png')
+            grafico_tempo_dask = os.path.join(docs_dir, 'benchmark_empresa_tempo_dask.png')
             if os.path.exists(grafico_tempo_dask):
                 relatorio += "### Distribuição de Tempo - Dask\n\n"
-                relatorio += "![Tempo Dask](benchmark_tempo_dask.png)\n\n"
+                relatorio += "![Tempo Dask](benchmark_empresa_tempo_dask.png)\n\n"
             
-            grafico_tempo_polars = os.path.join(docs_dir, 'benchmark_tempo_polars.png')
+            grafico_tempo_polars = os.path.join(docs_dir, 'benchmark_empresa_tempo_polars.png')
             if os.path.exists(grafico_tempo_polars):
                 relatorio += "### Distribuição de Tempo - Polars\n\n"
-                relatorio += "![Tempo Polars](benchmark_tempo_polars.png)\n\n"
+                relatorio += "![Tempo Polars](benchmark_empresa_tempo_polars.png)\n\n"
         else:
             relatorio += "## Gráficos\n\n"
             relatorio += "*Não foi possível gerar gráficos para este relatório.*\n\n"

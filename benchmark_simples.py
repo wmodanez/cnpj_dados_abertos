@@ -28,6 +28,7 @@ python benchmark_simples.py --completo --path_zip dados-abertos-zip --parquet_de
 python benchmark_simples.py --completo --path_zip dados-abertos-zip --arquivo_zip Simples.zip --parquet_destino parquet/2025-03/simples
 """
 import argparse
+import concurrent.futures
 import gc
 import json
 import logging
@@ -42,6 +43,7 @@ import sys
 import time
 import traceback
 import zipfile
+import threading
 from datetime import datetime
 from typing import Dict, List, Any
 
@@ -79,12 +81,12 @@ from src.process.simples import (
 # Configurando logging
 logging.basicConfig(
     level=logging.INFO,  # Nível padrão é INFO
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - [%(process)d] - %(message)s',
     handlers=[
         logging.StreamHandler()  # Apenas console logging inicialmente
     ]
 )
-logger = logging.getLogger("benchmark")
+logger = logging.getLogger()
 
 # Definir nível de log mais alto para módulos específicos para reduzir verbosidade
 logging.getLogger("src.process.simples").setLevel(logging.WARNING)
@@ -444,62 +446,86 @@ class BenchmarkSimples:
     def executar_benchmark_pandas(self):
         """Executa o benchmark usando Pandas."""
         logger.info("\nBENCHMARK COM PANDAS")
+        print_section("BENCHMARK PANDAS") # Adicionar header
 
         # Limpar diretórios (não preservar parquet antes de executar o benchmark)
-        self.limpar_diretorios(preservar_parquet=False)
+        print(f"Limpando diretórios Pandas: {self.path_unzip_pandas}, {self.path_parquet_pandas}")
+        if os.path.exists(self.path_unzip_pandas): shutil.rmtree(self.path_unzip_pandas)
+        os.makedirs(self.path_unzip_pandas, exist_ok=True)
+        if os.path.exists(self.path_parquet_pandas): shutil.rmtree(self.path_parquet_pandas)
+        os.makedirs(self.path_parquet_pandas, exist_ok=True)
 
         # Medir uso de CPU e memória
         cpu_medidas = []
         memoria_medidas = []
+        monitorar_recursos = [True]
+        def monitor_recursos_pandas():
+            while monitorar_recursos[0]:
+                cpu_medidas.append(psutil.cpu_percent(interval=0.5))
+                memoria_medidas.append(psutil.virtual_memory().percent)
+                time.sleep(0.5)
+        monitor_thread = threading.Thread(target=monitor_recursos_pandas)
+        monitor_thread.daemon = True
+        monitor_thread.start()
 
         # Medir tempo total de execução
         tempo_inicio_total = time.time()
 
         # Armazenar tempos parciais
-        tempo_extracao = 0
+        tempo_extracao = 0 # Mantém zero pois não é medido separadamente aqui
         tempo_processamento = 0
+        sucessos = 0
+        log_file_path = None
+        for handler in logger.handlers:
+             if isinstance(handler, logging.FileHandler):
+                 log_file_path = handler.baseFilename
+                 break
+        if log_file_path is None:
+             logger.warning("Não foi possível encontrar o FileHandler principal para passar aos workers Pandas.")
 
-        # Executar o processamento para cada arquivo ZIP
+        # Executar o processamento para cada arquivo ZIP (SEQUENCIALMENTE)
+        # A paralelização aqui seria mais complexa e mudaria a natureza do benchmark
         for zip_file in self.zip_files:
             logger.info(f"Processando {zip_file} com Pandas...")
-
-            # Mostrar progresso
             print(f"\n[Pandas] Processando arquivo: {zip_file}")
             print("Status: Extraindo e processando CSV... ", end="", flush=True)
 
             try:
-                # Medir CPU e memória durante o processamento
-                cpu_medidas.append(psutil.cpu_percent(interval=0.1))
-                memoria_medidas.append(psutil.virtual_memory().percent)
-
-                # Medir o tempo de processamento
                 tempo_arquivo_inicio = time.time()
 
                 # Usar diretamente a função process_single_zip_pandas do simples.py
+                # Passar o log_file se existir
                 resultado = process_single_zip_pandas(
                     zip_file=zip_file,
                     path_zip=self.path_zip,
                     path_unzip=self.path_unzip_pandas,
-                    path_parquet=self.path_parquet_pandas
+                    path_parquet=self.path_parquet_pandas,
+                    log_file=log_file_path # Passar path do log
                 )
 
                 # Atualizar tempo de processamento
                 tempo_processamento_arquivo = time.time() - tempo_arquivo_inicio
                 tempo_processamento += tempo_processamento_arquivo
 
-                if resultado:
+                # O resultado esperado da função é um dict {'sucesso': bool, 'tempo': float}
+                if isinstance(resultado, dict) and resultado.get('sucesso', False):
                     print(f"✓ Concluído em {tempo_processamento_arquivo:.2f}s")
                     logger.info(f"{zip_file}: processado em {tempo_processamento_arquivo:.2f}s")
+                    sucessos += 1
                 else:
                     print(f"✗ Falha após {tempo_processamento_arquivo:.2f}s")
-                    logger.warning(f"{zip_file}: falha no processamento")
+                    logger.warning(f"{zip_file}: falha no processamento (Resultado: {resultado})")
 
             except Exception as e:
                 print(f"✗ Erro: {str(e)}")
-                logger.error(f"Erro: {str(e)}")
+                logger.error(f"Erro processando {zip_file}: {str(e)}")
                 logger.debug(traceback.format_exc())
+            finally:
+                gc.collect()
 
-        # Calcular o tempo total de execução
+        # Parar monitoramento e calcular tempo total
+        monitorar_recursos[0] = False
+        monitor_thread.join(timeout=1.0)
         tempo_total = time.time() - tempo_inicio_total
 
         # Coletar resultados
@@ -532,7 +558,7 @@ class BenchmarkSimples:
 
         return self.resultados['pandas']
 
-    def executar_benchmark_dask(self):
+    def executar_benchmark_dask(self, max_workers=None):
         """
         Executa o benchmark usando Dask.
         
@@ -541,31 +567,50 @@ class BenchmarkSimples:
         """
         # Garantir que o diretório de destino existe
         os.makedirs(self.path_parquet_dask, exist_ok=True)
-
         logger.info('\nBENCHMARK COM DASK')
+        print_section("BENCHMARK DASK") # Adicionar header
+
+        # Limpar diretórios Dask
+        print(f"Limpando diretórios Dask: {self.path_unzip_dask}, {self.path_parquet_dask}")
+        if os.path.exists(self.path_unzip_dask): shutil.rmtree(self.path_unzip_dask)
+        os.makedirs(self.path_unzip_dask, exist_ok=True)
+        if os.path.exists(self.path_parquet_dask): shutil.rmtree(self.path_parquet_dask)
+        os.makedirs(self.path_parquet_dask, exist_ok=True)
 
         # Listas para armazenar medidas de desempenho
         cpu_medidas = []
         memoria_medidas = []
+        monitorar_recursos = [True]
+        def monitor_recursos_dask():
+            while monitorar_recursos[0]:
+                cpu_medidas.append(psutil.cpu_percent(interval=0.5))
+                memoria_medidas.append(psutil.virtual_memory().percent)
+                time.sleep(0.5)
+        monitor_thread = threading.Thread(target=monitor_recursos_dask)
+        monitor_thread.daemon = True
+        monitor_thread.start()
 
         # Medir o tempo total de execução
         tempo_inicio_total = time.time()
 
         # Armazenar tempos parciais
-        tempo_extracao = 0
+        tempo_extracao = 0 # Não medido separadamente
         tempo_processamento = 0
+        dask_manager = None # Inicializar
 
         # Inicializar o cliente Dask
         try:
             print(f"\n[Dask] Inicializando cliente Dask... ", end="", flush=True)
+            # Usar max_workers do argumento, se fornecido
+            num_dask_workers = max_workers if max_workers is not None else config.dask.n_workers
             dask_manager = DaskManager.initialize(
-                n_workers=config.dask.n_workers,
+                n_workers=num_dask_workers,
                 memory_limit=config.dask.memory_limit,
                 dashboard_address=config.dask.dashboard_address
             )
             client = dask_manager.client
-            print(f"✓ Cliente Dask inicializado com {config.dask.n_workers} workers")
-            logger.info(f"Cliente Dask inicializado")
+            print(f"✓ Cliente Dask inicializado com {num_dask_workers} workers")
+            logger.info(f"Cliente Dask inicializado com {num_dask_workers} workers")
         except Exception as e:
             print(f"✗ Erro ao inicializar cliente Dask: {str(e)}")
             logger.error(f"Erro ao inicializar cliente Dask: {str(e)}")
@@ -577,7 +622,7 @@ class BenchmarkSimples:
             sucessos = 0
             total_arquivos = len(self.zip_files)
 
-            # Executar o processamento com o método Dask para cada arquivo
+            # Executar o processamento com o método Dask para cada arquivo (SEQUENCIALMENTE)
             for i, zip_file in enumerate(self.zip_files):
                 logger.info(f"Processando {zip_file} com Dask ({i + 1}/{total_arquivos})...")
                 print(f"\n[Dask] Processando arquivo: {zip_file} ({i + 1}/{total_arquivos})")
@@ -658,12 +703,13 @@ class BenchmarkSimples:
             logger.error(f"Erro no processamento: {str(e)}")
             logger.debug(traceback.format_exc())
         finally:
-            # Calcular o tempo total de execução
+            # Parar monitoramento
+            monitorar_recursos[0] = False
+            monitor_thread.join(timeout=1.0)
+            # Atualizar tempo total ANTES de encerrar Dask
             tempo_total = time.time() - tempo_inicio_total
-
-            # Atualizar tempos parciais nos resultados
             self.resultados['dask']['tempo_total'] = tempo_total
-            self.resultados['dask']['tempo_extracao'] = tempo_extracao
+            self.resultados['dask']['tempo_extracao'] = tempo_extracao # Continua 0
             self.resultados['dask']['tempo_processamento'] = tempo_processamento
 
             # Encerrar o cliente Dask
@@ -702,38 +748,46 @@ class BenchmarkSimples:
 
         return self.resultados['dask']
 
-    def executar_benchmark_polars(self):
+    def executar_benchmark_polars(self, max_workers=None):
         """Executa o benchmark usando Polars."""
         logger.info("\nBENCHMARK COM POLARS")
+        print_section("BENCHMARK POLARS") # Adicionar header
 
         # Limpar diretórios (não preservar parquet antes de executar o benchmark)
-        self.limpar_diretorios(preservar_parquet=False)
+        print(f"Limpando diretórios Polars: {self.path_unzip_polars}, {self.path_parquet_polars}")
+        if os.path.exists(self.path_unzip_polars): shutil.rmtree(self.path_unzip_polars)
+        os.makedirs(self.path_unzip_polars, exist_ok=True)
+        if os.path.exists(self.path_parquet_polars): shutil.rmtree(self.path_parquet_polars)
+        os.makedirs(self.path_parquet_polars, exist_ok=True)
 
         # Medir uso de CPU e memória
         cpu_medidas = []
         memoria_medidas = []
+        monitorar_recursos = [True]
+        def monitor_recursos_polars():
+            while monitorar_recursos[0]:
+                cpu_medidas.append(psutil.cpu_percent(interval=0.5))
+                memoria_medidas.append(psutil.virtual_memory().percent)
+                time.sleep(0.5)
+        monitor_thread = threading.Thread(target=monitor_recursos_polars)
+        monitor_thread.daemon = True
+        monitor_thread.start()
 
         # Medir tempo total de execução
         tempo_inicio_total = time.time()
 
         # Armazenar tempos parciais
-        tempo_extracao = 0
+        tempo_extracao = 0 # Não medido separadamente
         tempo_processamento = 0
+        sucessos = 0
 
-        # Executar o processamento para cada arquivo ZIP
+        # Executar o processamento para cada arquivo ZIP (SEQUENCIALMENTE)
         for zip_file in self.zip_files:
             logger.info(f"Processando {zip_file} com Polars...")
-
-            # Mostrar progresso
             print(f"\n[Polars] Processando arquivo: {zip_file}")
             print("Status: Extraindo e processando CSV... ", end="", flush=True)
 
             try:
-                # Medir CPU e memória durante o processamento
-                cpu_medidas.append(psutil.cpu_percent(interval=0.1))
-                memoria_medidas.append(psutil.virtual_memory().percent)
-
-                # Medir o tempo de processamento
                 tempo_arquivo_inicio = time.time()
 
                 # Usar a função process_single_zip_polars
@@ -744,24 +798,28 @@ class BenchmarkSimples:
                     path_parquet=self.path_parquet_polars
                 )
 
-                # Atualizar tempo de processamento
-                tempo_arquivo_total = time.time() - tempo_arquivo_inicio
+                tempo_processamento_arquivo = time.time() - tempo_arquivo_inicio
+                tempo_processamento += tempo_processamento_arquivo
 
                 # Verificar resultado
-                if resultado:
-                    print("✓ Concluído!")
-                    logger.info(
-                        f"Arquivo {zip_file} processado com sucesso usando Polars em {tempo_arquivo_total:.2f} segundos")
+                if resultado: # Assume que retorna True/False
+                    print(f"✓ Concluído em {tempo_processamento_arquivo:.2f}s")
+                    logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars em {tempo_processamento_arquivo:.2f} segundos")
+                    sucessos += 1
                 else:
-                    print("✗ Falha!")
-                    logger.warning(f"Falha ao processar {zip_file} com Polars após {tempo_arquivo_total:.2f} segundos")
+                    print(f"✗ Falha após {tempo_processamento_arquivo:.2f}s")
+                    logger.warning(f"Falha ao processar {zip_file} com Polars após {tempo_processamento_arquivo:.2f} segundos")
 
             except Exception as e:
-                print("✗ Erro!")
+                print(f"✗ Erro: {str(e)}")
                 logger.error(f"Erro ao processar {zip_file} com Polars: {str(e)}")
                 logger.debug(traceback.format_exc())
+            finally:
+                gc.collect()
 
-        # Calcular tempo total
+        # Parar monitoramento e calcular tempo total
+        monitorar_recursos[0] = False
+        monitor_thread.join(timeout=1.0)
         tempo_total = time.time() - tempo_inicio_total
 
         # Calcular uso de CPU e memória
@@ -972,66 +1030,67 @@ class BenchmarkSimples:
                              ha='center', va='bottom')
 
             plt.tight_layout()
-            grafico_path = os.path.join(docs_dir, 'benchmark_comparacao.png')
+            # Usar nome específico para Simples
+            grafico_path = os.path.join(docs_dir, 'benchmark_simples_comparacao.png')
             plt.savefig(grafico_path)
             logger.info(f"Gráfico comparativo salvo: {grafico_path}")
-
+            
             # Verificar se o arquivo foi realmente criado
             graficos_criados = {
                 'comparacao': os.path.exists(grafico_path)
             }
-
+            
             # Gráfico de tempo detalhado para Pandas
-            if self.resultados['pandas']['tempo_extracao'] > 0:
+            if self.resultados['pandas']['tempo_extracao'] > 0: # Manter lógica, mas provavelmente será 0
                 try:
                     plt.figure(figsize=(10, 6))
                     tempos = ['tempo_extracao', 'tempo_processamento']
                     valores = [self.resultados['pandas'][t] for t in tempos]
-                    plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos],
-                            autopct='%1.1f%%', colors=['#2ca02c'])  # Verde
-                    plt.title('Distribuição do Tempo (Pandas)')
-                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_pandas.png')
+                    plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
+                            autopct='%1.1f%%', colors=['#1f77b4']) # Cor Pandas
+                    plt.title('Distribuição do Tempo (Pandas - Simples)') # Atualizar título
+                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_simples_tempo_pandas.png') # Nome específico
                     plt.savefig(grafico_tempo_path)
                     graficos_criados['tempo_pandas'] = os.path.exists(grafico_tempo_path)
                     logger.info(f"Gráfico tempo Pandas salvo")
                 except Exception as e:
                     logger.error(f"Erro ao criar gráfico de tempo Pandas: {str(e)}")
                     graficos_criados['tempo_pandas'] = False
-
+            
             # Gráfico de tempo detalhado para Dask
-            if self.resultados['dask']['tempo_extracao'] > 0:
+            if self.resultados['dask']['tempo_extracao'] > 0: # Manter lógica, mas provavelmente será 0
                 try:
                     plt.figure(figsize=(10, 6))
                     tempos = ['tempo_extracao', 'tempo_processamento']
                     valores = [self.resultados['dask'][t] for t in tempos]
-                    plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos],
-                            autopct='%1.1f%%', colors=['#ff7f0e'])  # Laranja
-                    plt.title('Distribuição do Tempo (Dask)')
-                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_dask.png')
+                    plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
+                            autopct='%1.1f%%', colors=['#ff7f0e'])  # Cor Dask
+                    plt.title('Distribuição do Tempo (Dask - Simples)') # Atualizar título
+                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_simples_tempo_dask.png') # Nome específico
                     plt.savefig(grafico_tempo_path)
                     graficos_criados['tempo_dask'] = os.path.exists(grafico_tempo_path)
                     logger.info(f"Gráfico tempo Dask salvo")
                 except Exception as e:
                     logger.error(f"Erro ao criar gráfico de tempo Dask: {str(e)}")
                     graficos_criados['tempo_dask'] = False
-
+            
             # Gráfico de tempo detalhado para Polars
-            if self.resultados['polars']['tempo_extracao'] > 0:
+            if self.resultados['polars']['tempo_extracao'] > 0: # Manter lógica, mas provavelmente será 0
                 try:
                     plt.figure(figsize=(10, 6))
                     tempos = ['tempo_extracao', 'tempo_processamento']
                     valores = [self.resultados['polars'][t] for t in tempos]
-                    plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos],
-                            autopct='%1.1f%%', colors=['#2ca02c'])  # Verde
-                    plt.title('Distribuição do Tempo (Polars)')
-                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_tempo_polars.png')
+                    plt.pie(valores, labels=[t.replace('tempo_', '').title() for t in tempos], 
+                            autopct='%1.1f%%', colors=['#2ca02c'])  # Cor Polars
+                    plt.title('Distribuição do Tempo (Polars - Simples)') # Atualizar título
+                    grafico_tempo_path = os.path.join(docs_dir, 'benchmark_simples_tempo_polars.png') # Nome específico
                     plt.savefig(grafico_tempo_path)
                     graficos_criados['tempo_polars'] = os.path.exists(grafico_tempo_path)
                     logger.info(f"Gráfico tempo Polars salvo")
                 except Exception as e:
                     logger.error(f"Erro ao criar gráfico de tempo Polars: {str(e)}")
                     graficos_criados['tempo_polars'] = False
-
+            
             return graficos_criados
         except Exception as e:
             logger.error(f"Erro na geração de gráficos: {str(e)}")
@@ -1089,11 +1148,11 @@ class BenchmarkSimples:
         """Gera um relatório Markdown com os resultados do benchmark."""
         docs_dir = os.path.join(self.path_base, 'docs')
         os.makedirs(docs_dir, exist_ok=True)
-
-        # Caminho para o arquivo de relatório
-        md_path = os.path.join(docs_dir, f"relatorio_completo_{timestamp}.md")
-
-        relatorio = f"# Relatório de Benchmark - {timestamp}\n\n"
+        
+        # Caminho para o arquivo de relatório - Nome específico
+        md_path = os.path.join(docs_dir, f"relatorio_simples_completo_{timestamp}.md")
+        
+        relatorio = f"# Relatório de Benchmark (Simples) - {timestamp}\n\n" # Atualizar título
         relatorio += "## Resultados\n\n"
 
         # Adicionar informações do sistema
@@ -1171,27 +1230,29 @@ class BenchmarkSimples:
         relatorio += f"vencendo em {comparacao['contagem'][comparacao['melhor_metodo']]} de {len(comparacao['comparacao'])} critérios.\n\n"
 
         # Verificar se os gráficos existem antes de incluí-los no relatório
-        grafico_comparacao_path = os.path.join(docs_dir, 'benchmark_comparacao.png')
+        # Usar nomes específicos dos gráficos Simples
+        grafico_comparacao_path = os.path.join(docs_dir, 'benchmark_simples_comparacao.png')
         if os.path.exists(grafico_comparacao_path):
             relatorio += "## Gráficos\n\n"
             relatorio += "### Gráfico de Comparação\n\n"
-            relatorio += "![Gráfico de Comparação](benchmark_comparacao.png)\n\n"
-
+            # Referenciar o arquivo correto
+            relatorio += "![Gráfico de Comparação](benchmark_simples_comparacao.png)\n\n"
+            
             # Adicionar gráficos de tempo se existirem
-            grafico_tempo_pandas = os.path.join(docs_dir, 'benchmark_tempo_pandas.png')
+            grafico_tempo_pandas = os.path.join(docs_dir, 'benchmark_simples_tempo_pandas.png')
             if os.path.exists(grafico_tempo_pandas):
                 relatorio += "### Distribuição de Tempo - Pandas\n\n"
-                relatorio += "![Tempo Pandas](benchmark_tempo_pandas.png)\n\n"
-
-            grafico_tempo_dask = os.path.join(docs_dir, 'benchmark_tempo_dask.png')
+                relatorio += "![Tempo Pandas](benchmark_simples_tempo_pandas.png)\n\n"
+                
+            grafico_tempo_dask = os.path.join(docs_dir, 'benchmark_simples_tempo_dask.png')
             if os.path.exists(grafico_tempo_dask):
                 relatorio += "### Distribuição de Tempo - Dask\n\n"
-                relatorio += "![Tempo Dask](benchmark_tempo_dask.png)\n\n"
-
-            grafico_tempo_polars = os.path.join(docs_dir, 'benchmark_tempo_polars.png')
+                relatorio += "![Tempo Dask](benchmark_simples_tempo_dask.png)\n\n"
+            
+            grafico_tempo_polars = os.path.join(docs_dir, 'benchmark_simples_tempo_polars.png')
             if os.path.exists(grafico_tempo_polars):
                 relatorio += "### Distribuição de Tempo - Polars\n\n"
-                relatorio += "![Tempo Polars](benchmark_tempo_polars.png)\n\n"
+                relatorio += "![Tempo Polars](benchmark_simples_tempo_polars.png)\n\n"
         else:
             relatorio += "## Gráficos\n\n"
             relatorio += "*Não foi possível gerar gráficos para este relatório.*\n\n"
@@ -1210,7 +1271,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Configuração do parser de argumentos
-    parser = argparse.ArgumentParser(description='Benchmark para comparar processamento com Pandas, Dask e Polars')
+    parser = argparse.ArgumentParser(description='Benchmark para comparar processamento com Pandas, Dask e Polars para Simples')
     parser.add_argument('--path_zip', type=str, default='dados-abertos-zip',
                         help='Caminho para o diretório com os arquivos ZIP')
     parser.add_argument('--arquivo_zip', type=str,
@@ -1218,9 +1279,9 @@ def main():
     parser.add_argument('--path_base', type=str, default='benchmark_temp',
                         help='Caminho base para criar diretórios temporários')
     parser.add_argument('--parquet_destino', type=str, default='parquet',
-                        help='Caminho para os arquivos parquet gerados')
+                        help='Caminho relativo dentro de path_base para os arquivos parquet gerados')
     parser.add_argument('--limpar', action='store_true',
-                        help='Limpar diretórios temporários')
+                        help='Limpar diretórios temporários (incluindo logs/docs antigos) no início')
     parser.add_argument('--pandas', action='store_true',
                         help='Executar apenas o benchmark com Pandas')
     parser.add_argument('--dask', action='store_true',
@@ -1231,27 +1292,36 @@ def main():
                         help='Gerar gráficos comparativos')
     parser.add_argument('--completo', action='store_true',
                         help='Executar todos os benchmarks e gerar gráficos')
+    parser.add_argument('--workers', type=int, default=None,
+                        help='Número de workers para processamento paralelo (se aplicável)')
 
     # Adicionar argumentos para controle de log
     add_log_level_argument(parser)
 
     args = parser.parse_args()
+    
+    # --- Limpeza Inicial (se --limpar) --- 
+    if args.limpar:
+        print("\nLimpando diretórios logs e docs antigos antes de iniciar...")
+        # Criar instância temporária apenas para limpeza inicial de logs/docs
+        temp_cleaner = BenchmarkSimples(args.path_zip, args.path_base, executar_limpeza=False) # False para não limpar dados ainda
+        temp_cleaner.limpar_diretorios(preservar_parquet=True, limpar_docs_logs=True)
+        del temp_cleaner
+        print("Limpeza inicial de logs/docs concluída.")
 
-    # Criar diretórios necessários
+    # --- Configurar Logging com FileHandler --- 
     os.makedirs(args.path_base, exist_ok=True)
     logs_dir = os.path.join(args.path_base, "logs")
     os.makedirs(logs_dir, exist_ok=True)
-    docs_dir = os.path.join(args.path_base, "docs")
+    docs_dir = os.path.join(args.path_base, "docs") # Garantir que docs exista também
     os.makedirs(docs_dir, exist_ok=True)
-
-    # Configurar logging
-    log_file = os.path.join(logs_dir, f"benchmark_{timestamp}.log")
+    log_file = os.path.join(logs_dir, f"benchmark_simples_{timestamp}.log") # Nome específico
     file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - [%(process)d] - %(message)s'))
     logger.addHandler(file_handler)
-    configure_logging(args)
+    configure_logging(args) # Aplicar configuração de nível após adicionar handler
 
-    logger.info(f"Iniciando benchmark. Log: {log_file}")
+    logger.info(f"Iniciando benchmark Simples. Log: {log_file}")
 
     # Verificações básicas
     if not os.path.exists(args.path_zip):
