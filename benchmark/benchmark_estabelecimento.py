@@ -118,18 +118,50 @@ def setup_logging(log_dir, filename):
     )
 
 def log_benchmark_results(results, report_path):
-    """Placeholder: Loga resultados do benchmark."""
+    """Placeholder: Loga resultados do benchmark e a comparação."""
     print(f"Logging benchmark results to {report_path} (placeholder)...")
     try:
         with open(report_path, 'w') as f:
-            f.write("Benchmark Results:\n")
+            f.write("Benchmark Results (Estabelecimento):\n")
             for framework, metrics in results.items():
                 f.write(f"\n--- {framework.upper()} ---\n")
+                # Adiciona mais métricas se disponíveis (ex: CPU)
                 time_str = f"{metrics.get('time', 'N/A'):.2f}" if isinstance(metrics.get('time'), (int, float)) else "N/A"
                 mem_str = f"{metrics.get('memory', 'N/A'):.2f}" if isinstance(metrics.get('memory'), (int, float)) else "N/A"
+                cpu_avg_str = f"{metrics.get('cpu_medio', 'N/A'):.1f}%" if isinstance(metrics.get('cpu_medio'), (int, float)) else "N/A"
+                cpu_pico_str = f"{metrics.get('cpu_pico', 'N/A'):.1f}%" if isinstance(metrics.get('cpu_pico'), (int, float)) else "N/A"
+                disk_str = f"{metrics.get('espaco_disco', 'N/A'):.1f} MB" if isinstance(metrics.get('espaco_disco'), (int, float)) else "N/A"
+                comp_str = f"{metrics.get('compressao_taxa', 'N/A'):.1f}%" if isinstance(metrics.get('compressao_taxa'), (int, float)) else "N/A"
 
-                f.write(f"  Time: {time_str} seconds\n")
-                f.write(f"  Max Memory: {mem_str} MiB\n")
+                f.write(f"  Tempo Total: {time_str} seconds\n")
+                f.write(f"  Pico de Memória: {mem_str} MiB\n")
+                f.write(f"  CPU Médio: {cpu_avg_str}\n")
+                f.write(f"  Pico de CPU: {cpu_pico_str}\n")
+                f.write(f"  Espaço em Disco: {disk_str}\n")
+                f.write(f"  Taxa de Compressão: {comp_str}\n")
+
+            # Adicionar comparação se disponível
+            if 'comparacao' in results:
+                comparacao_data = results['comparacao']
+                f.write("\n\n--- COMPARAÇÃO PONDERADA ---\n")
+                if comparacao_data['melhor_metodo'] != 'indeterminado':
+                    pontos = comparacao_data['pontuacoes_ponderadas']
+                    melhor = comparacao_data['melhor_metodo'].upper()
+                    f.write(f"Melhor Método (Ponderado): {melhor}\n")
+                    f.write("Pontuações Ponderadas:\n")
+                    for metodo, ponto in pontos.items():
+                        f.write(f"  - {metodo.upper()}: {ponto}\n")
+                    f.write("\nDetalhes por Métrica:\n")
+                    for metrica, detalhe in comparacao_data['comparacao'].items():
+                        if metrica == 'processamento_sucesso': continue # Ignora a métrica de sucesso
+                        nome_metrica = metrica.replace('_', ' ').title()
+                        melhor_met = detalhe['melhor'].upper()
+                        diff = detalhe['diferenca_percentual']
+                        peso = detalhe['peso']
+                        f.write(f"  - {nome_metrica}: Melhor={melhor_met} (Peso={peso}, Dif={diff:.1f}%)\n")
+                else:
+                    f.write("Não foi possível determinar o melhor método (sem dados ou falha).")
+
     except Exception as e:
         logging.error(f"Failed to write report file {report_path}: {e}")
 
@@ -327,7 +359,103 @@ class BenchmarkEstabelecimento:
         logging.info(f"Dask - Pico de Memória (Processo Principal): {max_mem_dask:.2f} MiB")
 
         self.results['dask'] = {'time': elapsed_time_dask, 'memory': max_mem_dask}
+        # Adicionar outras métricas que possam ser calculadas (ex: espaço em disco)
+        # self.results['dask']['espaco_disco'] = self.calcular_tamanho_diretorio(self.parquet_dask_dir)
+        # etc...
 
+    def comparar_resultados(self):
+        """Compara os resultados dos benchmarks Pandas e Dask usando pontuação ponderada."""
+        if 'pandas' not in self.results or 'dask' not in self.results:
+            logging.warning("Resultados de Pandas ou Dask ausentes para comparação.")
+            return {
+                'comparacao': {'sem_dados': {'melhor': 'indeterminado', 'diferenca_percentual': 0, 'peso': 0}},
+                'contagem_vitorias': {'pandas': 0, 'dask': 0},
+                'pontuacoes_ponderadas': {'pandas': 0, 'dask': 0},
+                'melhor_metodo': 'indeterminado'
+            }
+
+        pandas_results = self.results['pandas']
+        dask_results = self.results['dask']
+        metodos_validos = ['pandas', 'dask'] # Adaptação para Estabelecimento
+
+        comparacao = {}
+        pontuacoes = {'pandas': 0, 'dask': 0}
+
+        # --- DEFINIÇÃO DOS PESOS (Ajustar se necessário para Estabelecimento) ---
+        pesos = {
+            'time': 5, # Renomeado de tempo_total
+            'memory': 3, # Renomeado de memoria_pico
+            # Adicionar outras métricas e pesos se forem coletadas:
+            # 'espaco_disco': 4,
+            # 'cpu_medio': 2,
+            # 'compressao_taxa': 2
+        }
+        peso_padrao = 1
+        # ----------------------------------------------------------------------
+
+        # Métricas disponíveis neste benchmark (time, memory)
+        # Adicionar outras métricas aqui se forem implementadas a coleta
+        metricas_para_comparar = list(pesos.keys())
+
+        for metrica in metricas_para_comparar:
+            valores = {}
+            if metrica in pandas_results:
+                valores['pandas'] = pandas_results[metrica]
+            if metrica in dask_results:
+                valores['dask'] = dask_results[metrica]
+
+            if len(valores) < 2: # Precisa de ambos os valores para comparar
+                continue
+
+            # Determinar qual é melhor (menor é melhor, exceto para taxa de compressão)
+            if metrica == 'compressao_taxa':
+                melhor = max(valores.items(), key=lambda x: x[1])[0]
+            else:
+                melhor = min(valores.items(), key=lambda x: x[1])[0]
+                # Tratamento para valores zero (se aplicável)
+                if valores[melhor] == 0:
+                    valores_sem_zero = {k: v for k, v in valores.items() if v > 0}
+                    if valores_sem_zero:
+                        melhor = min(valores_sem_zero.items(), key=lambda x: x[1])[0]
+
+            # Calcular diferença percentual
+            valor_pandas = valores['pandas']
+            valor_dask = valores['dask']
+            if valor_pandas == 0 and valor_dask == 0:
+                diferenca = 0
+            elif valor_pandas == 0 or valor_dask == 0:
+                diferenca = 100
+            else:
+                maximo = max(valor_pandas, valor_dask)
+                diferenca = abs(valor_pandas - valor_dask) / maximo * 100
+
+            # Adicionar à comparação
+            comparacao[metrica] = {
+                'melhor': melhor,
+                'diferenca_percentual': diferenca,
+                'peso': pesos.get(metrica, peso_padrao)
+            }
+
+            # Atribuir pontos ponderados
+            pontuacoes[melhor] += pesos.get(metrica, peso_padrao)
+
+        # Determinar o melhor método geral
+        if not pontuacoes or all(p == 0 for p in pontuacoes.values()):
+            melhor_metodo = 'indeterminado'
+        else:
+            melhor_metodo = max(pontuacoes.items(), key=lambda x: x[1])[0]
+
+        # Contagem de vitórias (simples)
+        contagem = {'pandas': 0, 'dask': 0}
+        for resultado in comparacao.values():
+            contagem[resultado['melhor']] += 1
+
+        return {
+            'comparacao': comparacao,
+            'contagem_vitorias': contagem,
+            'pontuacoes_ponderadas': pontuacoes,
+            'melhor_metodo': melhor_metodo
+        }
 
     def run(self):
         """Executa todos os componentes do benchmark."""
@@ -349,6 +477,10 @@ class BenchmarkEstabelecimento:
 
         logging.info("Benchmark Estabelecimento Finalizado")
         logging.info("="*50)
+
+        # Adicionar comparação se disponível
+        comparacao_resultados = self.comparar_resultados()
+        self.results['comparacao'] = comparacao_resultados
 
 if __name__ == "__main__":
     # Configuração básica (substitua pelo carregamento real, se necessário)

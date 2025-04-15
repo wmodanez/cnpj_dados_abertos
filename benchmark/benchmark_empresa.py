@@ -1097,7 +1097,20 @@ class BenchmarkEmpresa:
             }
         
         comparacao = {}
+        pontuacoes = {'pandas': 0, 'dask': 0, 'polars': 0} # Dicionário para pontuações ponderadas
         
+        # --- DEFINIÇÃO DOS PESOS ---
+        pesos = {
+            'tempo_total': 5,
+            'espaco_disco': 4,
+            'memoria_pico': 3,
+            'cpu_medio': 2,
+            'compressao_taxa': 2
+            # Métricas não listadas aqui terão peso 1 (ver abaixo)
+        }
+        peso_padrao = 1
+        # -------------------------
+
         # Função auxiliar para evitar divisão por zero
         def calcular_diferenca_percentual(valor1, valor2):
             if valor1 == 0 and valor2 == 0:
@@ -1167,28 +1180,39 @@ class BenchmarkEmpresa:
             # Adicionar à comparação
             comparacao[metrica] = {
                 'melhor': melhor,
-                'diferenca_percentual': diferenca
+                'diferenca_percentual': diferenca,
+                'peso': pesos.get(metrica, peso_padrao) # Adiciona o peso usado
             }
+            
+            # --- ATRIBUIÇÃO DE PONTOS PONDERADOS ---
+            # O método que venceu na métrica ganha os pontos correspondentes ao peso
+            pontuacoes[melhor] += pesos.get(metrica, peso_padrao)
+            # -------------------------------------
         
         # Se não houver critérios para comparação, retorne um resultado padrão
         if not comparacao:
             return {
                 'comparacao': {'sem_dados': {'melhor': 'indeterminado', 'diferenca_percentual': 0}},
-                'contagem': {'pandas': 0, 'dask': 0, 'polars': 0},
+                'contagem_vitorias': {'pandas': 0, 'dask': 0, 'polars': 0},
+                'pontuacoes_ponderadas': {'pandas': 0, 'dask': 0, 'polars': 0},
                 'melhor_metodo': 'indeterminado'
             }
         
-        # Contar qual método ganhou em mais critérios
+        # Contar qual método ganhou em mais critérios (mantido para informação)
         contagem = {'pandas': 0, 'dask': 0, 'polars': 0}
         for criterio, resultado in comparacao.items():
             contagem[resultado['melhor']] += 1
         
-        # Determinar o melhor método
-        melhor_metodo = max(contagem.items(), key=lambda x: x[1])[0]
+        # Determinar o melhor método com base na PONTUAÇÃO PONDERADA
+        if not pontuacoes or all(p == 0 for p in pontuacoes.values()):
+            melhor_metodo = 'indeterminado' # Nenhum ponto foi atribuído
+        else:
+            melhor_metodo = max(pontuacoes.items(), key=lambda x: x[1])[0]
         
         return {
             'comparacao': comparacao,
-            'contagem': contagem,
+            'contagem_vitorias': contagem, # Renomeado para clareza
+            'pontuacoes_ponderadas': pontuacoes, # Adiciona a pontuação final
             'melhor_metodo': melhor_metodo
         }
     
@@ -1330,7 +1354,7 @@ class BenchmarkEmpresa:
         # Comparação resumida
         print("\nCOMPARAÇÃO:")
         melhor_metodo = comparacao['melhor_metodo'].upper()
-        vitorias = comparacao['contagem'][comparacao['melhor_metodo']]
+        vitorias = comparacao['contagem_vitorias'][comparacao['melhor_metodo']]
         total = len(comparacao['comparacao'])
         print(f"  - {melhor_metodo} é mais adequado ({vitorias}/{total} critérios)")
         
@@ -1419,7 +1443,7 @@ class BenchmarkEmpresa:
         
         relatorio += "\n"
         relatorio += f"**Conclusão:** {comparacao['melhor_metodo'].upper()} é o método mais adequado, "
-        relatorio += f"vencendo em {comparacao['contagem'][comparacao['melhor_metodo']]} de {len(comparacao['comparacao'])} critérios.\n\n"
+        relatorio += f"vencendo em {comparacao['contagem_vitorias'][comparacao['melhor_metodo']]} de {len(comparacao['comparacao'])} critérios.\n\n"
         
         # Verificar se os gráficos existem antes de incluí-los no relatório
         grafico_comparacao_path = os.path.join(docs_dir, 'benchmark_empresa_comparacao.png')

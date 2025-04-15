@@ -142,6 +142,23 @@ python -m src.cache_manager cache-info
 python -m src.cache_manager clear-cache
 ```
 
+### Benchmarks
+
+O projeto inclui scripts de benchmark para comparar o desempenho de diferentes bibliotecas (Pandas, Dask, Polars) no processamento dos dados:
+
+```bash
+# Benchmark para dados de Empresas
+python benchmark/benchmark_empresa.py --completo --path_zip dados-abertos-zip
+
+# Benchmark para dados do Simples Nacional
+python benchmark/benchmark_simples.py --completo --path_zip dados-abertos-zip
+
+# Benchmark para dados de Estabelecimentos (Exemplo)
+python benchmark/benchmark_estabelecimento.py
+```
+
+**Observação:** Os benchmarks utilizam um sistema de **pontuação ponderada** para determinar o método mais adequado, considerando diferentes métricas de desempenho com pesos específicos (ex: Tempo Total peso 5, Espaço em Disco peso 4, etc.). Os resultados detalhados e a pontuação são exibidos no relatório final.
+
 ## 📊 O que o Script Faz
 
 1. **Download dos Dados**
