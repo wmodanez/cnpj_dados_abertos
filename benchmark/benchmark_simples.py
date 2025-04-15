@@ -55,6 +55,7 @@ from datetime import datetime
 from src.config import config
 from src.process.simples import process_single_zip, process_single_zip_polars, process_single_zip_pandas
 from src.utils.dask_manager import DaskManager
+from src.utils.logging import print_section
 
 # Torna o GPUtil opcional para evitar erros se não estiver disponível
 try:
