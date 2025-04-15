@@ -39,18 +39,24 @@ python benchmark_empresa.py --completo --path_zip dados-abertos-zip --workers 4
 # Processar apenas com Pandas em paralelo
 python benchmark_empresa.py --pandas --path_zip dados-abertos-zip
 """
+
+import os
+import sys
+
+# Adiciona o diretório pai (raiz do projeto) ao sys.path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import argparse
 import gc
-import json
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
-import os
 import pandas as pd
 import psutil
 import platform
 import shutil
-import sys
 import time
 import traceback
 import zipfile
@@ -67,9 +73,13 @@ from dask import delayed
 from dask.distributed import as_completed, Client, LocalCluster
 import polars as pl
 
-# Importações internas do projeto
+# Importações internas do projeto (CORRIGIDO PARA USAR src.)
 from src.config import config
-from src.process.empresa import process_empresa, process_single_zip, process_single_zip_polars
+
+from src.process.empresa import (
+    process_single_zip_pandas, 
+    apply_empresa_transformations_dask, 
+)
 from src.utils.dask_manager import DaskManager
 from src.utils.logging import setup_logging, print_header, print_section, print_success, print_warning, print_error, Colors
 
@@ -85,13 +95,6 @@ from tqdm import tqdm
 
 # Ajustar o path para importar os módulos do projeto
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Importar as funções do arquivo empresa.py
-from src.process.empresa import (
-    process_single_zip_pandas,   # Versão Pandas
-    process_single_zip,          # Versão Dask
-    process_single_zip_polars    # Versão Polars
-)
 
 # Configurando logging
 logger = setup_logging()
@@ -772,9 +775,8 @@ class BenchmarkEmpresa:
             logger.info("Colunas renomeadas conforme schema.")
 
             print("[Dask] Aplicando transformações...")
-            # Reaplicando: Importar a função de transformação Dask com o nome corrigido
-            from src.process.empresa import apply_empresa_transformations_dask
-            # Reaplicando: Chamar a função correta
+            # REMOVIDO: from src.process.empresa import apply_empresa_transformations_dask
+            # Chamar a função já importada no topo
             ddf = apply_empresa_transformations_dask(ddf)
 
             print("[Dask] Salvando arquivos Parquet...")
@@ -995,13 +997,14 @@ class BenchmarkEmpresa:
             logger.info(f"Leitura e concatenação Polars concluída. DataFrame com {df_polars.height} linhas.")
 
             print("[Polars] Aplicando transformações...")
+            # Chamar a função já importada no topo
             df_polars = apply_empresa_transformations_polars(df_polars)
             logger.info("Transformações Polars aplicadas.")
 
             print("[Polars] Salvando arquivos Parquet...")
             parquet_output_dir = os.path.join(self.path_parquet_polars, 'empresas') # Definir diretório de saída
             
-            # Chamar a função para criar os parquets (já limpa o diretório)
+            # Chamar a função já importada no topo
             success_parquet = create_parquet_polars(df_polars, 'empresas', self.path_parquet_polars)
 
             if success_parquet:

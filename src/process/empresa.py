@@ -218,6 +218,50 @@ def apply_empresa_transformations_dask(ddf):
             # Opcional: Adicionar fallback ou deixar como está
 
     logger.debug("Transformações Dask aplicadas.")
+
+    # --- Extração de CPF da razao_social (Dask) ---
+    if 'razao_social' in ddf.columns:
+        logger.info("Extraindo CPF da razao_social (Dask)...")
+
+        # Extrai formato com máscara xxx.xxx.xxx-xx
+        # Usar astype('string') para garantir tipo nullable
+        cpf_com_mascara = ddf['razao_social'].str.extract(r'(\d{3}\.\d{3}\.\d{3}-\d{2})', expand=False).astype('string')
+
+        # Extrai formato 11 dígitos
+        cpf_sem_mascara = ddf['razao_social'].str.extract(r'(\d{11})', expand=False).astype('string')
+
+        # Combina usando fillna (prioriza cpf_com_mascara)
+        ddf['CPF_temp'] = cpf_com_mascara.fillna(cpf_sem_mascara)
+
+        # Limpa a máscara (pontos e traço)
+        ddf['CPF'] = ddf['CPF_temp'].str.replace(r'[.\-]', '', regex=True)
+
+        # Opcional: Validar comprimento (pode ser complexo/custoso em Dask, omitido por padrão)
+        # def validate_cpf_len(series):
+        #     return series.where(series.str.len() == 11)
+        # ddf['CPF'] = ddf['CPF'].map_partitions(validate_cpf_len, meta=pd.Series(dtype='string'))
+
+        # Remove a coluna temporária
+        ddf = ddf.drop(columns=['CPF_temp'])
+
+        logger.info("Extração de CPF concluída (Dask).")
+
+        # --- Remoção do CPF da razao_social (Dask) ---
+        logger.info("Removendo CPF da razao_social (Dask)...")
+        # Remove primeiro o padrão com máscara, depois o sem máscara
+        # Nota: Dask pode ter limitações com regex complexos como lookbehind.
+        # Esta abordagem remove ambos os padrões se existirem.
+        ddf['razao_social'] = ddf['razao_social'].str.replace(r'\d{3}\.\d{3}\.\d{3}-\d{2}', '', regex=True)
+        ddf['razao_social'] = ddf['razao_social'].str.replace(r'\d{11}', '', regex=True)
+        ddf['razao_social'] = ddf['razao_social'].str.strip()
+        logger.info("Remoção do CPF da razao_social concluída (Dask).")
+
+    # Garante que a coluna CPF exista com o tipo correto se razao_social existia mas CPF não foi criada
+    elif 'razao_social' in ddf.columns and 'CPF' not in ddf.columns:
+         logger.warning("Coluna 'razao_social' existe, mas 'CPF' não foi criada após extração. Criando coluna CPF com nulos.")
+         ddf['CPF'] = None
+         ddf['CPF'] = ddf['CPF'].astype('string') # Definir o tipo string nullable
+
     return ddf
 
 
@@ -371,6 +415,42 @@ def apply_empresa_transformations_pandas(df):
                                 .str.replace(',', '.', regex=False)
                                 .pipe(lambda x: pd.to_numeric(x, errors='coerce')))
     
+    # --- Extração de CPF da razao_social (Pandas) ---
+    if 'razao_social' in df.columns:
+        logger.info("Extraindo CPF da razao_social (Pandas)...")
+        # Tenta extrair formato xxx.xxx.xxx-xx
+        cpf_com_mascara = df['razao_social'].str.extract(r'(\d{3}\.\d{3}\.\d{3}-\d{2})', expand=False)
+        # Tenta extrair formato ddddddddddd
+        cpf_sem_mascara = df['razao_social'].str.extract(r'(\d{11})', expand=False)
+
+        # Combina os resultados, dando prioridade ao formato com máscara
+        df['CPF_temp'] = cpf_com_mascara.fillna(cpf_sem_mascara)
+
+        # Limpa a máscara (pontos e traço)
+        df['CPF'] = df['CPF_temp'].str.replace(r'[.\-]', '', regex=True)
+
+        # Remove a coluna temporária
+        df = df.drop(columns=['CPF_temp'])
+
+        # Valida se o resultado tem 11 dígitos (remove extrações incorretas)
+        df['CPF'] = df['CPF'].where(df['CPF'].str.len() == 11)
+
+        logger.info("Extração de CPF concluída (Pandas).")
+
+        # --- Remoção do CPF da razao_social (Pandas) ---
+        logger.info("Removendo CPF da razao_social (Pandas)...")
+        # Remove primeiro o padrão com máscara, depois o sem máscara
+        df['razao_social'] = df['razao_social'].str.replace(r'\d{3}\.\d{3}\.\d{3}-\d{2}', '', regex=True)
+        # Usar lookbehind (?<![.\-]) para não remover 11 digitos se já faziam parte de um CPF mascarado removido
+        # E \b para garantir que são 11 dígitos como uma "palavra" separada
+        df['razao_social'] = df['razao_social'].str.replace(r'(?<![\.\-])\b\d{11}\b', '', regex=True)
+        df['razao_social'] = df['razao_social'].str.strip()
+        logger.info("Remoção do CPF da razao_social concluída (Pandas).")
+
+    # Garante que a coluna CPF exista se razao_social existia
+    elif 'razao_social' in df.columns and 'CPF' not in df.columns:
+        df['CPF'] = pd.NA # Cria a coluna com valores nulos (Pandas >= 1.0)
+
     return df
 
 
@@ -548,26 +628,22 @@ def process_single_zip_pandas(zip_file, path_zip, path_unzip, path_parquet, log_
                     logger.info(f"[{pid}] Lendo {data_file_name} (Tamanho: {file_size_mb:.2f} MB) em chunks de {chunksize} linhas")
 
                     linhas_processadas_arquivo = 0
+                    original_column_names = config.empresa_columns # Garantir que está acessível ou passar como argumento
                     chunk_iterator = pd.read_csv(
-                        data_path, sep=';', encoding='latin1', 
-                        dtype=dtype_dict, chunksize=chunksize, low_memory=True,
-                        na_values=['********', ''], keep_default_na=True,
-                        header=None, names=list(dtype_dict.keys())
+                        data_path, sep=';', encoding='latin1',
+                        dtype=str, # Ler tudo como string inicialmente é mais seguro com chunks
+                        chunksize=chunksize, low_memory=False, # low_memory=False pode consumir mais memória, mas evita erros de tipo
+                        na_values=['', '********'], # Definir valores NA explicitamente
+                        keep_default_na=False, # Não usar default NAs do pandas
+                        header=None, names=original_column_names, # <<< USA AS COLUNAS DA CONFIG
+                        quoting=1 # QUOTE_MINIMAL
                     )
                     
                     for i, chunk in enumerate(chunk_iterator):
                         chunks_lidos_total += 1
                         # Aplicar transformações...
-                        for col in colunas_numericas_potenciais:
-                            if col in chunk.columns:
-                                chunk[col] = pd.to_numeric(chunk[col], errors='coerce').astype('Int64')
-                        if coluna_float_potencial in chunk.columns:
-                            chunk[coluna_float_potencial] = (
-                                chunk[coluna_float_potencial].astype(str)
-                                .str.replace(',', '.', regex=False)
-                                .pipe(lambda s: pd.to_numeric(s, errors='coerce'))
-                            )
-                        
+                        chunk = apply_empresa_transformations_pandas(chunk) # Chamar a função de transformação aqui
+
                         all_chunks.append(chunk)
                         linhas_processadas_arquivo += len(chunk)
                         # Logar progresso a cada 10 chunks ou no primeiro/último
@@ -755,7 +831,7 @@ def apply_empresa_transformations_polars(df):
     
     # Renomeação de colunas
     rename_mapping = {
-        'cnpj_basico': 'cnpj',
+        'cnpj_basico': 'cnpj_basico',
         'razao_social_nome_empresarial': 'razao_social',
         'natureza_juridica': 'natureza_juridica',
         'qualificacao_do_responsavel': 'qualificacao_responsavel',
@@ -783,6 +859,59 @@ def apply_empresa_transformations_polars(df):
               .alias('capital_social')
         )
     
+    # --- Extração de CPF da razao_social (Polars) ---
+    if 'razao_social' in df.columns:
+        logger.info("Extraindo CPF da razao_social (Polars)...")
+        df = df.with_columns([
+            # Extrai formato com máscara
+            pl.col('razao_social').str.extract(r'(\d{3}\.\d{3}\.\d{3}-\d{2})').alias('cpf_com_mascara'),
+            # Extrai formato sem máscara
+            pl.col('razao_social').str.extract(r'(\d{11})').alias('cpf_sem_mascara')
+        ])
+
+        df = df.with_columns([
+            # Combina: usa cpf_com_mascara se não for null, senão usa cpf_sem_mascara
+            pl.when(pl.col('cpf_com_mascara').is_not_null())
+              .then(pl.col('cpf_com_mascara'))
+              .otherwise(pl.col('cpf_sem_mascara'))
+              .alias('CPF_temp')
+        ])
+
+        df = df.with_columns([
+            # Limpa a máscara
+            pl.col('CPF_temp').str.replace_all(r'[.\-]', '').alias('CPF')
+        ])
+
+        # Valida comprimento
+        df = df.with_columns([
+            pl.when(pl.col('CPF').str.len_chars() == 11)
+              .then(pl.col('CPF'))
+              .otherwise(None) # Define como null se não tiver 11 chars
+              .alias('CPF')
+        ])
+
+        # Remove colunas temporárias
+        df = df.drop(['cpf_com_mascara', 'cpf_sem_mascara', 'CPF_temp'])
+        logger.info("Extração de CPF concluída (Polars).")
+
+        # --- Remoção do CPF da razao_social (Polars - Regex Fixas) ---
+        logger.info("Removendo CPF da razao_social (Polars - regex fixas)...")
+        if 'CPF' in df.columns: # Only attempt removal if CPF was potentially extracted
+            df = df.with_columns(
+                pl.col('razao_social')
+                  .str.replace_all(r'\d{3}\.\d{3}\.\d{3}-\d{2}', '') # Remove masked first
+                  .str.replace_all(r'\b\d{11}\b', '') # Remove unmasked (using word boundaries)
+                  .str.strip_chars() # Strip whitespace
+                  .alias('razao_social')
+            )
+            logger.info("Remoção do CPF da razao_social concluída (Polars - regex fixas).")
+        else:
+            logger.warning("Coluna 'CPF' não encontrada, remoção da razao_social não realizada (Polars).")
+
+    # Garante que a coluna CPF exista se razao_social existia
+    elif 'razao_social' in df.columns and 'CPF' not in df.columns:
+        df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias('CPF'))
+
     return df
 
 

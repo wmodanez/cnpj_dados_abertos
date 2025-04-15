@@ -27,34 +27,33 @@ python benchmark_simples.py --completo --path_zip dados-abertos-zip --parquet_de
 # Benchmark com arquivo específico:
 python benchmark_simples.py --completo --path_zip dados-abertos-zip --arquivo_zip Simples.zip --parquet_destino parquet/2025-03/simples
 """
+import sys
+import os
+
+# Adiciona o diretório pai (raiz do projeto) ao sys.path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# Agora as importações de 'src' devem funcionar
+# (As importações originais do arquivo seguem abaixo)
 import argparse
-import concurrent.futures
 import gc
-import json
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
-import os
-import pandas as pd
 import psutil
 import platform
 import shutil
-import sys
 import time
 import traceback
 import zipfile
 import threading
 from datetime import datetime
-from typing import Dict, List, Any
-
-import dask.dataframe as dd
-import dask
-from dask import delayed
-from dask.distributed import as_completed, Client, LocalCluster
 
 # Importações internas do projeto
 from src.config import config
-from src.process.simples import process_simples, process_single_zip, process_single_zip_polars
+from src.process.simples import process_single_zip, process_single_zip_polars, process_single_zip_pandas
 from src.utils.dask_manager import DaskManager
 
 # Torna o GPUtil opcional para evitar erros se não estiver disponível

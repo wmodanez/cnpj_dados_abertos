@@ -763,3 +763,39 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 - Em caso de falhas, o sistema tentará novamente automaticamente
 - Verificação de espaço em disco é realizada antes da descompactação
 
+## 🛠️ Processamento e Regras de Negócio
+
+Durante o processamento, várias transformações e regras de negócio são aplicadas, especialmente aos dados de Empresas:
+
+1.  **Conversão de Tipos**: Colunas numéricas e de data são convertidas para os tipos apropriados.
+2.  **Renomeação**: Algumas colunas são renomeadas para maior clareza (ex: `razao_social_nome_empresarial` para `razao_social`).
+3.  **Extração de CPF**: 
+    - O CPF (Pessoa Física) é extraído da coluna `razao_social`.
+    - O script busca por padrões formatados (`xxx.xxx.xxx-xx`) ou por sequências de 11 dígitos.
+    - O CPF extraído (apenas os 11 dígitos) é armazenado em uma nova coluna chamada `CPF`.
+    - Esta coluna não é obrigatória, pois nem todas as razões sociais conterão um CPF.
+4.  **Limpeza da Razão Social**: Após a extração do CPF, o mesmo é **removido** da coluna `razao_social` original para manter apenas o nome/razão social. Espaços extras são removidos.
+
+Essas transformações são implementadas nas funções `apply_empresa_transformations_pandas`, `apply_empresa_transformations_polars`, e `apply_empresa_transformations_dask` dentro de `src/process/empresa.py`.
+
+## ✨ Características
+
+- **Automatizado**: Busca, baixa e processa os dados automaticamente.
+- **Resiliente**: Possui retries em caso de falha no download e verificações de integridade.
+
+## 🤝 Contribuindo
+
+Contribuições são bem-vindas! Sinta-se à vontade para abrir issues ou pull requests.
+
+## 📜 Licença
+
+Este projeto está licenciado sob a [MIT License](LICENSE).
+
+## 📝 Notas
+
+- Os dados da Receita Federal são atualizados periodicamente. Execute o script regularmente para manter seus dados atualizados.
+- O processamento pode exigir uma quantidade significativa de recursos (CPU, memória, disco) dependendo do volume de dados.
+
+---
+*Desenvolvido com ❤️ e Python!* 
+
