@@ -163,6 +163,9 @@ python main.py --skip-processing --output-subfolder processamento_anterior
 
 # 11. Pular download, processar com Dask, e depois criar o DuckDB, usando a pasta de origem 'meus_zips' e salvando na subpasta 'resultado_dask':
 python main.py --skip-download --source-zip-folder meus_zips --engine dask --output-subfolder resultado_dask
+
+# 12. Processar apenas estabelecimentos com Polars, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
+python main.py --tipos estabelecimentos --engine polars --output-subfolder process_sp --criar-subset-uf SP
 ```
 
 ### Gerenciamento de Cache
@@ -336,9 +339,11 @@ flowchart TD
 - **Configurabilidade:** Usa variáveis de ambiente (`.env.local`) para definir caminhos e URLs.
 - **Argumentos de Linha de Comando:** Permite controlar o fluxo de execução (tipos de dados, engine, pular etapas).
 - **Logging Detalhado:** Registra as etapas do processo em arquivos de log e no console com formatação Rich.
+- **Subset Opcional por UF:** Permite criar um subconjunto de dados de estabelecimentos para uma UF específica usando `--criar-subset-uf UF`.
 
 ## 🔄 Atualizações Recentes
 
+- **(Julho/2024)** Adicionada a flag `--criar-subset-uf` para gerar um Parquet separado com estabelecimentos de uma UF específica.
 - **(Julho/2024)** Adicionada a flag `--skip-processing` que permite pular as etapas de download e processamento para Parquet, indo diretamente para a criação do arquivo DuckDB. Requer que `--output-subfolder` seja especificado para indicar a pasta Parquet existente.
 - **(Julho/2024)** Corrigida a lógica de busca da pasta `base` na criação do DuckDB para procurá-la na raiz do diretório Parquet (`parquet/base`), permitindo que tabelas base sejam incluídas corretamente junto com os dados processados.
 - **(Julho/2024)** Refatoração do fluxo Dask para melhor alinhamento com o fluxo Pandas e Polars, incluindo nomeação de arquivos Parquet com prefixo do ZIP de origem.

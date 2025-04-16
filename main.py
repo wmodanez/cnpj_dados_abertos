@@ -33,6 +33,9 @@ Exemplos de uso:
 
 11. Pular download, processar com Dask, e depois criar o DuckDB, usando a pasta de origem 'meus_zips' e salvando na subpasta 'resultado_dask':
     python main.py --skip-download --source-zip-folder meus_zips --engine dask --output-subfolder resultado_dask
+
+12. Processar apenas estabelecimentos com Polars, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
+    python main.py --tipos estabelecimentos --engine polars --output-subfolder process_sp --criar-subset-uf SP
 """
 import argparse
 import asyncio
@@ -247,6 +250,13 @@ def main():
         action='store_true',
         help="Pular a fase de processamento para Parquet e ir direto para a criação do DuckDB (requer que os arquivos Parquet já existam)."
     )
+    parser.add_argument(
+        '--criar-subset-uf',
+        type=str,
+        default=None,
+        metavar='UF',
+        help="Opcional. Cria um subconjunto Parquet adicional contendo apenas estabelecimentos da UF especificada (ex: GO, SP, RJ) na pasta 'estabelecimentos_UF'."
+    )
     args = parser.parse_args()
 
     # --- Validação de Argumentos ---
@@ -258,6 +268,13 @@ def main():
     if args.skip_download and not args.source_zip_folder:
         # Esta validação já existe mais abaixo, mas podemos centralizar se preferir
         pass
+    # Validação adicional para a nova flag UF
+    if args.criar_subset_uf and len(args.criar_subset_uf) != 2:
+        print_error("--criar-subset-uf deve receber uma sigla de UF com 2 caracteres (ex: SP, RJ).")
+        return
+    # Converter para maiúsculas para consistência
+    if args.criar_subset_uf:
+        args.criar_subset_uf = args.criar_subset_uf.upper()
 
     tipo_para_nome = {
         'empresas': 'Empresas',
@@ -394,6 +411,9 @@ def main():
                 kwargs = {}
                 if tipo == 'empresas':
                     kwargs['create_private'] = args.criar_empresa_privada
+                # Passa a UF desejada para as funções de processamento, se fornecida
+                if tipo == 'estabelecimentos' and args.criar_subset_uf:
+                     kwargs['uf_subset'] = args.criar_subset_uf
 
                 if args.engine == 'dask' and dask_manager:
                     pass
@@ -441,23 +461,28 @@ def main():
                     elif args.engine == 'dask':
                         specific_process_func = process_socio
                 elif tipo == 'estabelecimentos':
+                    # Seleciona a implementação específica para estabelecimentos
+                    specific_process_func = None # Reseta para garantir que a lógica abaixo funcione
                     if args.engine == 'pandas':
-                        try:
-                            from src.process.estabelecimento import process_estabelecimento_with_pandas
-                            specific_process_func = process_estabelecimento_with_pandas
-                        except ImportError:
-                            logger.warning(f"Função 'process_estabelecimento_with_pandas' não encontrada. Usando a função padrão.")
-                            specific_process_func = process_func
+                         try:
+                             from src.process.estabelecimento import process_estabelecimento_with_pandas
+                             specific_process_func = process_estabelecimento_with_pandas
+                         except ImportError:
+                              logger.warning(f"Função 'process_estabelecimento_with_pandas' não encontrada. Usando a função padrão.")
+                              # Se não achar específica, não define specific_process_func, cairá no fallback geral
                     elif args.engine == 'polars':
-                        try:
-                            from src.process.estabelecimento import process_estabelecimento_with_polars
-                            specific_process_func = process_estabelecimento_with_polars
-                        except ImportError:
-                            logger.warning(f"Função 'process_estabelecimento_with_polars' não encontrada. Usando a função padrão.")
-                            specific_process_func = process_func
+                         try:
+                             # Importa a função Polars que acabamos de adicionar
+                             from src.process.estabelecimento import process_estabelecimento_with_polars
+                             specific_process_func = process_estabelecimento_with_polars
+                         except ImportError:
+                              logger.warning(f"Função 'process_estabelecimento_with_polars' não encontrada. Usando a função padrão.")
+                              # Se não achar específica, não define specific_process_func, cairá no fallback geral
                     elif args.engine == 'dask':
-                        specific_process_func = process_estabelecimento
+                         # Assume que process_estabelecimento é a função Dask
+                         specific_process_func = process_estabelecimento 
 
+                # Se nenhuma função específica foi encontrada para o engine/tipo, usa a padrão selecionada antes do loop
                 func_to_call = specific_process_func if specific_process_func else process_func
 
                 import inspect
