@@ -83,7 +83,17 @@ def _filter_urls_by_type(urls: List[str], tipos: Tuple[str, ...]) -> Tuple[List[
     ignored_count = 0
     for url in urls:
         filename = url.split('/')[-1]
-        if any(filename.lower().startswith(tipo.lower()) for tipo in tipos):
+        filename_lower = filename.lower()
+        
+        match_found = False
+        for tipo in tipos:
+            tipo_lower = tipo.lower()
+            starts_with = filename_lower.startswith(tipo_lower)
+            if starts_with:
+                match_found = True
+                break
+
+        if match_found:
             filtered_urls.append(url)
         else:
             logger.debug(f"Ignorando URL (tipo não desejado): {filename}")

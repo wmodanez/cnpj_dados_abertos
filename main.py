@@ -310,7 +310,7 @@ def main():
         'empresas': (process_empresa, "EMPRESAS"),
         'estabelecimentos': (process_estabelecimento, "ESTABELECIMENTOS"),
         'simples': (process_simples, "SIMPLES NACIONAL"),
-        'socios': (process_socio, "SÓCIOS")
+        'socios': (process_socio, "SOCIOS")
     }
     tipo_para_nome = {k: v[1].split()[0].capitalize() for k, v in tipos_a_processar.items()}
 
@@ -396,10 +396,11 @@ def main():
             logger.warning(f"Não foi possível determinar a subpasta de saída. Usando nome padrão: '{latest_folder}'")
             os.makedirs(target_parquet_output_path, exist_ok=True)
 
-        # Se a etapa era APENAS download, encerra aqui.      
+        # Se a etapa era APENAS download, encerra aqui.
         if args.step == 'download':
             print_success("Etapa 'download' concluída.")
-            if dask_manager: dask_manager.shutdown() # Desliga Dask se foi iniciado por engano
+            if dask_manager:
+                dask_manager.shutdown()
             return
             
     # --- Etapa 2: Processamento para Parquet --- 
