@@ -232,47 +232,48 @@ def main():
     """Função principal que orquestra todo o processo."""
     parser = argparse.ArgumentParser(description='Processa dados do CNPJ')
     parser.add_argument('--tipos', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
-                        help='Tipos de dados a serem processados. Se não especificado, processa todos.')
+                        help='Tipos de dados a serem processados. Se não especificado, processa todos (relevante para steps 'process' e 'all').')
     parser.add_argument('--engine', choices=['pandas', 'dask', 'polars'], default='polars',
-                        help='Motor de processamento a ser utilizado. Padrão: polars')
-    parser.add_argument('--skip-download', action='store_true',
-                        help='Pula a etapa de download.')
+                        help='Motor de processamento a ser utilizado (relevante para steps 'process' e 'all'). Padrão: polars')
     parser.add_argument('--source-zip-folder', type=str, default=None,
-                        help='Caminho para a pasta contendo os arquivos ZIP a serem processados (obrigatório e usado apenas com --skip-download).')
+                        help='Caminho para a pasta contendo os arquivos ZIP a serem processados (Obrigatório para --step process).')
     parser.add_argument('--output-subfolder', type=str, default=None,
-                        help='Nome da subpasta dentro de PATH_PARQUET onde os arquivos Parquet serão salvos. Se omitido, um nome padrão será usado (baseado na data/hora ou pasta de origem).')
+                        help='Nome da subpasta dentro de PATH_PARQUET onde os arquivos Parquet serão salvos ou lidos (Obrigatório para --step process e --step database).')
     parser.add_argument('--criar-empresa-privada', action='store_true',
-                        help='Se presente, cria um subconjunto Parquet adicional contendo apenas empresas privadas (natureza jurídica 2046-2348) na pasta \'empresa_privada\'.')
+                        help='Se presente (com --step process ou --step all), cria um subconjunto Parquet adicional para empresas privadas.')
     parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO',
                         help='Define o nível mínimo de log a ser exibido/salvo. Padrão: INFO.')
-    parser.add_argument(
-        '--skip-processing',
-        action='store_true',
-        help="Pular a fase de processamento para Parquet e ir direto para a criação do DuckDB (requer que os arquivos Parquet já existam)."
-    )
     parser.add_argument(
         '--criar-subset-uf',
         type=str,
         default=None,
         metavar='UF',
-        help="Opcional. Cria um subconjunto Parquet adicional contendo apenas estabelecimentos da UF especificada (ex: GO, SP, RJ) na pasta 'estabelecimentos_UF'."
+        help="Opcional (com --step process ou --step all). Cria um subconjunto Parquet adicional para estabelecimentos da UF especificada."
+    )
+    parser.add_argument(
+        '--step', 
+        choices=['download', 'process', 'database', 'all'], 
+        default='all',
+        help="""Especifica qual(is) etapa(s) executar:
+                        'download': Apenas baixa os arquivos ZIP mais recentes.
+                        'process': Apenas processa ZIPs existentes (--source-zip-folder) para Parquet (--output-subfolder).
+                        'database': Apenas cria o DuckDB a partir de Parquets existentes (--output-subfolder).
+                        'all': Executa todas as etapas: download -> process -> database (padrão)."""
     )
     args = parser.parse_args()
 
-    # --- Validação de Argumentos ---
-    if args.skip_processing and not args.output_subfolder:
-        print_error("--output-subfolder é obrigatório ao usar --skip-processing.")
-        # Idealmente, encerrar aqui ou garantir que o código abaixo lide com isso
-        # Por segurança, vamos retornar para evitar erros posteriores
-        return
-    if args.skip_download and not args.source_zip_folder:
-        # Esta validação já existe mais abaixo, mas podemos centralizar se preferir
-        pass
-    # Validação adicional para a nova flag UF
+    # --- Validação de Argumentos --- 
+    # Validação baseada no --step escolhido
+    if args.step == 'process' and (not args.source_zip_folder or not args.output_subfolder):
+        parser.error("--step 'process' requer que --source-zip-folder e --output-subfolder sejam especificados.")
+    if args.step == 'database' and not args.output_subfolder:
+        parser.error("--step 'database' requer que --output-subfolder seja especificado.")
+    if args.source_zip_folder and not os.path.isdir(args.source_zip_folder):
+         parser.error(f"A pasta de origem especificada (--source-zip-folder) não existe ou não é um diretório: {args.source_zip_folder}")
+
+    # Validação da UF (mantida)
     if args.criar_subset_uf and len(args.criar_subset_uf) != 2:
-        print_error("--criar-subset-uf deve receber uma sigla de UF com 2 caracteres (ex: SP, RJ).")
-        return
-    # Converter para maiúsculas para consistência
+        parser.error("--criar-subset-uf deve receber uma sigla de UF com 2 caracteres (ex: SP, RJ).")
     if args.criar_subset_uf:
         args.criar_subset_uf = args.criar_subset_uf.upper()
 
@@ -311,14 +312,47 @@ def main():
         'simples': (process_simples, "SIMPLES NACIONAL"),
         'socios': (process_socio, "SÓCIOS")
     }
+    tipo_para_nome = {k: v[1].split()[0].capitalize() for k, v in tipos_a_processar.items()}
 
     if not args.tipos:
         args.tipos = list(tipos_a_processar.keys())
 
-    tipos_desejados = [tipo_para_nome[t] for t in args.tipos] if args.tipos else None
+    # --- Definição das Etapas a Executar e Caminhos --- 
+    run_download = args.step in ['download', 'all']
+    run_process = args.step in ['process', 'all']
+    run_database = args.step in ['database', 'all']
 
+    path_zip_to_use = None
+    target_parquet_output_path = None
+    latest_folder = None # Nome da subpasta para Parquet
+
+    if run_download:
+        path_zip_to_use = PATH_ZIP # Onde salvar os downloads
+    elif run_process:
+        path_zip_to_use = args.source_zip_folder # De onde ler os ZIPs
+
+    if run_process or run_database:
+        # Determina a pasta de saída/leitura Parquet
+        if args.output_subfolder:
+            latest_folder = args.output_subfolder
+        elif run_process and args.source_zip_folder:
+            # Se processando e sem output_subfolder, usa nome da pasta de origem
+            latest_folder = os.path.basename(os.path.normpath(args.source_zip_folder))
+            print_warning(f"Nenhuma --output-subfolder especificada para 'process'. Usando nome da pasta de origem ZIP: '{latest_folder}'")
+        # Se for 'all' e sem output_subfolder, será definido após o download
+        # Se for 'database' sem output_subfolder, já deu erro na validação inicial
+        
+        if latest_folder:
+             target_parquet_output_path = os.path.join(PATH_PARQUET, latest_folder)
+             logger.info(f"Caminho Parquet a ser usado/gerado: {target_parquet_output_path}")
+             # Garante que exista se formos processar
+             if run_process:
+                 os.makedirs(target_parquet_output_path, exist_ok=True)
+        # else: Se latest_folder ainda é None, será definido após download (no caso 'all')
+
+    # Inicializa Dask se necessário (antes das etapas que o usam)
     dask_manager = None
-    if args.engine == 'dask':
+    if args.engine == 'dask' and (run_process or run_database): # Adaptação: só inicializa se for usar
         print_section("Iniciando configuração do Dask...")
         freeze_support()
         try:
@@ -330,213 +364,187 @@ def main():
             print_success(f"Cliente Dask inicializado com sucesso: {dask_manager.client}")
         except Exception as e:
             logger.error(f"Falha ao inicializar o Dask: {e}")
-            print_error("Não foi possível iniciar o Dask. Verifique a configuração e os logs.")
+            print_error("Não foi possível iniciar o Dask. Abortando.")
+            return # Não continuar sem Dask se ele for necessário
 
-    latest_folder = None
-    path_zip_to_use = None # Inicializa como None
-    target_parquet_output_path = None # Inicializa como None
-    process_parquet_needed = not args.skip_processing # Flag para clareza
-
-    # --- Etapa 1: Download e Determinação de Caminhos (APENAS SE process_parquet_needed) ---
-    if process_parquet_needed:
-        if args.skip_download:
-            print_warning("A etapa de download será pulada (--skip-download).")
-            if not args.source_zip_folder:
-                print_error("Com --skip-download, é obrigatório especificar a pasta de origem dos ZIPs com --source-zip-folder.")
-                if dask_manager: dask_manager.shutdown()
-                return
-            if not os.path.exists(args.source_zip_folder) or not os.path.isdir(args.source_zip_folder):
-                print_error(f"A pasta de origem especificada (--source-zip-folder) não existe ou não é um diretório: {args.source_zip_folder}")
-                if dask_manager: dask_manager.shutdown()
-                return
-
-            path_zip_to_use = args.source_zip_folder
-            print_success(f"Usando pasta de origem ZIP: {path_zip_to_use}")
-
-            # Determina a pasta de saída
-            if args.output_subfolder:
-                latest_folder = args.output_subfolder
-            else:
-                latest_folder = os.path.basename(os.path.normpath(args.source_zip_folder))
-                print_warning(f"Nenhuma --output-subfolder especificada. Usando nome da pasta de origem como subpasta de saída: '{latest_folder}'")
+    # --- Etapa 1: Download --- 
+    if run_download:
+        print_header("Etapa 1: Download")
+        tipos_desejados_dl = [tipo_para_nome[t] for t in args.tipos] if args.tipos else None
+        download_successful, latest_folder_from_dl = asyncio.run(run_download_process(tipos_desejados_dl))
+        
+        if not download_successful:
+            print_error("Download falhou ou não encontrou arquivos.")
+            if args.step == 'download': # Se era só download, para aqui
+                 if dask_manager: dask_manager.shutdown()
+                 return 
+            else: # Se era 'all', avisa mas tenta continuar com o que tem
+                print_warning("Tentando continuar com arquivos possivelmente incompletos...")
         else:
-            # Executa o download
-            print_header("Iniciando Etapa de Download...")
-            path_zip_to_use = PATH_ZIP # Usa o path padrão para downloads
-            download_successful, latest_folder_from_dl = asyncio.run(run_download_process(tipos_desejados))
+             print_success("Download concluído com sucesso.")
 
-            if not download_successful:
-                print_error("A etapa de download falhou ou não encontrou arquivos. Abortando processamento subsequente.")
-                if dask_manager: dask_manager.shutdown()
-                return
-
-            # Determina a pasta de saída
-            if args.output_subfolder:
-                latest_folder = args.output_subfolder
-                print_success(f"Etapa de Download concluída. Usando subpasta de saída especificada: '{latest_folder}'")
-            else:
-                latest_folder = latest_folder_from_dl
-                print_success(f"Etapa de Download concluída. Usando subpasta de saída padrão (data baixada): '{latest_folder}'")
-
-        # Define o caminho final de saída Parquet para esta execução
-        if not latest_folder:
+        # Define a pasta de saída para o processamento (caso 'all' e sem --output-subfolder)
+        if not latest_folder and latest_folder_from_dl:
+            latest_folder = latest_folder_from_dl
+            target_parquet_output_path = os.path.join(PATH_PARQUET, latest_folder)
+            logger.info(f"Usando subpasta de saída padrão (data baixada): '{latest_folder}'. Caminho Parquet: {target_parquet_output_path}")
+            os.makedirs(target_parquet_output_path, exist_ok=True)
+        elif not target_parquet_output_path:
+            # Caso raro: download ok, mas sem nome de pasta e sem --output-subfolder
             latest_folder = f"processamento_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            print_warning(f"Não foi possível determinar a subpasta de saída Parquet. Usando nome padrão: '{latest_folder}'")
-        target_parquet_output_path = os.path.join(PATH_PARQUET, latest_folder)
-        logger.info(f"Caminho de saída Parquet definido como: {target_parquet_output_path}")
-        os.makedirs(target_parquet_output_path, exist_ok=True) # Garante que exista
+            target_parquet_output_path = os.path.join(PATH_PARQUET, latest_folder)
+            logger.warning(f"Não foi possível determinar a subpasta de saída. Usando nome padrão: '{latest_folder}'")
+            os.makedirs(target_parquet_output_path, exist_ok=True)
 
-    else: # Se skip_processing for True
-        print_warning("Fases de Download e Processamento Parquet PULADAS (--skip-processing ativo).")
-        # Define o caminho Parquet usando a subpasta obrigatória
-        target_parquet_output_path = os.path.join(PATH_PARQUET, args.output_subfolder)
-        logger.info(f"Usando caminho Parquet existente: {target_parquet_output_path}")
-        # Validação adicional: Verifica se o caminho realmente existe
-        if not os.path.exists(target_parquet_output_path) or not os.path.isdir(target_parquet_output_path):
-            print_error(f"A pasta Parquet especificada via --output-subfolder ('{args.output_subfolder}') não existe em {PATH_PARQUET}. Necessária para --skip-processing.")
-            if dask_manager: dask_manager.shutdown()
+        # Se a etapa era APENAS download, encerra aqui.      
+        if args.step == 'download':
+            print_success("Etapa 'download' concluída.")
+            if dask_manager: dask_manager.shutdown() # Desliga Dask se foi iniciado por engano
             return
-
-    # --- Etapa 2: Processamento para Parquet (APENAS SE process_parquet_needed) ---
-    is_create_db_parquet = False # Tentaremos criar o DB se skip_processing OU se o processamento ocorrer (mesmo que falhe)
-
-    if process_parquet_needed:
-        print_header("Iniciando processamento dos dados...")
-        processing_success_flag = False # Flag para saber se ALGUM processamento funcionou
+            
+    # --- Etapa 2: Processamento para Parquet --- 
+    processing_performed = False
+    if run_process:
+        print_header("Etapa 2: Processamento para Parquet")
+        # Verifica se os caminhos necessários estão definidos
+        if not path_zip_to_use or not target_parquet_output_path:
+             print_error("Erro interno: Caminhos de entrada ZIP ou saída Parquet não definidos para a etapa de processamento.")
+             if dask_manager: dask_manager.shutdown()
+             return
+        
+        logger.info(f"Lendo ZIPs de: {path_zip_to_use}")
+        logger.info(f"Salvando Parquets em: {target_parquet_output_path}")
+        
+        processing_success_flag = False
         try:
             for tipo in args.tipos:
-                process_func, nome = tipos_a_processar[tipo]
-                print_section(f"Processando dados de {nome}...")
-
+                process_func_base, nome_tipo = tipos_a_processar[tipo]
+                print_section(f"Processando dados de {nome_tipo} com engine '{args.engine}'...")
+                
                 kwargs = {}
                 if tipo == 'empresas':
                     kwargs['create_private'] = args.criar_empresa_privada
-                # Passa a UF desejada para as funções de processamento, se fornecida
                 if tipo == 'estabelecimentos' and args.criar_subset_uf:
-                     kwargs['uf_subset'] = args.criar_subset_uf
-
-                if args.engine == 'dask' and dask_manager:
-                    pass
-
+                    kwargs['uf_subset'] = args.criar_subset_uf
+                
+                # --- Lógica de Seleção de Função (mantida) ---
                 specific_process_func = None
                 if tipo == 'empresas':
-                    if args.engine == 'pandas':
-                        specific_process_func = process_empresa_pandas_impl
-                    elif args.engine == 'polars':
-                        specific_process_func = process_empresa_polars_impl
-                    elif args.engine == 'dask':
-                        specific_process_func = process_empresa
+                    if args.engine == 'pandas': specific_process_func = process_empresa_pandas_impl
+                    elif args.engine == 'polars': specific_process_func = process_empresa_polars_impl
+                    elif args.engine == 'dask': specific_process_func = process_empresa
                 elif tipo == 'simples':
                     if args.engine == 'pandas':
                         try:
                             from src.process.simples import process_simples_with_pandas
                             specific_process_func = process_simples_with_pandas
-                        except ImportError:
-                            logger.warning(f"Função 'process_simples_with_pandas' não encontrada. Usando a função padrão.")
-                            specific_process_func = process_func
+                        except ImportError: logger.warning("Função 'process_simples_with_pandas' não encontrada.")
                     elif args.engine == 'polars':
                         try:
                             from src.process.simples import process_simples_with_polars
                             specific_process_func = process_simples_with_polars
-                        except ImportError:
-                            logger.warning(f"Função 'process_simples_with_polars' não encontrada. Usando a função padrão.")
-                            specific_process_func = process_func
-                    elif args.engine == 'dask':
-                        specific_process_func = process_simples
+                        except ImportError: logger.warning("Função 'process_simples_with_polars' não encontrada.")
+                    elif args.engine == 'dask': specific_process_func = process_simples
                 elif tipo == 'socios':
                     if args.engine == 'pandas':
                         try:
                             from src.process.socio import process_socio_with_pandas
                             specific_process_func = process_socio_with_pandas
-                        except ImportError:
-                            logger.warning(f"Função 'process_socio_with_pandas' não encontrada. Usando a função padrão.")
-                            specific_process_func = process_func
+                        except ImportError: logger.warning("Função 'process_socio_with_pandas' não encontrada.")
                     elif args.engine == 'polars':
                         try:
                             from src.process.socio import process_socio_with_polars
                             specific_process_func = process_socio_with_polars
-                        except ImportError:
-                            logger.warning(f"Função 'process_socio_with_polars' não encontrada. Usando a função padrão.")
-                            specific_process_func = process_func
-                    elif args.engine == 'dask':
-                        specific_process_func = process_socio
+                        except ImportError: logger.warning("Função 'process_socio_with_polars' não encontrada.")
+                    elif args.engine == 'dask': specific_process_func = process_socio
                 elif tipo == 'estabelecimentos':
-                    # Seleciona a implementação específica para estabelecimentos
-                    specific_process_func = None # Reseta para garantir que a lógica abaixo funcione
                     if args.engine == 'pandas':
                          try:
-                             # Importa a função Pandas que acabamos de adicionar
                              from src.process.estabelecimento import process_estabelecimento_with_pandas
                              specific_process_func = process_estabelecimento_with_pandas
-                         except ImportError:
-                              logger.warning(f"Função 'process_estabelecimento_with_pandas' não encontrada. Usando a função padrão.")
-                              # Se não achar específica, não define specific_process_func, cairá no fallback geral
+                         except ImportError: logger.warning("Função 'process_estabelecimento_with_pandas' não encontrada.")
                     elif args.engine == 'polars':
                          try:
-                             # Importa a função Polars que acabamos de adicionar
                              from src.process.estabelecimento import process_estabelecimento_with_polars
                              specific_process_func = process_estabelecimento_with_polars
-                         except ImportError:
-                              logger.warning(f"Função 'process_estabelecimento_with_polars' não encontrada. Usando a função padrão.")
-                              # Se não achar específica, não define specific_process_func, cairá no fallback geral
-                    elif args.engine == 'dask':
-                         # Assume que process_estabelecimento é a função Dask
-                         specific_process_func = process_estabelecimento 
-
-                # Se nenhuma função específica foi encontrada para o engine/tipo, usa a padrão selecionada antes do loop
-                func_to_call = specific_process_func if specific_process_func else process_func
-
+                         except ImportError: logger.warning("Função 'process_estabelecimento_with_polars' não encontrada.")
+                    elif args.engine == 'dask': specific_process_func = process_estabelecimento
+                
+                func_to_call = specific_process_func if specific_process_func else process_func_base
+                
+                if not func_to_call:
+                     logger.error(f"Nenhuma função de processamento válida encontrada para tipo '{tipo}' e engine '{args.engine}'. Pulando...")
+                     continue
+                     
+                # --- Chamada da Função (mantida) ---
                 import inspect
                 sig = inspect.signature(func_to_call)
                 valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-
+                
                 success = func_to_call(path_zip_to_use, PATH_UNZIP, target_parquet_output_path, **valid_kwargs)
-
+                processing_performed = True # Marca que tentamos processar algo
+                
                 if success:
-                    # is_create_db_parquet = True # Não seta mais aqui
-                    processing_success_flag = True # Marca que pelo menos um funcionou
-                    print_success(f"Dados de {nome} processados com sucesso")
+                    processing_success_flag = True
+                    print_success(f"Dados de {nome_tipo} processados com sucesso.")
                 else:
-                    print_warning(f"Processamento de {nome} não foi bem-sucedido ou não encontrou dados novos.")
-
-            # Após o loop, verificamos se algo foi processado
-            if not processing_success_flag:
-                print_warning("Nenhuma etapa de processamento Parquet foi concluída com sucesso ou gerou dados novos.")
-            # Independentemente do sucesso do processamento, tentaremos criar o DuckDB
-            is_create_db_parquet = True
-
+                    print_warning(f"Processamento de {nome_tipo} não foi bem-sucedido ou não encontrou/gerou dados.")
+                    
+            if not processing_performed:
+                 print_warning("Nenhum tipo de dado foi efetivamente processado.")
+            elif not processing_success_flag:
+                 print_warning("Nenhuma etapa de processamento Parquet foi concluída com sucesso.")
+                 
         except Exception as e:
-            logger.exception(f"Erro durante a fase de processamento para Parquet: {e}")
-            print_error("Erro na fase de processamento. Verifique os logs.")
-            # Mesmo com erro, tentamos criar o DB a partir do que pode ter sido gerado
-            is_create_db_parquet = True
+            logger.exception(f"Erro GERAL durante a fase de processamento para Parquet: {e}")
+            print_error("Erro crítico na fase de processamento. Verifique os logs.")
+            # Mesmo com erro, podemos querer criar o DB se a etapa for 'all' ou 'database'
 
-    else: # Se skip_processing for True
-        # Já avisamos que pulou. Marcamos para criar o DB.
-        is_create_db_parquet = True
+        # Se a etapa era APENAS processamento, encerra aqui.
+        if args.step == 'process':
+             print_success("Etapa 'process' concluída.")
+             if dask_manager: dask_manager.shutdown()
+             return
 
-    # --- Etapa 3: Criação do DuckDB (Condicional) ---
-    if is_create_db_parquet:
-        # Verifica se o caminho de destino existe antes de tentar criar
-        if target_parquet_output_path and os.path.exists(target_parquet_output_path):
-            print_header("Criando banco de dados DuckDB...")
-            db_creation_success = create_duckdb_file(
-                path_parquet_folder=target_parquet_output_path,
-                file_db_parquet=FILE_DB_PARQUET,
-                path_remote_parquet=PATH_REMOTE_PARQUET
-            )
-            if db_creation_success:
-                print_success("Banco de dados DuckDB criado com sucesso")
+    # --- Etapa 3: Criação do DuckDB --- 
+    if run_database:
+        print_header("Etapa 3: Criação do Banco de Dados DuckDB")
+        # Verifica se o caminho Parquet está definido (importante se pulou etapas)
+        if not target_parquet_output_path:
+            print_error("Caminho para arquivos Parquet não definido. Não é possível criar DuckDB.")
+            # Tenta pegar do argumento se a etapa for SÓ database
+            if args.step == 'database' and args.output_subfolder:
+                 target_parquet_output_path = os.path.join(PATH_PARQUET, args.output_subfolder)
+                 logger.info(f"Usando caminho Parquet de --output-subfolder: {target_parquet_output_path}")
             else:
-                print_error("Falha ao criar banco de dados DuckDB.")
+                if dask_manager: dask_manager.shutdown()
+                return
+
+        # Verifica se o caminho Parquet existe
+        if not os.path.isdir(target_parquet_output_path):
+            print_error(f"Caminho para arquivos Parquet não existe ou não é um diretório: {target_parquet_output_path}.")
+            if dask_manager: dask_manager.shutdown()
+            return
+            
+        print_info(f"Lendo Parquets de: {target_parquet_output_path}")
+        db_creation_success = create_duckdb_file(
+            path_parquet_folder=target_parquet_output_path,
+            file_db_parquet=FILE_DB_PARQUET,
+            path_remote_parquet=PATH_REMOTE_PARQUET
+        )
+        if db_creation_success:
+            print_success("Banco de dados DuckDB criado/atualizado com sucesso.")
         else:
-            print_error(f"Caminho para arquivos Parquet inválido ou não encontrado: {target_parquet_output_path}. Não é possível criar DuckDB.")
-    else:
-        # Este caso não deve ocorrer com a lógica atual, mas mantemos por segurança
-        print_warning("Criação do DuckDB não será realizada (nenhum processamento iniciado ou skip ativo sem sucesso?).")
+            print_error("Falha ao criar/atualizar banco de dados DuckDB.")
+            
+        # Se a etapa era APENAS database, encerra aqui.
+        if args.step == 'database':
+             print_success("Etapa 'database' concluída.")
+             if dask_manager: dask_manager.shutdown()
+             return
 
+    # --- Finalização --- 
     print_header(f"Tempo total de execução: {str(datetime.datetime.now() - start_time)}")
-
     if dask_manager:
         print_section("Encerrando cliente Dask...")
         try:

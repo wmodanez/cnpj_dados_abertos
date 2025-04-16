@@ -1,6 +1,6 @@
 # Processador de Dados CNPJ 🏢
 
-Este projeto automatiza o download, processamento e armazenamento dos dados públicos de CNPJ disponibilizados pela Receita Federal. Ele foi desenvolvido para ser eficiente, resiliente e fácil de usar.
+Este projeto automatiza o download, processamento e armazenamento dos dados públicos de CNPJ disponibilizados pela Receita Federal. Ele foi desenvolvido para ser eficiente, resiliente, modular e fácil de usar.
 
 ## Navegação
 
@@ -19,8 +19,8 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
   <summary>📋 Fluxo do Processo</summary>
   
   - [Fluxo do Processo](#-fluxo-do-processo)
-  - [Etapas do Fluxo Atual](#etapas-do-fluxo-atual)
-  - [Ferramentas Utilizadas Atualmente](#ferramentas-utilizadas-atualmente)
+  - [Fluxo Modular Atual (--step)](#fluxo-modular-atual---step)
+  - [Ferramentas Utilizadas](#ferramentas-utilizadas)
 </details>
 
 <details>
@@ -30,9 +30,9 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
 </details>
 
 <details>
-  <summary>📋 Sugestões de Otimização</summary>
+  <summary>📋 Sugestões de Otimização (Histórico)</summary>
   
-  - [Sugestões de Otimização](#-sugestões-de-otimização)
+  - [Sugestões de Otimização (Histórico)](#-sugestões-de-otimização-histórico)
   - [1. Paralelização e Desempenho](#1-paralelização-e-desempenho)
   - [2. Migração Completa para Dask](#2-migração-completa-para-dask)
   - [3. Otimizações do Dask](#3-otimizações-do-dask)
@@ -41,7 +41,7 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
 </details>
 
 <details>
-  <summary>📊 Comparação e Implementação</summary>
+  <summary>📊 Comparação e Implementação (Histórico)</summary>
   
   - [Comparação de Tecnologias](#-comparação-de-tecnologias)
   - [Plano de Implementação Progressiva](#-plano-de-implementação-progressiva)
@@ -128,45 +128,56 @@ PATH_REMOTE_PARQUET=//servidor/compartilhado/
 
 ### Execução
 
-O script principal `main.py` aceita diversos argumentos para customizar a execução:
+O script principal `main.py` aceita diversos argumentos para customizar a execução. O argumento principal para controle de fluxo é `--step`.
 
 ```bash
-# 1. Execução padrão (Baixa todos os tipos na pasta mais recente, processa todos com Pandas, salva em subpasta com nome da data baixada):
+# 1. Execução completa (padrão: baixa, processa com Polars, cria DuckDB):
 python main.py
+# Equivalente a:
+python main.py --step all --engine polars
 
-# 2. Baixa e processa apenas Empresas e Sócios com Pandas (salva em subpasta com nome da data baixada):
-python main.py --tipos empresas socios
+# 2. Execução completa usando Pandas:
+python main.py --step all --engine pandas
 
-# 3. Baixa e processa todos os tipos usando o motor Dask (salva em subpasta com nome da data baixada):
-python main.py --engine dask
+# 3. Execução completa usando Dask:
+python main.py --step all --engine dask
 
-# 4. Baixa e processa apenas Estabelecimentos usando Polars (salva em subpasta com nome da data baixada):
-python main.py --tipos estabelecimentos --engine polars
+# 4. Apenas baixar os arquivos ZIP mais recentes (todos os tipos):
+python main.py --step download
 
-# 5. Pular o download e processar todos os tipos da pasta ZIP '../dados-abertos-zip', salvando Parquet na subpasta 'meu_processamento_manual' (dentro de PATH_PARQUET):
-python main.py --skip-download --source-zip-folder ../dados-abertos-zip --output-subfolder meu_processamento_manual
+# 5. Apenas baixar arquivos ZIP de Empresas e Sócios:
+python main.py --step download --tipos empresas socios
 
-# 6. Pular o download, processar apenas Simples e Sócios da pasta ZIP 'D:/MeusDownloads/CNPJ_ZIPs', usando Dask, salvando Parquet na subpasta 'simples_socios_dask' (dentro de PATH_PARQUET):
-python main.py --skip-download --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs" --output-subfolder simples_socios_dask --tipos simples socios --engine dask
+# 6. Apenas processar ZIPs existentes para Parquet:
+#    (Necessário especificar a pasta de origem dos ZIPs e a subpasta de saída Parquet)
+python main.py --step process --source-zip-folder ../dados-abertos-zip --output-subfolder meu_processamento_manual --engine polars
 
-# 7. Baixa e processa apenas Empresas usando Pandas (salva em subpasta com nome da data baixada):
-python main.py --tipos empresas --engine pandas
+# 7. Apenas processar ZIPs existentes de Simples e Sócios usando Dask:
+python main.py --step process --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs" --output-subfolder simples_socios_dask --tipos simples socios --engine dask
 
-# 8. Baixa e processa apenas Empresas usando Polars, salvando na subpasta 'apenas_empresas_polars' (dentro de PATH_PARQUET):
-python main.py --tipos empresas --engine polars --output-subfolder apenas_empresas_polars
+# 8. Apenas criar/atualizar o banco DuckDB a partir de Parquets existentes:
+#    (Necessário especificar a subpasta onde os Parquets estão)
+python main.py --step database --output-subfolder meu_processamento_manual
 
-# 9. Como o exemplo 8, mas também cria o subconjunto 'empresa_privada' no diretório de saída:
-python main.py --tipos empresas --engine polars --output-subfolder apenas_empresas_polars --criar-empresa-privada
+# 9. Processar Empresas com Polars, criando subset 'empresa_privada':
+#    (Execução completa, mas poderia ser --step process se os ZIPs já existirem)
+python main.py --step all --tipos empresas --engine polars --output-subfolder apenas_empresas_polars --criar-empresa-privada
 
-# 10. Pular download E processamento, criando apenas o arquivo DuckDB a partir dos Parquets existentes na subpasta 'processamento_anterior' (dentro de PATH_PARQUET):
-python main.py --skip-processing --output-subfolder processamento_anterior
-
-# 11. Pular download, processar com Dask, e depois criar o DuckDB, usando a pasta de origem 'meus_zips' e salvando na subpasta 'resultado_dask':
-python main.py --skip-download --source-zip-folder meus_zips --engine dask --output-subfolder resultado_dask
-
-# 12. Processar apenas estabelecimentos com Polars, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
-python main.py --tipos estabelecimentos --engine polars --output-subfolder process_sp --criar-subset-uf SP
+# 10. Processar Estabelecimentos com Polars, criando subset para SP:
+#     (Execução completa, mas poderia ser --step process se os ZIPs já existirem)
+python main.py --step all --tipos estabelecimentos --engine polars --output-subfolder process_sp --criar-subset-uf SP
 ```
+
+**Argumentos Principais:**
+
+*   `--step {download,process,database,all}`: Define qual(is) etapa(s) executar (padrão: `all`).
+*   `--engine {pandas,dask,polars}`: Escolhe o motor de processamento para a etapa `process` (padrão: `polars`).
+*   `--tipos {empresas,estabelecimentos,simples,socios}`: Filtra quais tipos de dados baixar ou processar (padrão: todos).
+*   `--source-zip-folder <caminho>`: Pasta de origem dos arquivos ZIP (obrigatório para `--step process`).
+*   `--output-subfolder <nome>`: Subpasta em `PATH_PARQUET` para salvar/ler Parquets (obrigatório para `--step process` e `--step database`).
+*   `--criar-empresa-privada`: Flag para criar subset de empresas privadas (na etapa `process`).
+*   `--criar-subset-uf <UF>`: Flag para criar subset de estabelecimentos por UF (na etapa `process`).
+*   `--log-level <NÍVEL>`: Ajusta o nível de log (padrão: `INFO`).
 
 ### Gerenciamento de Cache
 
@@ -197,244 +208,122 @@ python benchmark/benchmark_estabelecimento.py
 
 ## 📊 O que o Script Faz
 
-1. **Download dos Dados**
-   - Identifica os arquivos mais recentes
-   - Baixa em paralelo com retry automático
-   - Verifica integridade dos arquivos
-   - Mantém cache para evitar downloads desnecessários
+O script `main.py` orquestra um fluxo modular que pode ser executado em etapas:
 
-2. **Processamento**
-   - Verifica espaço em disco e conexão com a internet
-   - Extrai arquivos ZIP sequencialmente
-   - Processa dados CSV em paralelo com Dask
-   - Gera arquivos Parquet otimizados
+1.  **Download dos Dados (`--step download` ou `all`)**
+    *   Identifica os arquivos ZIP mais recentes no portal da Receita Federal.
+    *   Baixa os arquivos necessários (considerando os tipos especificados) de forma assíncrona e paralela.
+    *   Utiliza cache para evitar downloads repetidos.
+    *   Verifica a integridade básica dos arquivos baixados.
 
-3. **Armazenamento**
-   - Cria banco de dados DuckDB
-   - Organiza dados em tabelas
-   - Copia para local remoto
+2.  **Processamento para Parquet (`--step process` ou `all`)**
+    *   Lê arquivos ZIP de uma pasta de origem (`--source-zip-folder`).
+    *   Extrai o conteúdo de cada ZIP para uma subpasta temporária.
+    *   Processa os arquivos de dados (CSV ou similar) usando o engine selecionado (`--engine`).
+        *   Aplica transformações (renomeação, conversão de tipos, etc.).
+        *   Gera arquivos Parquet otimizados e particionados na subpasta de saída (`--output-subfolder`).
+        *   Cria subsets opcionais (`--criar-empresa-privada`, `--criar-subset-uf`).
+    *   Limpa as subpastas temporárias.
+
+3.  **Criação do Banco de Dados (`--step database` ou `all`)**
+    *   Lê os arquivos Parquet de uma subpasta especificada (`--output-subfolder`).
+    *   Cria ou atualiza um arquivo de banco de dados DuckDB (`cnpj.duckdb` por padrão).
+    *   Cria tabelas no DuckDB para cada tipo de dado encontrado (empresas, estabelecimentos, socios, simples, e tabelas auxiliares como cnae, municipio, etc., se presentes na pasta `base`).
+    *   Opcionalmente, faz backup do banco para um local remoto.
 
 ## 📋 Fluxo do Processo
 
-O atual pipeline de processamento de dados de CNPJs segue um fluxo estruturado, mas com oportunidades de otimização:
+### Fluxo Modular Atual (`--step`)
+
+O fluxo de execução agora é controlado pelo argumento `--step`, permitindo executar partes específicas do processo:
 
 ```mermaid
----
-config:
-   theme: neutral
-   layout: elk
-   elk:
-      direction: DOWN
-      nodeSpacing: 50
-      rankSpacing: 70
-      mergeEdges: true
-      nodePlacementStrategy: SIMPLE
-      algorithm: layered
-      layered:
-        alignedLayout: true
-   flowchart:
-      useMaxWidth: true
-      curve: basis
-      defaultRenderer: elk
-      htmlLabels: true
-      animate: true
+graph TD
+    A[Início: main.py --step <valor>] --> Args{Análise dos Argumentos}
+    
+    Args --> Step{Qual --step?}
+    
+    Step -->|download| D[Etapa Download]
+    Step -->|process| P_Prep[Prepara Caminhos para Processamento]
+    Step -->|database| DB_Prep[Prepara Caminhos para Database]
+    Step -->|all| D
+    
+    D --> D_End{Fim se --step download}
+    D_End -- Sim --> Z[Fim]
+    D_End -- Não (step all) --> P_Prep
+    
+    P_Prep --> Engine{Engine Dask?}
+    Engine -- Sim --> DaskInitP[Inicia Dask]
+    Engine -- Não --> P[Etapa Processamento Parquet]
+    DaskInitP --> P
+    
+    P --> P_End{Fim se --step process}
+    P_End -- Sim --> DaskEndP[Encerra Dask se iniciado]
+    P_End -- Não (step all) --> DB_Prep
+    DaskEndP --> Z
+    
+    DB_Prep --> EngineDB{Engine Dask?}
+    EngineDB -- Sim --> DaskInitDB[Inicia Dask (se não já iniciado)]
+    EngineDB -- Não --> DB[Etapa Criação DuckDB]
+    DaskInitDB --> DB
+    
+    DB --> DB_End{Fim se --step database}
+    DB_End -- Sim --> DaskEndDB[Encerra Dask se iniciado]
+    DB_End -- Não (step all) --> DaskEndAll[Encerra Dask se iniciado]
+    DaskEndDB --> Z
+    DaskEndAll --> Z
+    
+    classDef etapa fill:#cfe2ff,stroke:#084298,stroke-width:2px;
+    classDef decisao fill:#fff3cd,stroke:#856404,stroke-width:1px
+    classDef prep fill:#e2e3e5,stroke:#495057,stroke-width:1px
+    classDef end fill:#f8d7da,stroke:#842029,stroke-width:1px
 
----
-flowchart TD
-    %% Etapa 1: Coleta de Dados
-    A[Início] --> B[Configuração das variáveis]
-    B --> C[Inicialização do Dask Cluster]
-    C --> D[Busca URL mais recente]
-    
-    %% Verificação inicial de novos dados
-    D --> N{Novos dados disponíveis?}
-    N -->|Não| Q[Fim]
-    
-    %% Etapa 2: Download e Descompactação
-    N -->|Sim| E{Loop por tipos de dados}
-    E --> F[Download dos arquivos ZIP com PyCurl]
-    F --> G[Descompactação com zipfile]
-    
-    %% Etapa 3: Processamento com Dask
-    G --> H[Leitura dos CSV com Dask DataFrame]
-    H --> I[Transformação e limpeza]
-    
-    %% Etapa 4: Segmentação de dados
-    I --> J[Processamento específico do tipo de dado]
-    
-    %% Etapa 5: Armazenamento em Parquet
-    J --> K[Conversão para Parquet]
-    
-    %% Próximo tipo de dado ou finalização
-    K --> L{Mais tipos?}
-    L -->|Sim| E
-    
-    %% Consolidação dos arquivos Parquet em DuckDB
-    L -->|Não| R[Leitura e verificação dos arquivos Parquet com Python/Pandas]
-    R --> S{Existem arquivos Parquet suficientes?}
-    S -->|Sim| O[Consolidação dos Parquets em um banco DuckDB]
-    S -->|Não| P
-    
-    %% Finalização
-    O --> P[Encerramento do cliente Dask]
-    P --> Q
-    
-    %% Estilos
-    classDef ferramenta fill:#f9f,stroke:#333,stroke-width:2px
-    classDef process fill:#bbf,stroke:#333,stroke-width:1px
-    classDef decision fill:#fbb,stroke:#333,stroke-width:1px
-    
-    class C,F,G,H,I,J,K,O,R ferramenta
-    class B,D,P process
-    class E,L,N,S decision
-    
-    %% Animação das setas
-    linkStyle default stroke:#00AA00,stroke-width:2px,color:green,animation:flowing 1.5s linear infinite,stroke-dasharray:5,2,3,2
+    class A,Z end
+    class D,P,DB etapa
+    class Args,Step,D_End,P_End,DB_End,Engine,EngineDB decisao
+    class P_Prep,DB_Prep,DaskInitP,DaskEndP,DaskInitDB,DaskEndDB,DaskEndAll prep
+
 ```
 
-### Etapas do Fluxo Atual
+**Legenda:**
 
-1. **Configuração e Inicialização**
-   - Carregamento de variáveis de ambiente com `dotenv`
-   - Inicialização do cluster `Dask` para processamento distribuído
-   - Configuração de logging para acompanhamento do processo
+*   **Retângulos Azuis:** Etapas principais do fluxo.
+*   **Losangos Amarelos:** Decisões baseadas nos argumentos ou no estado.
+*   **Retângulos Cinzas:** Preparação de caminhos ou inicialização/encerramento de Dask.
+*   **Retângulos Vermelhos:** Pontos de início e fim.
 
-2. **Obtenção e Extração dos Dados**
-   - Uso de `requests` e `BeautifulSoup` para identificar URLs mais recentes
-   - Download sequencial de arquivos ZIP usando `PyCurl`
-   - Extração dos arquivos com o módulo `zipfile` do Python
+### Ferramentas Utilizadas
 
-3. **Processamento dos Dados**
-   - Leitura dos CSVs extraídos utilizando `Dask DataFrame`
-   - Processamento separado para cada tipo de dado (Empresas, Estabelecimentos, Simples, Sócios)
-   - Transformações e limpezas específicas para cada conjunto
-
-4. **Armazenamento Intermediário**
-   - Conversão para formato `Parquet` usando `Dask.to_parquet()`
-   - Organização em diretórios por mês/ano e tipo de dado
-
-5. **Consolidação em Banco Analítico**
-   - Verificação dos arquivos Parquet gerados para cada tipo de dado
-   - Junção de todos os arquivos Parquet em um único banco DuckDB
-   - Criação de tabelas, views e otimizações para análise
-
-6. **Finalização**
-   - Encerramento do cliente Dask
-   - Geração de logs de conclusão
-
-### Ferramentas Utilizadas Atualmente
-
-- **Processamento distribuído:** Dask
-- **Download:** PyCurl, requests
-- **Parsing HTML:** BeautifulSoup
-- **Armazenamento:** Parquet (via Dask)
-- **Banco de dados analítico:** DuckDB
+*   **Processamento:** Pandas, Dask, Polars (selecionável via `--engine`)
+*   **Download Assíncrono:** asyncio, aiohttp
+*   **Banco de Dados:** DuckDB
+*   **Manipulação de Arquivos:** zipfile, os, shutil
+*   **Linha de Comando:** argparse
+*   **Logging:** logging, RichHandler
+*   **Configuração:** python-dotenv
+*   **Utilitários:** NumPy, Rich (para progresso)
 
 ## ✨ Características
 
-- **Download Eficiente:** Baixa apenas os arquivos mais recentes, utilizando cache e downloads paralelos.
-- **Processamento Flexível:** Suporta diferentes motores (Pandas, Dask, Polars) para processamento dos dados CSV.
-- **Saída Otimizada:** Gera arquivos Parquet particionados e um banco de dados DuckDB consolidado.
-- **Resiliência:** Inclui retentativas em downloads e tratamento básico de erros.
-- **Configurabilidade:** Usa variáveis de ambiente (`.env.local`) para definir caminhos e URLs.
-- **Argumentos de Linha de Comando:** Permite controlar o fluxo de execução (tipos de dados, engine, pular etapas).
-- **Logging Detalhado:** Registra as etapas do processo em arquivos de log e no console com formatação Rich.
-- **Subset Opcional por UF:** Permite criar um subconjunto de dados de estabelecimentos para uma UF específica usando `--criar-subset-uf UF`.
+*   **Execução Modular:** Controle granular do fluxo com `--step` (`download`, `process`, `database`, `all`).
+*   **Multi-Engine:** Suporte padronizado para Pandas, Dask e Polars (`--engine`), com Polars como padrão.
+*   **Download Eficiente:** Assíncrono, paralelo, com cache e retentativas.
+*   **Processamento Padronizado:** Lógica de extração, transformação e salvamento consistente entre os engines.
+*   **Saída Otimizada:** Arquivos Parquet particionados e banco DuckDB consolidado.
+*   **Configurabilidade:** Variáveis de ambiente (`.env.local`) e argumentos de linha de comando.
+*   **Subsets Opcionais:** Criação de subsets por UF (`--criar-subset-uf`) ou para empresas privadas (`--criar-empresa-privada`).
+*   **Logging Detalhado:** Logs em arquivo e console formatado com Rich.
 
 ## 🔄 Atualizações Recentes
 
-- **(Julho/2024)** Adicionada a flag `--criar-subset-uf` para gerar um Parquet separado com estabelecimentos de uma UF específica.
-- **(Julho/2024)** Adicionada a flag `--skip-processing` que permite pular as etapas de download e processamento para Parquet, indo diretamente para a criação do arquivo DuckDB. Requer que `--output-subfolder` seja especificado para indicar a pasta Parquet existente.
-- **(Julho/2024)** Corrigida a lógica de busca da pasta `base` na criação do DuckDB para procurá-la na raiz do diretório Parquet (`parquet/base`), permitindo que tabelas base sejam incluídas corretamente junto com os dados processados.
-- **(Julho/2024)** Refatoração do fluxo Dask para melhor alinhamento com o fluxo Pandas e Polars, incluindo nomeação de arquivos Parquet com prefixo do ZIP de origem.
+*   **(Julho/2024)** Implementada execução modular com argumento `--step` (download, process, database, all), substituindo `--skip-download` e `--skip-processing`.
+*   **(Julho/2024)** Padronizadas as implementações Pandas, Dask e Polars para todos os tipos de dados (Empresas, Estabelecimentos, Simples, Sócios).
+*   **(Julho/2024)** Polars definido como o engine de processamento padrão (`--engine polars`).
+*   **(Julho/2024)** Adicionada a flag `--criar-subset-uf` para gerar um Parquet separado com estabelecimentos de uma UF específica.
+*   **(Julho/2024)** Corrigida a lógica de busca da pasta `base` na criação do DuckDB.
+*   **(Julho/2024)** Refatoração do fluxo Dask para melhor alinhamento com os outros engines.
 
-## 📋 Sugestões de Otimização
-
-O fluxo de processamento pode ser aprimorado conforme o diagrama e sugestões a seguir:
-
-```mermaid
----
-config:
-   theme: neutral
-   layout: elk
-   elk:
-      direction: DOWN
-      nodeSpacing: 70
-      rankSpacing: 100
-      mergeEdges: false
-      spacing: 70
-      layeringStrategy: NETWORK_SIMPLEX
-      nodePlacementStrategy: BRANDES_KOEPF
-      algorithm: layered
-      layered:
-        alignedLayout: true
-        nodePlacement: SIMPLE
-   flowchart:
-      useMaxWidth: true
-      curve: basis
-      defaultRenderer: elk
-      htmlLabels: true
-      animate: true
-
----
-flowchart TD
-    %% Etapa 1: Inicialização e Verificação
-    A[Início] --> B[Configuração do ambiente]
-    B --> C[Inicialização do Dask Cluster]
-    C --> D[Verificação de novas versões de dados CNPJ]
-    D --> D1{Novos dados CNPJ disponíveis?}
-    D1 -->|Não| P1[Encerramento do Dask]
-    P1 --> Z[Fim]
-    
-    %% Etapa 2: Preparação com Cache
-    D1 -->|Sim| E[Consulta ao cache de metadados]
-    E --> E1{É necessário download completo?}
-    E1 -->|Sim| F1[Download paralelo com asyncio]
-    E1 -->|Não| F2[Download seletivo de arquivos]
-    F1 --> G[Descompactação paralela]
-    F2 --> G
-    G --> H[Atualização do cache]
-    
-    %% Etapa 3: Loop de Processamento com Dask otimizado
-    H --> T[Loop por tipos de dados]
-    T --> I[Processamento e transformação com Dask]
-    
-    %% Conexão direta para validação
-    I --> J[Validação de dados avançada]
-    J --> J1{Dados OK?}
-    J1 -->|Não| J2[Correção com transformações Dask]
-    J2 --> J
-    J1 -->|Sim| K[Armazenamento em Parquet otimizado]
-    K --> T1{Mais tipos de dados?}
-    T1 -->|Sim| T
-    
-    %% Etapa 4: Consolidação e Finalização
-    T1 -->|Não| L[Verificação dos arquivos Parquet]
-    L --> L1{Parquets completos?}
-    L1 -->|Não| P1
-    L1 -->|Sim| M[Criação de views otimizadas no DuckDB]
-    M --> P1
-    
-    %% Estilos mais claros
-    classDef processo fill:#d1e7dd,stroke:#0d6832,stroke-width:1px
-    classDef novo fill:#a3cfbb,stroke:#0d6832,stroke-width:2px
-    classDef decisao fill:#fff3cd,stroke:#856404,stroke-width:1px
-    classDef inicio fill:#cfe2ff,stroke:#084298,stroke-width:1px
-    classDef fim fill:#f8d7da,stroke:#842029,stroke-width:1px
-    classDef loop fill:#e0cffc,stroke:#6f42c1,stroke-width:1px
-    classDef dask fill:#d5e5f9,stroke:#084298,stroke-width:1px
-    
-    class A,B inicio
-    class D1,J1,T1,L1 decisao
-    class F1,F2,G,J2,M novo
-    class E,H processo
-    class C,I,J,K,L,P1 dask
-    class T loop
-    class Z fim
-    
-    %% Animação das setas
-    linkStyle default stroke:#00AA00,stroke-width:2px,color:green,animation:flowing 2s ease infinite,stroke-dasharray:5,2,3,2
-```
+## 📋 Sugestões de Otimização (Histórico)
 
 ### 1. Paralelização e Desempenho
 
@@ -580,7 +469,7 @@ git checkout -b feature/modular-pipeline master
 git checkout -b feature/duckdb-integration master
 ```
 
-## 📊 Comparação de Tecnologias Atuais e Otimizadas
+## 📊 Comparação e Implementação (Histórico)
 
 | Aspecto | Atual | Sugestão de Otimização | Benefício |
 |---------|-------|----------|-----------|
