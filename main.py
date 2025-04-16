@@ -233,8 +233,8 @@ def main():
     parser = argparse.ArgumentParser(description='Processa dados do CNPJ')
     parser.add_argument('--tipos', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
                         help='Tipos de dados a serem processados. Se não especificado, processa todos.')
-    parser.add_argument('--engine', choices=['pandas', 'dask', 'polars'], default='pandas',
-                        help='Motor de processamento a ser utilizado. Padrão: pandas')
+    parser.add_argument('--engine', choices=['pandas', 'dask', 'polars'], default='polars',
+                        help='Motor de processamento a ser utilizado. Padrão: polars')
     parser.add_argument('--skip-download', action='store_true',
                         help='Pula a etapa de download.')
     parser.add_argument('--source-zip-folder', type=str, default=None,
@@ -465,6 +465,7 @@ def main():
                     specific_process_func = None # Reseta para garantir que a lógica abaixo funcione
                     if args.engine == 'pandas':
                          try:
+                             # Importa a função Pandas que acabamos de adicionar
                              from src.process.estabelecimento import process_estabelecimento_with_pandas
                              specific_process_func = process_estabelecimento_with_pandas
                          except ImportError:

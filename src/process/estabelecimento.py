@@ -7,6 +7,7 @@ import polars as pl
 import numpy as np
 import shutil
 from rich.progress import track
+import pandas as pd
 
 from ..config import config
 from ..utils import (
@@ -622,4 +623,274 @@ def process_estabelecimento_with_polars(path_zip: str, path_unzip: str, path_par
             
     except Exception as e:
         logger.error(f'Erro no processamento principal com Polars: {str(e)}')
+        return False
+
+
+# ----- Implementação para Pandas -----
+
+def process_csv_file_pandas(csv_path: str):
+    """Lê um arquivo CSV de estabelecimento usando Pandas.
+
+    Args:
+        csv_path: Caminho para o arquivo CSV.
+
+    Returns:
+        DataFrame Pandas ou None em caso de erro.
+    """
+    if not verify_csv_integrity(csv_path):
+        return None
+
+    original_column_names = config.estabelecimento_columns
+    dtype_dict = config.estabelecimento_dtypes_pandas # Usar dtypes específicos para Pandas
+
+    try:
+        df = pd.read_csv(
+            csv_path,
+            sep=config.file.separator,
+            encoding=config.file.encoding,
+            header=None,
+            names=original_column_names,
+            dtype=dtype_dict,
+            na_filter=False, # Evitar que strings vazias virem NaN automaticamente
+            low_memory=False # Para evitar avisos de DtypeWarning
+        )
+        # Substituir strings vazias explicitamente por None onde apropriado (após leitura)
+        # Exemplo: (pode ser necessário ajustar baseado nas colunas)
+        # for col in df.select_dtypes(include='object').columns:
+        #     df[col] = df[col].replace('', None)
+        return df
+    except Exception as e:
+        logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)} com Pandas: {str(e)}')
+        return None
+
+def apply_estabelecimento_transformations_pandas(df):
+    """Aplica transformações específicas para estabelecimentos usando Pandas."""
+    logger.info("Aplicando transformações em Estabelecimentos com Pandas...")
+
+    # Renomeação de colunas
+    rename_mapping = {
+        'identificador_matriz_filial': 'matriz_filial',
+        'situacao_cadastral': 'codigo_situacao_cadastral',
+        'motivo_situacao_cadastral': 'codigo_motivo_situacao_cadastral',
+        'data_inicio_atividade': 'data_inicio_atividades',
+        'cnae_fiscal_principal': 'codigo_cnae',
+        'municipio': 'codigo_municipio'
+    }
+    df = df.rename(columns=rename_mapping)
+
+    # Conversão numérica
+    int_cols = [
+        'matriz_filial', 'codigo_situacao_cadastral',
+        'codigo_motivo_situacao_cadastral', 'codigo_cnae',
+        'codigo_municipio'
+    ]
+    for col in int_cols:
+        if col in df.columns:
+            # Usar Int64 para permitir NAs
+            df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
+
+    # Conversão de datas
+    date_cols = ['data_situacao_cadastral', 'data_inicio_atividades']
+    for col in date_cols:
+        if col in df.columns:
+            # Tratar '0', '00000000', strings vazias explicitamente antes da conversão
+            df[col] = df[col].replace(['0', '00000000', ''], np.nan)
+            df[col] = pd.to_datetime(df[col], format='%Y%m%d', errors='coerce')
+
+    # Criação do CNPJ completo
+    if all(col in df.columns for col in ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']):
+        # Garantir que sejam strings e preencher com zeros
+        df['cnpj'] = (
+            df['cnpj_basico'].astype(str).str.zfill(8) +
+            df['cnpj_ordem'].astype(str).str.zfill(4) +
+            df['cnpj_dv'].astype(str).str.zfill(2)
+        )
+
+    # Remoção de colunas
+    cols_to_drop = [
+        'cnpj_ordem', 'cnpj_dv', 'tipo_logradouro', 'logradouro',
+        'numero', 'complemento', 'bairro', 'ddd1', 'telefone1',
+        'ddd2', 'telefone2', 'ddd_fax', 'fax', 'pais',
+        'correio_eletronico', 'situacao_especial',
+        'data_situacao_especial', 'nome_cidade_exterior'
+    ]
+    df = df.drop(columns=[col for col in cols_to_drop if col in df.columns])
+
+    logger.info("Transformações Pandas aplicadas em Estabelecimentos.")
+    return df
+
+def create_parquet_chunks_pandas(df, table_name, path_parquet, zip_filename_prefix: str, chunk_size=500000):
+    """Salva um DataFrame Pandas como múltiplos arquivos parquet com prefixo e chunking."""
+    try:
+        output_dir = os.path.join(path_parquet, table_name)
+        os.makedirs(output_dir, exist_ok=True)
+
+        logger.info(f"Colunas do DataFrame Pandas '{table_name}' (Origem: {zip_filename_prefix}) antes de salvar em Parquet: {list(df.columns)}")
+
+        total_rows = len(df)
+        if total_rows == 0:
+            logger.warning(f"DataFrame Pandas '{table_name}' (Origem: {zip_filename_prefix}) está vazio. Nenhum Parquet será salvo.")
+            return True
+
+        num_chunks = max(1, int(np.ceil(total_rows / chunk_size)))
+        logger.info(f"Salvando '{table_name}' (Origem: {zip_filename_prefix}) com {total_rows} linhas em {num_chunks} chunks Parquet...")
+
+        for i in range(num_chunks):
+            start_idx = i * chunk_size
+            end_idx = min((i + 1) * chunk_size, total_rows)
+            df_chunk = df.iloc[start_idx:end_idx]
+
+            file_name = f"{zip_filename_prefix}_{table_name}_{i:03d}.parquet"
+            file_path = os.path.join(output_dir, file_name)
+
+            df_chunk.to_parquet(file_path, index=False, compression="snappy")
+            logger.debug(f"Chunk {i+1}/{num_chunks} salvo como {file_name} ({len(df_chunk)} linhas)")
+
+        logger.info(f"DataFrame Pandas '{table_name}' (Origem: {zip_filename_prefix}) salvo com sucesso em {num_chunks} arquivo(s) Parquet.")
+        return True
+
+    except Exception as e:
+        logger.error(f"Erro ao salvar DataFrame Pandas '{table_name}' (Origem: {zip_filename_prefix}) como parquet: {str(e)}")
+        return False
+
+def process_single_zip_pandas(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
+    """Processa um único arquivo ZIP de estabelecimentos usando Pandas."""
+    logger = logging.getLogger()
+    pid = os.getpid()
+    zip_filename_prefix = os.path.splitext(zip_file)[0]
+    logger.info(f"[{pid}] Iniciando processamento Pandas para: {zip_file}")
+    path_extracao = ""
+    success = False
+
+    try:
+        # --- 1. Extração ---
+        nome_arquivo_sem_ext = os.path.splitext(zip_file)[0]
+        path_extracao = os.path.join(path_unzip, nome_arquivo_sem_ext)
+        if os.path.exists(path_extracao):
+            shutil.rmtree(path_extracao)
+        os.makedirs(path_extracao, exist_ok=True)
+
+        path_zip_file = os.path.join(path_zip, zip_file)
+        with zipfile.ZipFile(path_zip_file, 'r') as zip_ref:
+            zip_ref.extractall(path_extracao)
+        logger.info(f"[{pid}] Extração de {zip_file} concluída para {path_extracao}")
+
+        # --- 2. Leitura e Processamento CSV com Pandas ---
+        all_files_in_extraction = [
+            os.path.join(path_extracao, f)
+            for f in os.listdir(path_extracao)
+            if os.path.isfile(os.path.join(path_extracao, f))
+        ]
+
+        if not all_files_in_extraction:
+            logger.warning(f"[{pid}] Nenhum arquivo de dados encontrado em {path_extracao} para {zip_file}.")
+            return True
+
+        dataframes = []
+        logger.debug(f"[{pid}] Arquivos encontrados em {path_extracao}: {all_files_in_extraction}")
+        for data_path in all_files_in_extraction:
+            file_name = os.path.basename(data_path)
+            logger.debug(f"[{pid}] Tentando processar arquivo: {file_name}")
+            df_pandas = process_csv_file_pandas(data_path)
+            if df_pandas is not None and not df_pandas.empty:
+                logger.debug(f"[{pid}] Arquivo {file_name} processado com sucesso ({len(df_pandas)} linhas).")
+                dataframes.append(df_pandas)
+            elif df_pandas is not None and df_pandas.empty:
+                 logger.warning(f"[{pid}] Arquivo {file_name} resultou em DataFrame vazio.")
+
+        if not dataframes:
+            logger.error(f"[{pid}] Nenhum DataFrame Pandas válido gerado a partir do ZIP {zip_file}.")
+            return False
+
+        # Concatenar e aplicar transformações
+        df_final = pd.concat(dataframes, ignore_index=True) if len(dataframes) > 1 else dataframes[0]
+        df_final = apply_estabelecimento_transformations_pandas(df_final)
+
+        # --- 3. Salvar Parquet (Principal) ---
+        main_saved = create_parquet_chunks_pandas(df_final, 'estabelecimentos', path_parquet, zip_filename_prefix)
+
+        # --- 4. Salvar Parquet (Subset UF - Condicional) ---
+        subset_saved = True
+        if main_saved and uf_subset and 'uf' in df_final.columns:
+            subset_table_name = f"estabelecimentos_{uf_subset.lower()}"
+            logger.debug(f"[{pid}] Pandas Criando subset {subset_table_name}...")
+            df_subset = df_final[df_final['uf'] == uf_subset].copy()
+            if not df_subset.empty:
+                subset_saved = create_parquet_chunks_pandas(df_subset, subset_table_name, path_parquet, zip_filename_prefix)
+                if not subset_saved:
+                     logger.error(f"[{pid}] Pandas Falha ao salvar subset {subset_table_name} para {zip_file}.")
+            else:
+                logger.debug(f"[{pid}] Pandas Subset {subset_table_name} vazio para {zip_file}, não será salvo.")
+            del df_subset
+        elif main_saved and uf_subset:
+             logger.warning(f"[{pid}] Pandas Coluna 'uf' não encontrada, não é possível criar subset para UF {uf_subset}.")
+
+        success = main_saved and subset_saved
+        del df_final
+
+    except Exception as e:
+        logger.exception(f"[{pid}] Erro GERAL no processamento Pandas de {zip_file}")
+        success = False
+    finally:
+        # --- 5. Limpeza ---
+        if path_extracao and os.path.exists(path_extracao):
+            try:
+                shutil.rmtree(path_extracao)
+                logger.info(f"[{pid}] Diretório de extração {path_extracao} limpo.")
+            except Exception as e_clean:
+                 logger.warning(f"[{pid}] Falha ao limpar diretório de extração {path_extracao}: {e_clean}")
+
+    logger.info(f"[{pid}] Processamento Pandas para {zip_file} concluído com status: {success}")
+    return success
+
+def process_estabelecimento_with_pandas(path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
+    """Processa os dados de estabelecimentos usando Pandas."""
+    logger.info('=' * 50)
+    log_uf = f" (Subset UF: {uf_subset})" if uf_subset else ""
+    logger.info(f'Iniciando processamento de ESTABELECIMENTOS com Pandas{log_uf}')
+    logger.info('=' * 50)
+
+    try:
+        zip_files = [f for f in os.listdir(path_zip)
+                    if f.startswith('Estabelecimento') and f.endswith('.zip')]
+
+        if not zip_files:
+            logger.warning('Nenhum arquivo ZIP de Estabelecimentos encontrado.')
+            return True
+
+        # LIMPEZA PRÉVIA
+        output_dir_main = os.path.join(path_parquet, 'estabelecimentos')
+        if uf_subset:
+            output_dir_subset = os.path.join(path_parquet, f"estabelecimentos_{uf_subset.lower()}")
+        else:
+            output_dir_subset = None
+
+        try:
+            file_delete(output_dir_main)
+            logger.info(f'Diretório {output_dir_main} limpo antes do processamento Pandas.')
+            if output_dir_subset:
+                file_delete(output_dir_subset)
+                logger.info(f'Diretório {output_dir_subset} limpo antes do processamento Pandas.')
+        except Exception as e:
+            logger.warning(f'Não foi possível limpar diretórios de saída antes do processamento Pandas: {str(e)}')
+
+        overall_success = False
+        for zip_file in track(zip_files, description="[cyan]Processing Estabelecimentos ZIPs (Pandas)..."):
+            result = process_single_zip_pandas(
+                zip_file=zip_file,
+                path_zip=path_zip,
+                path_unzip=path_unzip,
+                path_parquet=path_parquet,
+                uf_subset=uf_subset
+            )
+            if result:
+                overall_success = True
+
+        if not overall_success:
+             logger.warning("Nenhum arquivo ZIP de Estabelecimentos foi processado com sucesso usando Pandas.")
+
+        return overall_success
+
+    except Exception as e:
+        logger.error(f'Erro no processamento principal com Pandas: {str(e)}')
         return False
