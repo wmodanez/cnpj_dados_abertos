@@ -59,24 +59,38 @@ def create_duckdb_file(path_parquet_folder: str, file_db_parquet: str, path_remo
                 parquet_files[table_name] = parquet_files_in_dir
                 logger.info(f"Encontrados {len(parquet_files_in_dir)} arquivos parquet válidos na pasta {table_name}")
 
-    # Busca os arquivos parquet na pasta base
-    base_path = os.path.join(path_parquet_folder, 'base')
+    # Busca os arquivos parquet na pasta base (diretamente na raiz de PATH_PARQUET) e cria uma tabela para cada um
+    # Presume que path_parquet_folder é algo como './parquet/<subpasta_processamento>'
+    # Queremos buscar em './parquet/base'
+    path_parquet_root = os.path.dirname(path_parquet_folder) # Obtém o diretório pai (ex: ./parquet)
+    base_path = os.path.join(path_parquet_root, 'base') # Constrói o caminho para ./parquet/base
+
     if os.path.exists(base_path):
-        base_files = []
+        logger.info(f"Procurando arquivos Parquet na pasta base: {base_path}")
+        files_in_base_count = 0
         for f in os.listdir(base_path):
             if f.endswith('.parquet'):
                 file_path = os.path.join(base_path, f)
                 if verify_parquet_file(file_path):
                     # Normaliza as barras invertidas para o SQL
-                    base_files.append(file_path.replace('\\', '/'))
+                    normalized_file_path = file_path.replace('\\\\', '/')
+                    # Deriva o nome da tabela do nome do arquivo (sem extensão)
+                    table_name_from_file = os.path.splitext(f)[0]
+                    # Adiciona uma entrada separada para este arquivo no dicionário
+                    parquet_files[table_name_from_file] = [normalized_file_path]
+                    logger.info(f"Arquivo parquet base válido encontrado: {f}. Será criada a tabela '{table_name_from_file}'.")
+                    files_in_base_count += 1
                 else:
                     logger.warning(f"Arquivo parquet base inválido ignorado: {file_path}")
-        if base_files:
-            parquet_files['base'] = base_files
-            logger.info(f"Encontrados {len(base_files)} arquivos parquet válidos na pasta base")
+        if files_in_base_count > 0:
+             logger.info(f"Encontrados {files_in_base_count} arquivos parquet válidos na pasta base para criar tabelas individuais.")
+        else:
+             logger.info(f"Nenhum arquivo parquet válido encontrado na pasta base ({base_path}).")
+    else:
+        logger.warning(f"Pasta base não encontrada em: {base_path}")
 
     if not parquet_files:
-        logger.warning(f"Nenhum arquivo parquet válido encontrado em {path_parquet_folder}")
+        logger.warning(f"Nenhum arquivo parquet válido encontrado em {path_parquet_folder} ou em sua subpasta 'base'")
         return False
 
     # Cria o banco de dados

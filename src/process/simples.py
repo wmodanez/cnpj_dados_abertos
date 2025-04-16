@@ -9,6 +9,7 @@ from pyarrow import parquet as pq
 import dask.dataframe as dd
 from dask import delayed
 import polars as pl  # Importar Polars
+from rich.progress import track # Adicionar import
 
 from ..config import config
 from ..utils import (
@@ -70,9 +71,7 @@ def create_parquet_chunks(df, table_name, path_parquet, chunk_size=100000):
             index=False,
             compression='snappy'  # Compressão eficiente para leitura/escrita
         )
-        
-        logger.info(f"Chunk {i+1}/{num_chunks} salvo como {file_name} ({end_idx-start_idx} linhas)")
-    
+            
     return True
 
 
@@ -146,7 +145,7 @@ def create_parquet_chunks_with_dates(df, table_name, path_parquet, chunk_size=10
             compression='snappy'
         )
         
-        logger.info(f"Chunk {i+1}/{num_chunks} salvo como {file_name} ({end_idx-start_idx} linhas)")
+        logger.debug(f"Chunk {i+1}/{num_chunks} salvo como {file_name} ({end_idx-start_idx} linhas)")
     
     return True
 
@@ -435,7 +434,6 @@ def process_single_zip_pandas(zip_file: str, path_zip: str, path_unzip: str, pat
                 
                 if df is not None and not df.empty:
                     dataframes.append(df)
-                    logger.info(f"CSV {csv_file} processado com sucesso: {len(df)} linhas")
             except Exception as e:
                 logger.error(f"Erro ao processar o CSV {csv_file}: {str(e)}")
         
@@ -536,7 +534,7 @@ def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
         
         # Processar diretamente com Pandas, para simplicidade e eficiência
         success = False
-        for zip_file in zip_files:
+        for zip_file in track(zip_files, description="[cyan]Processing Simples ZIPs (Pandas)..."):
             result = process_single_zip_pandas(
                 zip_file=zip_file,
                 path_zip=path_zip,
@@ -717,7 +715,7 @@ def create_parquet_polars(df, table_name, path_parquet):
                 compression="snappy"
             )
             
-            logger.info(f"Chunk {i+1}/{num_chunks} salvo como {file_name} ({end_idx-start_idx} linhas)")
+            logger.debug(f"Chunk {i+1}/{num_chunks} salvo como {file_name} ({end_idx-start_idx} linhas)")
         
         return True
     except Exception as e:
@@ -780,4 +778,44 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
         
     except Exception as e:
         logger.error(f'Erro processando {zip_file} com Polars: {str(e)}')
+        return False
+
+# Função adicionada para processamento com Polars
+def process_simples_with_polars(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
+    """Processa os dados do Simples Nacional usando Polars."""
+    logger.info('=' * 50)
+    logger.info('Iniciando processamento do SIMPLES NACIONAL com Polars')
+    logger.info('=' * 50)
+    
+    try:
+        zip_files = [f for f in os.listdir(path_zip) 
+                    if f.startswith('Simples') and f.endswith('.zip')]
+        
+        if not zip_files:
+            logger.warning('Nenhum arquivo ZIP do Simples encontrado.')
+            return True # Considera sucesso se não há arquivos para processar
+        
+        # Processar com Polars
+        success = False
+        # Adiciona barra de progresso para o loop de arquivos ZIP
+        for zip_file in track(zip_files, description="[cyan]Processing Simples ZIPs (Polars)..."):
+            # Chama a função de processamento de ZIP único com Polars
+            result = process_single_zip_polars(
+                zip_file=zip_file,
+                path_zip=path_zip,
+                path_unzip=path_unzip,
+                path_parquet=path_parquet
+                # A função process_single_zip_polars não precisa da flag create_private
+            )
+            if result:
+                success = True
+                logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars")
+        
+        if not success:
+            logger.warning("Nenhum arquivo processado com sucesso usando Polars.")
+        
+        return success
+            
+    except Exception as e:
+        logger.error(f'Erro no processamento principal do Simples com Polars: {str(e)}')
         return False

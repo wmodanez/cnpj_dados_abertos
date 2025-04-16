@@ -128,8 +128,41 @@ PATH_REMOTE_PARQUET=//servidor/compartilhado/
 
 ### Execução
 
+O script principal `main.py` aceita diversos argumentos para customizar a execução:
+
 ```bash
+# 1. Execução padrão (Baixa todos os tipos na pasta mais recente, processa todos com Pandas, salva em subpasta com nome da data baixada):
 python main.py
+
+# 2. Baixa e processa apenas Empresas e Sócios com Pandas (salva em subpasta com nome da data baixada):
+python main.py --tipos empresas socios
+
+# 3. Baixa e processa todos os tipos usando o motor Dask (salva em subpasta com nome da data baixada):
+python main.py --engine dask
+
+# 4. Baixa e processa apenas Estabelecimentos usando Polars (salva em subpasta com nome da data baixada):
+python main.py --tipos estabelecimentos --engine polars
+
+# 5. Pular o download e processar todos os tipos da pasta ZIP '../dados-abertos-zip', salvando Parquet na subpasta 'meu_processamento_manual' (dentro de PATH_PARQUET):
+python main.py --skip-download --source-zip-folder ../dados-abertos-zip --output-subfolder meu_processamento_manual
+
+# 6. Pular o download, processar apenas Simples e Sócios da pasta ZIP 'D:/MeusDownloads/CNPJ_ZIPs', usando Dask, salvando Parquet na subpasta 'simples_socios_dask' (dentro de PATH_PARQUET):
+python main.py --skip-download --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs" --output-subfolder simples_socios_dask --tipos simples socios --engine dask
+
+# 7. Baixa e processa apenas Empresas usando Pandas (salva em subpasta com nome da data baixada):
+python main.py --tipos empresas --engine pandas
+
+# 8. Baixa e processa apenas Empresas usando Polars, salvando na subpasta 'apenas_empresas_polars' (dentro de PATH_PARQUET):
+python main.py --tipos empresas --engine polars --output-subfolder apenas_empresas_polars
+
+# 9. Como o exemplo 8, mas também cria o subconjunto 'empresa_privada' no diretório de saída:
+python main.py --tipos empresas --engine polars --output-subfolder apenas_empresas_polars --criar-empresa-privada
+
+# 10. Pular download E processamento, criando apenas o arquivo DuckDB a partir dos Parquets existentes na subpasta 'processamento_anterior' (dentro de PATH_PARQUET):
+python main.py --skip-processing --output-subfolder processamento_anterior
+
+# 11. Pular download, processar com Dask, e depois criar o DuckDB, usando a pasta de origem 'meus_zips' e salvando na subpasta 'resultado_dask':
+python main.py --skip-download --source-zip-folder meus_zips --engine dask --output-subfolder resultado_dask
 ```
 
 ### Gerenciamento de Cache
@@ -296,48 +329,19 @@ flowchart TD
 
 ## ✨ Características
 
-- **Download Paralelo**: Baixa múltiplos arquivos simultaneamente
-- **Sistema de Cache**: Evita baixar novamente arquivos recentemente processados
-- **Verificação de Espaço em Disco**: Garante espaço suficiente antes do processamento
-- **Verificação de Conexão**: Verifica conectividade com a internet antes dos downloads
-- **Tratamento Específico de Exceções**: Melhor robustez e recuperação de falhas
-- **Paralelização do Processamento**: Processamento eficiente de arquivos CSV usando Dask e ThreadPoolExecutor
-- **Resiliência**: Sistema de retry automático em caso de falhas
-- **Processamento Eficiente**: Utiliza Dask para processamento paralelo
-- **Armazenamento Otimizado**: Dados em formato Parquet e DuckDB
-- **Logging Detalhado**: Rastreamento completo das operações
-- **Configurável**: Fácil adaptação às necessidades específicas
-- **Conversão Robusta de Tipos**: Tratamento avançado para campos numéricos, datas e valores monetários
+- **Download Eficiente:** Baixa apenas os arquivos mais recentes, utilizando cache e downloads paralelos.
+- **Processamento Flexível:** Suporta diferentes motores (Pandas, Dask, Polars) para processamento dos dados CSV.
+- **Saída Otimizada:** Gera arquivos Parquet particionados e um banco de dados DuckDB consolidado.
+- **Resiliência:** Inclui retentativas em downloads e tratamento básico de erros.
+- **Configurabilidade:** Usa variáveis de ambiente (`.env.local`) para definir caminhos e URLs.
+- **Argumentos de Linha de Comando:** Permite controlar o fluxo de execução (tipos de dados, engine, pular etapas).
+- **Logging Detalhado:** Registra as etapas do processo em arquivos de log e no console com formatação Rich.
 
-## 📝 Logs e Monitoramento
+## 🔄 Atualizações Recentes
 
-- Logs são gerados em `logs/cnpj_process_YYYYMMDD_HHMMSS.log`
-- Dashboard Dask disponível em `http://localhost:8787`
-- Progresso de downloads exibido em tempo real
-- Logs detalhados de erros com tratamento específico por tipo de exceção
-
-## ⚙️ Configurações
-
-O arquivo `config.py` permite ajustar:
-
-- **Processamento**
-  - Número de workers Dask (`config.dask.n_workers`)
-  - Threads por worker
-  - Limite de memória
-
-- **Cache**
-  - Habilitar/desabilitar cache (`config.cache.enabled`)
-  - Diretório do cache (`config.cache.cache_dir`)
-  - Tempo de expiração do cache (`config.cache.max_age_days`)
-
-- **Arquivos**
-  - Encoding
-  - Separador
-  - Tipos de dados
-
-- **Banco de Dados**
-  - Número de threads
-  - Configurações de compressão
+- **(Julho/2024)** Adicionada a flag `--skip-processing` que permite pular as etapas de download e processamento para Parquet, indo diretamente para a criação do arquivo DuckDB. Requer que `--output-subfolder` seja especificado para indicar a pasta Parquet existente.
+- **(Julho/2024)** Corrigida a lógica de busca da pasta `base` na criação do DuckDB para procurá-la na raiz do diretório Parquet (`parquet/base`), permitindo que tabelas base sejam incluídas corretamente junto com os dados processados.
+- **(Julho/2024)** Refatoração do fluxo Dask para melhor alinhamento com o fluxo Pandas e Polars, incluindo nomeação de arquivos Parquet com prefixo do ZIP de origem.
 
 ## 📋 Sugestões de Otimização
 
