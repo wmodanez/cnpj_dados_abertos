@@ -232,9 +232,9 @@ def main():
     """Função principal que orquestra todo o processo."""
     parser = argparse.ArgumentParser(description='Processa dados do CNPJ')
     parser.add_argument('--tipos', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
-                        help='Tipos de dados a serem processados. Se não especificado, processa todos (relevante para steps 'process' e 'all').')
+                        help='Tipos de dados a serem processados. Se não especificado, processa todos (relevante para steps \'process\' e \'all\').')
     parser.add_argument('--engine', choices=['pandas', 'dask', 'polars'], default='polars',
-                        help='Motor de processamento a ser utilizado (relevante para steps 'process' e 'all'). Padrão: polars')
+                        help='Motor de processamento a ser utilizado (relevante para steps \'process\' e \'all\'). Padrão: polars')
     parser.add_argument('--source-zip-folder', type=str, default=None,
                         help='Caminho para a pasta contendo os arquivos ZIP a serem processados (Obrigatório para --step process).')
     parser.add_argument('--output-subfolder', type=str, default=None,
@@ -526,7 +526,7 @@ def main():
             if dask_manager: dask_manager.shutdown()
             return
             
-        print_info(f"Lendo Parquets de: {target_parquet_output_path}")
+        logger.info(f"Lendo Parquets de: {target_parquet_output_path}")
         db_creation_success = create_duckdb_file(
             path_parquet_folder=target_parquet_output_path,
             file_db_parquet=FILE_DB_PARQUET,

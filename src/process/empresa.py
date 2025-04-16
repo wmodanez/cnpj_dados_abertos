@@ -352,7 +352,7 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
             logger.debug(f"[{os.getpid()}] Diretório de extração criado/garantido: {path_extracao}")
         except Exception as e_make_dir:
              logger.exception(f"[{os.getpid()}] Erro CRÍTICO ao criar diretório de extração {path_extracao}")
-             return {'sucesso': False, 'tempo': time.time() - start_time}
+             return False # Retorna False em vez de dict com start_time
 
         path_zip_file = os.path.join(path_zip, zip_file)
         logger.info(f"[{os.getpid()}] Extraindo {zip_file} para {path_extracao}...")
@@ -363,7 +363,7 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
             logger.info(f"[{os.getpid()}] Extração de {zip_file} concluída. Arquivos na extração: {arquivos_extraidos}")
         except Exception as e_zip:
             logger.exception(f"[{os.getpid()}] Erro durante a extração do ZIP {path_zip_file}")
-            return {'sucesso': False, 'tempo': time.time() - start_time}
+            return False
         
         # --- 2. Conversão --- 
         # Processa o arquivo CSV principal
@@ -575,7 +575,7 @@ def process_single_zip_pandas(zip_file, path_zip, path_unzip, path_parquet, crea
     Returns:
         dict: Dicionário com resultados {'sucesso': bool, 'tempo': float}
     """
-    # Medir tempo do worker
+    # Medir tempo do worker - MOVIDO PARA O INÍCIO
     start_time = time.time()
     pid = os.getpid()
     zip_filename_prefix = os.path.splitext(zip_file)[0] # Usar para nomear arquivos parquet

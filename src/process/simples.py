@@ -409,113 +409,173 @@ def create_parquet_with_dates(ddf, table_name, path_parquet):
 
 def process_single_zip_pandas(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa um único arquivo ZIP usando Pandas para eficiência."""
+    zip_path = os.path.join(path_zip, zip_file)
+    extract_dir = os.path.join(path_unzip, os.path.splitext(zip_file)[0]) # Subdir para extração
+    
     try:
-        zip_path = os.path.join(path_zip, zip_file)
-        
+        # Limpa o diretório de extração específico, se existir
+        if os.path.exists(extract_dir):
+            logger.debug(f"Removendo diretório de extração existente: {extract_dir}")
+            shutil.rmtree(extract_dir)
+        os.makedirs(extract_dir) # Cria o diretório
+
         # Extração e processamento
+        logger.info(f"Extraindo {zip_file} para {extract_dir}")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(path_unzip)
+            zip_ref.extractall(extract_dir) # Extrai para o subdir
         
-        # Processamento dos CSVs usando Pandas
-        csv_files = [f for f in os.listdir(path_unzip) if 'CSV' in f]
+        # Processamento dos CSVs a partir do subdir
+        csv_files = [f for f in os.listdir(extract_dir) if 'csv' in f.lower()] # Ler do subdir
         
         if not csv_files:
-            logger.warning(f"Nenhum arquivo CSV encontrado no ZIP {zip_file}")
-            return False
+            logger.warning(f"Nenhum arquivo CSV encontrado em {extract_dir} para o ZIP {zip_file}")
+            return True # Considera sucesso se não há CSVs
         
-        # Lista para armazenar os DataFrames
         dataframes = []
-        
-        # Processar cada arquivo CSV individualmente
+        processamento_ok = False
         for csv_file in csv_files:
             try:
-                csv_path = os.path.join(path_unzip, csv_file)
+                csv_path = os.path.join(extract_dir, csv_file) # Caminho completo no subdir
                 df = process_csv_file_pandas(csv_path)
                 
                 if df is not None and not df.empty:
                     dataframes.append(df)
+                    processamento_ok = True # Marca que pelo menos um CSV foi lido
+                elif df is not None and df.empty:
+                    logger.warning(f"DataFrame Pandas vazio para CSV: {csv_file}")
+                # Se df is None, erro já logado
             except Exception as e:
-                logger.error(f"Erro ao processar o CSV {csv_file}: {str(e)}")
+                logger.error(f"Erro ao processar o CSV {csv_file} com Pandas: {str(e)}")
         
-        # Verificar se temos DataFrames para processar
-        if not dataframes:
-            logger.warning(f"Nenhum DataFrame válido gerado a partir do ZIP {zip_file}")
+        if not processamento_ok or not dataframes:
+            logger.warning(f"Nenhum DataFrame Pandas válido gerado a partir do ZIP {zip_file}")
+            return False # Falha se havia CSVs mas não gerou DataFrames
+        
+        # Concatenar e transformar
+        df_final = None
+        try:
+            if len(dataframes) > 1:
+                df_final = pd.concat(dataframes, ignore_index=True)
+            else:
+                df_final = dataframes[0]
+            
+            if df_final.empty:
+                logger.warning(f"DataFrame Pandas final vazio após concatenação para o ZIP {zip_file}")
+                return True # Sucesso se resultou vazio
+
+            df_transformed = apply_pandas_transformations(df_final)
+            
+            # Salvar Parquet
+            # Usar zip_filename_prefix para nomear chunks
+            zip_filename_prefix = os.path.splitext(zip_file)[0]
+            return create_parquet_chunks_with_dates(df_transformed, 'simples', path_parquet, zip_filename_prefix)
+        
+        except Exception as e_concat_transform:
+            logger.error(f"Erro durante concatenação ou transformação Pandas para {zip_file}: {e_concat_transform}")
             return False
-        
-        # Concatenar os DataFrames se houver mais de um
-        if len(dataframes) > 1:
-            df = pd.concat(dataframes, ignore_index=True)
-        else:
-            df = dataframes[0]
-        
-        # Verificar se o DataFrame resultante tem dados
-        if df.empty:
-            logger.warning(f"DataFrame vazio após concatenação para o ZIP {zip_file}")
-            return False
-        
-        # Aplicar transformações
-        df = apply_pandas_transformations(df)
-        
-        # Criar múltiplos arquivos parquet com chunks usando PyArrow com date32
-        return create_parquet_chunks_with_dates(df, 'simples', path_parquet)
-        
+        finally:
+             if 'df_final' in locals() and df_final is not None: del df_final
+             if 'df_transformed' in locals() and df_transformed is not None: del df_transformed
+             import gc
+             gc.collect()
+
     except Exception as e:
-        logger.error(f'Erro processando {zip_file}: {str(e)}')
+        logger.error(f'Erro processando {zip_file} com Pandas: {str(e)}')
         return False
+    finally:
+        # Garante a limpeza do diretório de extração
+        if os.path.exists(extract_dir):
+            logger.debug(f"Limpando diretório de extração final (Pandas): {extract_dir}")
+            try:
+                shutil.rmtree(extract_dir)
+            except Exception as e_clean:
+                 logger.warning(f"Não foi possível limpar diretório de extração {extract_dir}: {e_clean}")
 
 
 @delayed
 def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa um único arquivo ZIP usando Dask de forma distribuída."""
+    zip_path = os.path.join(path_zip, zip_file)
+    extract_dir = os.path.join(path_unzip, os.path.splitext(zip_file)[0]) # Subdir para extração
+    
     try:
-        zip_path = os.path.join(path_zip, zip_file)
-        
+        # Limpa o diretório de extração específico, se existir
+        if os.path.exists(extract_dir):
+            logger.debug(f"Removendo diretório de extração existente: {extract_dir}")
+            shutil.rmtree(extract_dir)
+        os.makedirs(extract_dir) # Cria o diretório
+
         # Extração e processamento
+        logger.info(f"Extraindo {zip_file} para {extract_dir}")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(path_unzip)
+            zip_ref.extractall(extract_dir) # Extrai para o subdir
         
-        # Processamento dos CSVs usando Dask
-        csv_files = [f for f in os.listdir(path_unzip) if 'CSV' in f]
+        # Processamento dos CSVs a partir do subdir
+        csv_files = [f for f in os.listdir(extract_dir) if 'csv' in f.lower()] # Ler do subdir
         
         if not csv_files:
-            logger.warning(f"Nenhum arquivo CSV encontrado no ZIP {zip_file}")
-            return False
+            logger.warning(f"Nenhum arquivo CSV encontrado em {extract_dir} para o ZIP {zip_file}")
+            return True # Considera sucesso se não há CSVs
         
-        # Lista para armazenar os DataFrames Dask
         dask_dataframes = []
-        
-        # Processar cada arquivo CSV individualmente
+        processamento_ok = False
         for csv_file in csv_files:
             try:
-                csv_path = os.path.join(path_unzip, csv_file)
+                csv_path = os.path.join(extract_dir, csv_file) # Caminho completo no subdir
                 ddf = process_csv_file_dask(csv_path)
                 
                 if ddf is not None:
+                    # Verifica se tem partições (indicativo de dados) antes de adicionar
+                    # if ddf.npartitions > 0: # Checagem inicial, pode não ser 100% seguro
                     dask_dataframes.append(ddf)
+                    processamento_ok = True
                     logger.info(f"CSV {csv_file} processado com sucesso usando Dask")
+                    # else:
+                    #     logger.warning(f"DataFrame Dask vazio (0 partições) para CSV: {csv_file}")
+                # Se ddf is None, erro já logado
             except Exception as e:
                 logger.error(f"Erro ao processar o CSV {csv_file} com Dask: {str(e)}")
         
-        # Verificar se temos DataFrames para processar
-        if not dask_dataframes:
+        if not processamento_ok or not dask_dataframes:
             logger.warning(f"Nenhum DataFrame Dask válido gerado a partir do ZIP {zip_file}")
+            return False # Falha se havia CSVs mas não gerou DataFrames
+        
+        # Concatenar e transformar
+        ddf_final = None
+        try:
+            if len(dask_dataframes) > 1:
+                ddf_final = dd.concat(dask_dataframes)
+            else:
+                ddf_final = dask_dataframes[0]
+                
+            # Verificar se ddf_final tem dados antes de prosseguir pode ser caro em Dask.
+            # Assumimos que se chegou aqui, há potencial para dados.
+
+            ddf_transformed = apply_dask_transformations(ddf_final)
+            
+            # Salvar Parquet
+            # Usar zip_filename_prefix para nomear chunks
+            zip_filename_prefix = os.path.splitext(zip_file)[0]
+            return create_parquet_with_dates(ddf_transformed, 'simples', path_parquet, zip_filename_prefix)
+        
+        except Exception as e_concat_transform:
+            logger.error(f"Erro durante concatenação ou transformação Dask para {zip_file}: {e_concat_transform}")
             return False
-        
-        # Concatenar os DataFrames se houver mais de um
-        if len(dask_dataframes) > 1:
-            ddf = dd.concat(dask_dataframes)
-        else:
-            ddf = dask_dataframes[0]
-        
-        # Aplicar transformações
-        ddf = apply_dask_transformations(ddf)
-        
-        # Criar parquet usando nossa nova função que preserva tipos de data
-        return create_parquet_with_dates(ddf, 'simples', path_parquet)
-        
+        finally:
+             # Limpeza de memória Dask é gerenciada pelo scheduler
+             pass 
+
     except Exception as e:
         logger.error(f'Erro processando {zip_file} com Dask: {str(e)}')
         return False
+    finally:
+        # Garante a limpeza do diretório de extração
+        if os.path.exists(extract_dir):
+            logger.debug(f"Limpando diretório de extração final (Dask): {extract_dir}")
+            try:
+                shutil.rmtree(extract_dir)
+            except Exception as e_clean:
+                 logger.warning(f"Não foi possível limpar diretório de extração {extract_dir}: {e_clean}")
 
 
 def process_simples(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
@@ -725,60 +785,88 @@ def create_parquet_polars(df, table_name, path_parquet):
 
 def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa um único arquivo ZIP usando Polars para eficiência."""
+    zip_path = os.path.join(path_zip, zip_file)
+    extract_dir = os.path.join(path_unzip, os.path.splitext(zip_file)[0]) # Subdir para extração
+
     try:
-        zip_path = os.path.join(path_zip, zip_file)
-        
+        # Limpa o diretório de extração específico, se existir
+        if os.path.exists(extract_dir):
+            logger.debug(f"Removendo diretório de extração existente: {extract_dir}")
+            shutil.rmtree(extract_dir)
+        os.makedirs(extract_dir) # Cria o diretório
+
         # Extração e processamento
+        logger.info(f"Extraindo {zip_file} para {extract_dir}")
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(path_unzip)
+            zip_ref.extractall(extract_dir) # Extrai para o subdir
         
-        # Processamento dos CSVs usando Polars
-        csv_files = [f for f in os.listdir(path_unzip) if 'CSV' in f]
+        # Processamento dos CSVs a partir do subdir
+        csv_files = [f for f in os.listdir(extract_dir) if 'csv' in f.lower()] # Ler do subdir
         
         if not csv_files:
-            logger.warning(f"Nenhum arquivo CSV encontrado no ZIP {zip_file}")
-            return False
+            logger.warning(f"Nenhum arquivo CSV encontrado em {extract_dir} para o ZIP {zip_file}")
+            return True # Considera sucesso se não há CSVs
         
-        # Lista para armazenar os DataFrames
         dataframes = []
-        
-        # Processar cada arquivo CSV individualmente
+        processamento_ok = False
         for csv_file in csv_files:
             try:
-                csv_path = os.path.join(path_unzip, csv_file)
+                csv_path = os.path.join(extract_dir, csv_file) # Caminho completo no subdir
                 df = process_csv_file_polars(csv_path)
                 
                 if df is not None and not df.is_empty():
                     dataframes.append(df)
+                    processamento_ok = True
                     logger.info(f"CSV {csv_file} processado com sucesso usando Polars: {df.height} linhas")
+                elif df is not None and df.is_empty():
+                     logger.warning(f"DataFrame Polars vazio para CSV: {csv_file}")
+                # Se df is None, erro já logado
             except Exception as e:
                 logger.error(f"Erro ao processar o CSV {csv_file} com Polars: {str(e)}")
         
-        # Verificar se temos DataFrames para processar
-        if not dataframes:
+        if not processamento_ok or not dataframes:
             logger.warning(f"Nenhum DataFrame Polars válido gerado a partir do ZIP {zip_file}")
+            return False # Falha se havia CSVs mas não gerou DataFrames
+        
+        # Concatenar e transformar
+        df_final = None
+        try:
+            if len(dataframes) > 1:
+                df_final = pl.concat(dataframes, how="vertical")
+            else:
+                df_final = dataframes[0]
+                
+            if df_final.is_empty():
+                logger.warning(f"DataFrame Polars final vazio após concatenação para o ZIP {zip_file}")
+                return True # Sucesso se resultou vazio
+
+            df_transformed = apply_polars_transformations(df_final)
+            
+            # Salvar Parquet
+            # Usar zip_filename_prefix para nomear chunks
+            zip_filename_prefix = os.path.splitext(zip_file)[0]
+            return create_parquet_polars(df_transformed, 'simples', path_parquet, zip_filename_prefix)
+        
+        except Exception as e_concat_transform:
+            logger.error(f"Erro durante concatenação ou transformação Polars para {zip_file}: {e_concat_transform}")
             return False
-        
-        # Concatenar os DataFrames se houver mais de um
-        if len(dataframes) > 1:
-            df = pl.concat(dataframes, how="vertical")
-        else:
-            df = dataframes[0]
-        
-        # Verificar se o DataFrame resultante tem dados
-        if df.is_empty():
-            logger.warning(f"DataFrame Polars vazio após concatenação para o ZIP {zip_file}")
-            return False
-        
-        # Aplicar transformações
-        df = apply_polars_transformations(df)
-        
-        # Criar múltiplos arquivos parquet com chunks
-        return create_parquet_polars(df, 'simples', path_parquet)
-        
+        finally:
+             if 'df_final' in locals() and df_final is not None: del df_final
+             if 'df_transformed' in locals() and df_transformed is not None: del df_transformed
+             import gc
+             gc.collect()
+
     except Exception as e:
         logger.error(f'Erro processando {zip_file} com Polars: {str(e)}')
         return False
+    finally:
+        # Garante a limpeza do diretório de extração
+        if os.path.exists(extract_dir):
+            logger.debug(f"Limpando diretório de extração final (Polars): {extract_dir}")
+            try:
+                shutil.rmtree(extract_dir)
+            except Exception as e_clean:
+                 logger.warning(f"Não foi possível limpar diretório de extração {extract_dir}: {e_clean}")
 
 # Função adicionada para processamento com Polars
 def process_simples_with_polars(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
