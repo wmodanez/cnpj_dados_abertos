@@ -14,10 +14,10 @@ Exemplos de uso:
    python main.py --tipos estabelecimentos --engine polars
 
 5. Pular o download e processar todos os tipos da pasta ZIP '../dados-abertos-zip', salvando Parquet na subpasta 'meu_processamento_manual' (dentro de PATH_PARQUET):
-   python main.py --skip-download --source-zip-folder ../dados-abertos-zip --output-subfolder meu_processamento_manual
+   python main.py --step process --source-zip-folder ../dados-abertos-zip --output-subfolder meu_processamento_manual
 
 6. Pular o download, processar apenas Simples e Sócios da pasta ZIP 'D:/MeusDownloads/CNPJ_ZIPs', usando Dask, salvando Parquet na subpasta 'simples_socios_dask' (dentro de PATH_PARQUET):
-   python main.py --skip-download --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs" --output-subfolder simples_socios_dask --tipos simples socios --engine dask
+   python main.py --step process --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs" --output-subfolder simples_socios_dask --tipos simples socios --engine dask
 
 7. Baixa e processa apenas Empresas usando Pandas (salva em subpasta com nome da data baixada):
    python main.py --tipos empresas --engine pandas
@@ -29,13 +29,28 @@ Exemplos de uso:
    python main.py --tipos empresas --engine polars --output-subfolder apenas_empresas_polars --criar-empresa-privada
 
 10. Pular download E processamento, criando apenas o arquivo DuckDB a partir dos Parquets existentes na subpasta 'processamento_anterior' (dentro de PATH_PARQUET):
-    python main.py --skip-processing --output-subfolder processamento_anterior
+    python main.py --step database --output-subfolder processamento_anterior
 
 11. Pular download, processar com Dask, e depois criar o DuckDB, usando a pasta de origem 'meus_zips' e salvando na subpasta 'resultado_dask':
-    python main.py --skip-download --source-zip-folder meus_zips --engine dask --output-subfolder resultado_dask
+    python main.py --step process --source-zip-folder meus_zips --engine dask --output-subfolder resultado_dask
 
 12. Processar apenas estabelecimentos com Polars, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
     python main.py --tipos estabelecimentos --engine polars --output-subfolder process_sp --criar-subset-uf SP
+
+13. Baixar e processar dados de uma pasta remota específica (2023-05) em vez da pasta mais recente:
+    python main.py --remote-folder 2023-05
+
+14. Baixar arquivos de TODOS os diretórios remotos disponíveis (salvando em subpastas separadas):
+    python main.py --all-folders --step download
+
+15. Processar dados de uma pasta específica dentro da estrutura de subpastas (supondo que fizemos download com --all-folders antes):
+    python main.py --step process --source-zip-folder pasta_zips --output-subfolder processados_2023_05
+
+16. Baixar arquivos forçando download mesmo que já existam localmente ou no cache:
+    python main.py --remote-folder 2023-05 --force-download
+
+NOTA: O download sempre salvará os arquivos em uma subpasta com o nome da pasta remota (ex: 2023-05)
+      dentro do diretório ZIP. Ao usar --source-zip-folder, aponte para o diretório que contém estas subpastas.
 """
 import argparse
 import asyncio
@@ -126,15 +141,18 @@ def print_error(text: str):
     print(f"✗ {text}")
 
 
-async def run_download_process(tipos_desejados: list[str] | None = None):
+async def run_download_process(tipos_desejados: list[str] | None = None, remote_folder: str | None = None, all_folders: bool = False):
     """Executa todo o processo de download de forma assíncrona.
 
     Args:
         tipos_desejados: Lista de tipos de arquivos a serem baixados. Se None, baixa todos.
+        remote_folder: Pasta remota específica a ser baixada no formato AAAA-MM. Se None, usa a mais recente.
+        all_folders: Se True, baixa arquivos de todos os diretórios remotos disponíveis.
 
     Returns:
         tuple[bool, str]: (sucesso do download, pasta mais recente)
             - Se sucesso for False, a pasta mais recente será uma string vazia
+            - Se all_folders=True, a segunda posição conterá "all_folders"
     """
     logger = logging.getLogger(__name__)
     logger.info("Iniciando processo de download centralizado...")
@@ -147,7 +165,120 @@ async def run_download_process(tipos_desejados: list[str] | None = None):
             logger.error("Variáveis de ambiente URL_ORIGIN ou PATH_ZIP não definidas.")
             return False, ""
 
-        # 1. Buscar URLs mais recentes
+        if all_folders:
+            # Modo especial: baixar de todos os diretórios disponíveis
+            logger.info("Modo ALL_FOLDERS ativado: baixando arquivos de todos os diretórios disponíveis.")
+            
+            # 1. Primeiro, obtemos a lista de todos os diretórios disponíveis
+            try:
+                # Vamos reutilizar parte da função get_latest_month_zip_urls para obter os diretórios
+                from src.async_downloader import _fetch_and_parse, _find_links
+                
+                base_soup = _fetch_and_parse(base_url)
+                if not base_soup:
+                    logger.error("Falha ao buscar diretórios remotos.")
+                    return False, ""
+                
+                directory_links = _find_links(base_soup, base_url, ends_with=None)
+                
+                year_month_folders = []
+                for dir_url in directory_links:
+                    folder_name = dir_url.strip('/').split('/')[-1]
+                    match = re.fullmatch(r'(\d{4})-(\d{2})', folder_name)
+                    if match:
+                        year_month_folders.append((folder_name, dir_url))
+                        logger.debug(f"Encontrado diretório AAAA-MM: {folder_name} -> {dir_url}")
+                
+                if not year_month_folders:
+                    logger.warning(f"Nenhum diretório no formato AAAA-MM encontrado em {base_url}")
+                    return False, ""
+                
+                # Ordenamos os diretórios do mais recente para o mais antigo
+                year_month_folders.sort(key=lambda x: x[0], reverse=True)
+                
+                logger.info(f"Encontrados {len(year_month_folders)} diretórios remotos para download.")
+                
+                # 2. Agora, vamos baixar de cada diretório
+                all_successful = True
+                downloaded_files_count = 0
+                failed_downloads_count = 0
+                
+                for folder_name, folder_url in year_month_folders:
+                    logger.info(f"Processando diretório: {folder_name}")
+                    
+                    # Criar subdiretório para esta pasta se não existir
+                    folder_download_path = os.path.join(download_folder, folder_name)
+                    os.makedirs(folder_download_path, exist_ok=True)
+                    
+                    # Obter URLs dos arquivos .zip neste diretório
+                    folder_soup = _fetch_and_parse(folder_url)
+                    if not folder_soup:
+                        logger.warning(f"Falha ao buscar arquivos em {folder_url}. Pulando.")
+                        all_successful = False
+                        continue
+                    
+                    zip_urls = _find_links(folder_soup, folder_url, ends_with='.zip')
+                    
+                    if not zip_urls:
+                        logger.warning(f"Nenhum arquivo .zip encontrado em {folder_url}")
+                        continue
+                    
+                    # Filtrar por tipos desejados
+                    if tipos_desejados is not None:
+                        try:
+                            filtered_urls, ignored_count = _filter_urls_by_type(zip_urls, tipos_desejados)
+                            logger.info(f"{ignored_count} arquivos ignorados com base nos tipos não desejados em {folder_name}.")
+                            zip_urls = filtered_urls
+                        except Exception as e:
+                            logger.error(f"Erro ao filtrar URLs em {folder_name}: {e}")
+                            all_successful = False
+                            continue
+                    
+                    if not zip_urls:
+                        logger.warning(f"Nenhuma URL relevante para download encontrada após filtrar por tipos em {folder_name}.")
+                        continue
+                    
+                    # Log adicional para verificação de cache
+                    logger.info(f"Iniciando download para {folder_name} - Sistema de cache está {'ativado' if config.cache.enabled else 'desativado'}")
+                    
+                    # Verificar se o diretório do cache existe
+                    if config.cache.enabled and not os.path.exists(config.cache.cache_dir):
+                        os.makedirs(config.cache.cache_dir, exist_ok=True)
+                        logger.info(f"Diretório de cache criado: {config.cache.cache_dir}")
+                    
+                    # Baixar os arquivos deste diretório
+                    try:
+                        max_concurrent_downloads = config.dask.n_workers
+                        downloaded, failed = await download_multiple_files(
+                            zip_urls,
+                            folder_download_path,
+                            max_concurrent=max_concurrent_downloads
+                        )
+                        
+                        downloaded_files_count += len(downloaded)
+                        failed_downloads_count += len(failed)
+                        
+                        if failed:
+                            logger.warning(f"{len(failed)} downloads falharam em {folder_name}.")
+                            all_successful = False
+                    except Exception as e:
+                        logger.error(f"Erro durante downloads em {folder_name}: {e}")
+                        all_successful = False
+                
+                # Resumo final
+                logger.info(f"Download de múltiplos diretórios concluído.")
+                logger.info(f"Total de arquivos baixados: {downloaded_files_count}")
+                if failed_downloads_count > 0:
+                    logger.warning(f"Total de downloads falhos: {failed_downloads_count}")
+                
+                return downloaded_files_count > 0, "all_folders"
+                
+            except Exception as e:
+                logger.exception(f"Erro no modo ALL_FOLDERS: {e}")
+                return False, ""
+        
+        # Modo normal: baixar de uma pasta específica ou a mais recente
+        # 1. Buscar URLs mais recentes ou da pasta específica
         try:
             all_zip_urls, latest_folder = get_latest_month_zip_urls(base_url)
             if not all_zip_urls:
@@ -174,14 +305,26 @@ async def run_download_process(tipos_desejados: list[str] | None = None):
             logger.warning(f"Nenhuma URL relevante para download encontrada após filtrar por tipos.")
             return False, ""
 
-        logger.info(f"Iniciando download de {len(zip_urls_to_download)} arquivos relevantes para {download_folder}...")
+        # Criar subdiretório para esta pasta remota (igual ao modo --all-folders)
+        folder_download_path = os.path.join(download_folder, latest_folder)
+        os.makedirs(folder_download_path, exist_ok=True)
+        logger.info(f"Criando subdiretório para a pasta remota: {folder_download_path}")
+        
+        # Log para depuração
+        logger.info(f"Iniciando download de {len(zip_urls_to_download)} arquivos relevantes para {folder_download_path}...")
+        logger.info(f"Sistema de cache está {'ativado' if config.cache.enabled else 'desativado'}")
+        
+        # Verificar se o diretório do cache existe
+        if config.cache.enabled and not os.path.exists(config.cache.cache_dir):
+            os.makedirs(config.cache.cache_dir, exist_ok=True)
+            logger.info(f"Diretório de cache criado: {config.cache.cache_dir}")
 
         # 3. Baixar os arquivos
         try:
             max_concurrent_downloads = config.dask.n_workers
             downloaded, failed = await download_multiple_files(
                 zip_urls_to_download,
-                download_folder,
+                folder_download_path,
                 max_concurrent=max_concurrent_downloads
             )
         except aiohttp.ClientError as e:
@@ -207,6 +350,109 @@ async def run_download_process(tipos_desejados: list[str] | None = None):
     except Exception as e:
         logger.exception(f"Erro crítico no processo de download: {e}")
         return False, ""
+
+
+def process_folder(source_zip_path, unzip_path, output_parquet_path, 
+                 tipos_list, engine, criar_empresa_privada, criar_subset_uf,
+                 tipos_a_processar, dask_manager=None) -> bool:
+    """Processa os arquivos ZIP de uma pasta de origem para Parquet.
+    
+    Args:
+        source_zip_path: Caminho para a pasta contendo os arquivos ZIP
+        unzip_path: Caminho para a pasta temporária de descompressão
+        output_parquet_path: Caminho para a pasta de saída Parquet
+        tipos_list: Lista de tipos a processar (empresas, estabelecimentos, etc.)
+        engine: Motor de processamento (pandas, dask, polars)
+        criar_empresa_privada: Se deve criar subset de empresas privadas
+        criar_subset_uf: UF para criar subset de estabelecimentos (ou None)
+        tipos_a_processar: Dicionário com funções de processamento por tipo
+        dask_manager: Instância do gerenciador Dask (opcional)
+        
+    Returns:
+        bool: True se pelo menos um tipo foi processado com sucesso
+    """
+    logger = logging.getLogger(__name__)
+    processing_success_flag = False
+    
+    try:
+        for tipo in tipos_list:
+            process_func_base, nome_tipo = tipos_a_processar[tipo]
+            print_section(f"Processando dados de {nome_tipo} com engine '{engine}'...")
+            
+            kwargs = {}
+            if tipo == 'empresas':
+                kwargs['create_private'] = criar_empresa_privada
+            if tipo == 'estabelecimentos' and criar_subset_uf:
+                kwargs['uf_subset'] = criar_subset_uf
+            
+            # --- Lógica de Seleção de Função ---
+            specific_process_func = None
+            if tipo == 'empresas':
+                if engine == 'pandas': specific_process_func = process_empresa_pandas_impl
+                elif engine == 'polars': specific_process_func = process_empresa_polars_impl
+                elif engine == 'dask': specific_process_func = process_empresa
+            elif tipo == 'simples':
+                if engine == 'pandas':
+                    try:
+                        from src.process.simples import process_simples_with_pandas
+                        specific_process_func = process_simples_with_pandas
+                    except ImportError: logger.warning("Função 'process_simples_with_pandas' não encontrada.")
+                elif engine == 'polars':
+                    try:
+                        from src.process.simples import process_simples_with_polars
+                        specific_process_func = process_simples_with_polars
+                    except ImportError: logger.warning("Função 'process_simples_with_polars' não encontrada.")
+                elif engine == 'dask': specific_process_func = process_simples
+            elif tipo == 'socios':
+                if engine == 'pandas':
+                    try:
+                        from src.process.socio import process_socio_with_pandas
+                        specific_process_func = process_socio_with_pandas
+                    except ImportError: logger.warning("Função 'process_socio_with_pandas' não encontrada.")
+                elif engine == 'polars':
+                    try:
+                        from src.process.socio import process_socio_with_polars
+                        specific_process_func = process_socio_with_polars
+                    except ImportError: logger.warning("Função 'process_socio_with_polars' não encontrada.")
+                elif engine == 'dask': specific_process_func = process_socio
+            elif tipo == 'estabelecimentos':
+                if engine == 'pandas':
+                    try:
+                        from src.process.estabelecimento import process_estabelecimento_with_pandas
+                        specific_process_func = process_estabelecimento_with_pandas
+                    except ImportError: logger.warning("Função 'process_estabelecimento_with_pandas' não encontrada.")
+                elif engine == 'polars':
+                    try:
+                        from src.process.estabelecimento import process_estabelecimento_with_polars
+                        specific_process_func = process_estabelecimento_with_polars
+                    except ImportError: logger.warning("Função 'process_estabelecimento_with_polars' não encontrada.")
+                elif engine == 'dask': specific_process_func = process_estabelecimento
+            
+            func_to_call = specific_process_func if specific_process_func else process_func_base
+            
+            if not func_to_call:
+                logger.error(f"Nenhuma função de processamento válida encontrada para tipo '{tipo}' e engine '{engine}'. Pulando...")
+                continue
+                
+            # --- Chamada da Função ---
+            import inspect
+            sig = inspect.signature(func_to_call)
+            valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+            
+            success = func_to_call(source_zip_path, unzip_path, output_parquet_path, **valid_kwargs)
+            
+            if success:
+                processing_success_flag = True
+                print_success(f"Dados de {nome_tipo} processados com sucesso.")
+            else:
+                print_warning(f"Processamento de {nome_tipo} não foi bem-sucedido ou não encontrou/gerou dados.")
+                
+        return processing_success_flag
+        
+    except Exception as e:
+        logger.exception(f"Erro durante a fase de processamento da pasta {source_zip_path}: {e}")
+        print_error(f"Erro crítico ao processar a pasta {source_zip_path}. Verifique os logs.")
+        return False
 
 
 def setup_dask_cluster():
@@ -236,7 +482,7 @@ def main():
     parser.add_argument('--engine', '-e', choices=['pandas', 'dask', 'polars'], default='polars',
                         help='Motor de processamento a ser utilizado (relevante para steps \'process\' e \'all\'). Padrão: polars')
     parser.add_argument('--source-zip-folder', '-z', type=str, default=None,
-                        help='Caminho para a pasta contendo os arquivos ZIP a serem processados (Obrigatório para --step process).')
+                        help='Caminho para a pasta contendo as subpastas com arquivos ZIP (as subpastas têm nomes no formato AAAA-MM, ex: 2023-05). Obrigatório para --step process.')
     parser.add_argument('--output-subfolder', '-o', type=str, default=None,
                         help='Nome da subpasta dentro de PATH_PARQUET onde os arquivos Parquet serão salvos ou lidos (Obrigatório para --step process e --step database).')
     parser.add_argument('--criar-empresa-privada', '-priv', action='store_true',
@@ -251,11 +497,28 @@ def main():
         help="Opcional (com --step process ou --step all). Cria um subconjunto Parquet adicional para estabelecimentos da UF especificada."
     )
     parser.add_argument(
+        '--remote-folder', '-rf',
+        type=str,
+        default=None,
+        metavar='PASTA',
+        help="Opcional (com --step download ou --step all). Especifica a pasta remota para download no formato AAAA-MM (ex: 2023-01). Se não especificado, usa a pasta mais recente."
+    )
+    parser.add_argument(
+        '--all-folders', '-af',
+        action='store_true',
+        help="Opcional (com --step download ou --step all). Quando presente, baixa os arquivos de TODOS os diretórios remotos disponíveis. Tem prioridade sobre --remote-folder."
+    )
+    parser.add_argument(
+        '--force-download', '-fd',
+        action='store_true',
+        help="Força o download de todos os arquivos, mesmo que já existam localmente ou no cache."
+    )
+    parser.add_argument(
         '--step', '-s',
         choices=['download', 'process', 'database', 'all'], 
         default='all',
         help="""Especifica qual(is) etapa(s) executar:
-                        'download': Apenas baixa os arquivos ZIP mais recentes.
+                        'download': Apenas baixa os arquivos ZIP mais recentes (ou da pasta especificada em --remote-folder, ou de todos os diretórios com --all-folders).
                         'process': Apenas processa ZIPs existentes (--source-zip-folder) para Parquet (--output-subfolder).
                         'database': Apenas cria o DuckDB a partir de Parquets existentes (--output-subfolder).
                         'all': Executa todas as etapas: download -> process -> database (padrão)."""
@@ -370,8 +633,19 @@ def main():
     # --- Etapa 1: Download --- 
     if run_download:
         print_header("Etapa 1: Download")
+        
+        # Limpar cache se solicitado
+        if args.force_download:
+            print_section("Forçando download de todos os arquivos...")
+            from src.utils import clear_cache
+            success = clear_cache()
+            if success:
+                print_success("Cache limpo. Todos os arquivos serão baixados novamente.")
+            else:
+                print_warning("Não foi possível limpar o cache, mas tentaremos baixar todos os arquivos mesmo assim.")
+        
         tipos_desejados_dl = [tipo_para_nome[t] for t in args.tipos] if args.tipos else None
-        download_successful, latest_folder_from_dl = asyncio.run(run_download_process(tipos_desejados_dl))
+        download_successful, latest_folder_from_dl = asyncio.run(run_download_process(tipos_desejados_dl, args.remote_folder, args.all_folders))
         
         if not download_successful:
             print_error("Download falhou ou não encontrou arquivos.")
@@ -383,6 +657,12 @@ def main():
         else:
              print_success("Download concluído com sucesso.")
 
+        # Verifica se está no modo de múltiplas pastas
+        if args.all_folders and latest_folder_from_dl == "all_folders":
+            print_success("Downloads de múltiplos diretórios concluídos. Encerrando pois o processamento não é compatível com --all-folders.")
+            if dask_manager: dask_manager.shutdown()
+            return
+             
         # Define a pasta de saída para o processamento (caso 'all' e sem --output-subfolder)
         if not latest_folder and latest_folder_from_dl:
             latest_folder = latest_folder_from_dl
@@ -416,90 +696,54 @@ def main():
         logger.info(f"Lendo ZIPs de: {path_zip_to_use}")
         logger.info(f"Salvando Parquets em: {target_parquet_output_path}")
         
-        processing_success_flag = False
-        try:
-            for tipo in args.tipos:
-                process_func_base, nome_tipo = tipos_a_processar[tipo]
-                print_section(f"Processando dados de {nome_tipo} com engine '{args.engine}'...")
+        # Verificar se há subpastas no formato AAAA-MM (nova estrutura)
+        year_month_subfolders = []
+        for item in os.listdir(path_zip_to_use):
+            item_path = os.path.join(path_zip_to_use, item)
+            if os.path.isdir(item_path) and re.fullmatch(r'(\d{4})-(\d{2})', item):
+                year_month_subfolders.append(item)
+        
+        # Se houver subpastas no formato AAAA-MM, processamos cada uma
+        if year_month_subfolders:
+            print_section(f"Encontradas {len(year_month_subfolders)} subpastas no formato AAAA-MM para processamento.")
+            processing_success_flag = False
+            
+            for subfolder in sorted(year_month_subfolders, reverse=True):
+                subfolder_path = os.path.join(path_zip_to_use, subfolder)
+                print_section(f"Processando arquivos da pasta: {subfolder}")
                 
-                kwargs = {}
-                if tipo == 'empresas':
-                    kwargs['create_private'] = args.criar_empresa_privada
-                if tipo == 'estabelecimentos' and args.criar_subset_uf:
-                    kwargs['uf_subset'] = args.criar_subset_uf
+                # Cria uma subpasta no destino para os resultados deste diretório
+                subfolder_output_path = os.path.join(target_parquet_output_path, subfolder)
+                os.makedirs(subfolder_output_path, exist_ok=True)
                 
-                # --- Lógica de Seleção de Função (mantida) ---
-                specific_process_func = None
-                if tipo == 'empresas':
-                    if args.engine == 'pandas': specific_process_func = process_empresa_pandas_impl
-                    elif args.engine == 'polars': specific_process_func = process_empresa_polars_impl
-                    elif args.engine == 'dask': specific_process_func = process_empresa
-                elif tipo == 'simples':
-                    if args.engine == 'pandas':
-                        try:
-                            from src.process.simples import process_simples_with_pandas
-                            specific_process_func = process_simples_with_pandas
-                        except ImportError: logger.warning("Função 'process_simples_with_pandas' não encontrada.")
-                    elif args.engine == 'polars':
-                        try:
-                            from src.process.simples import process_simples_with_polars
-                            specific_process_func = process_simples_with_polars
-                        except ImportError: logger.warning("Função 'process_simples_with_polars' não encontrada.")
-                    elif args.engine == 'dask': specific_process_func = process_simples
-                elif tipo == 'socios':
-                    if args.engine == 'pandas':
-                        try:
-                            from src.process.socio import process_socio_with_pandas
-                            specific_process_func = process_socio_with_pandas
-                        except ImportError: logger.warning("Função 'process_socio_with_pandas' não encontrada.")
-                    elif args.engine == 'polars':
-                        try:
-                            from src.process.socio import process_socio_with_polars
-                            specific_process_func = process_socio_with_polars
-                        except ImportError: logger.warning("Função 'process_socio_with_polars' não encontrada.")
-                    elif args.engine == 'dask': specific_process_func = process_socio
-                elif tipo == 'estabelecimentos':
-                    if args.engine == 'pandas':
-                         try:
-                             from src.process.estabelecimento import process_estabelecimento_with_pandas
-                             specific_process_func = process_estabelecimento_with_pandas
-                         except ImportError: logger.warning("Função 'process_estabelecimento_with_pandas' não encontrada.")
-                    elif args.engine == 'polars':
-                         try:
-                             from src.process.estabelecimento import process_estabelecimento_with_polars
-                             specific_process_func = process_estabelecimento_with_polars
-                         except ImportError: logger.warning("Função 'process_estabelecimento_with_polars' não encontrada.")
-                    elif args.engine == 'dask': specific_process_func = process_estabelecimento
+                processing_success = process_folder(
+                    subfolder_path, PATH_UNZIP, subfolder_output_path, 
+                    args.tipos, args.engine, args.criar_empresa_privada, args.criar_subset_uf,
+                    tipos_a_processar, dask_manager
+                )
                 
-                func_to_call = specific_process_func if specific_process_func else process_func_base
-                
-                if not func_to_call:
-                     logger.error(f"Nenhuma função de processamento válida encontrada para tipo '{tipo}' e engine '{args.engine}'. Pulando...")
-                     continue
-                     
-                # --- Chamada da Função (mantida) ---
-                import inspect
-                sig = inspect.signature(func_to_call)
-                valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-                
-                success = func_to_call(path_zip_to_use, PATH_UNZIP, target_parquet_output_path, **valid_kwargs)
-                processing_performed = True # Marca que tentamos processar algo
-                
-                if success:
+                if processing_success:
                     processing_success_flag = True
-                    print_success(f"Dados de {nome_tipo} processados com sucesso.")
-                else:
-                    print_warning(f"Processamento de {nome_tipo} não foi bem-sucedido ou não encontrou/gerou dados.")
-                    
-            if not processing_performed:
-                 print_warning("Nenhum tipo de dado foi efetivamente processado.")
-            elif not processing_success_flag:
-                 print_warning("Nenhuma etapa de processamento Parquet foi concluída com sucesso.")
-                 
-        except Exception as e:
-            logger.exception(f"Erro GERAL durante a fase de processamento para Parquet: {e}")
-            print_error("Erro crítico na fase de processamento. Verifique os logs.")
-            # Mesmo com erro, podemos querer criar o DB se a etapa for 'all' ou 'database'
+                    processing_performed = True
+            
+            if not processing_success_flag:
+                print_warning("Nenhuma etapa de processamento Parquet foi concluída com sucesso.")
+                
+        # Se não houver subpastas, assumimos a estrutura antiga (arquivos diretamente na pasta)
+        else:
+            print_section("Nenhuma subpasta no formato AAAA-MM encontrada. Processando arquivos diretamente da pasta de origem.")
+            
+            processing_success = process_folder(
+                path_zip_to_use, PATH_UNZIP, target_parquet_output_path, 
+                args.tipos, args.engine, args.criar_empresa_privada, args.criar_subset_uf,
+                tipos_a_processar, dask_manager
+            )
+            
+            if processing_success:
+                processing_performed = True
+                print_success(f"Processamento Parquet concluído com sucesso.")
+            else:
+                print_warning("Nenhuma etapa de processamento Parquet foi concluída com sucesso.")
 
         # Se a etapa era APENAS processamento, encerra aqui.
         if args.step == 'process':
