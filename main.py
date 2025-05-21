@@ -36,6 +36,9 @@ Exemplos de uso:
 
 12. Processar apenas estabelecimentos com Polars, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
     python main.py --tipos estabelecimentos --engine polars --output-subfolder process_sp --criar-subset-uf SP
+
+13. Baixar e processar dados de uma pasta remota específica (2023-05) em vez da pasta mais recente:
+    python main.py --remote-folder 2023-05
 """
 import argparse
 import asyncio
@@ -43,6 +46,7 @@ import datetime
 import logging
 import os
 from multiprocessing import freeze_support
+import re
 
 import aiohttp
 from dask.distributed import Client, LocalCluster
@@ -126,11 +130,12 @@ def print_error(text: str):
     print(f"✗ {text}")
 
 
-async def run_download_process(tipos_desejados: list[str] | None = None):
+async def run_download_process(tipos_desejados: list[str] | None = None, remote_folder: str | None = None):
     """Executa todo o processo de download de forma assíncrona.
 
     Args:
         tipos_desejados: Lista de tipos de arquivos a serem baixados. Se None, baixa todos.
+        remote_folder: Pasta remota específica a ser baixada no formato AAAA-MM. Se None, usa a mais recente.
 
     Returns:
         tuple[bool, str]: (sucesso do download, pasta mais recente)
@@ -147,11 +152,14 @@ async def run_download_process(tipos_desejados: list[str] | None = None):
             logger.error("Variáveis de ambiente URL_ORIGIN ou PATH_ZIP não definidas.")
             return False, ""
 
-        # 1. Buscar URLs mais recentes
+        # 1. Buscar URLs mais recentes ou da pasta específica
         try:
-            all_zip_urls, latest_folder = get_latest_month_zip_urls(base_url)
+            all_zip_urls, latest_folder = get_latest_month_zip_urls(base_url, remote_folder)
             if not all_zip_urls:
-                logger.warning("Nenhuma URL .zip encontrada na origem.")
+                if remote_folder:
+                    logger.warning(f"Nenhuma URL .zip encontrada na pasta remota especificada: {remote_folder}.")
+                else:
+                    logger.warning("Nenhuma URL .zip encontrada na origem.")
                 return False, ""
         except aiohttp.ClientError as e:
             logger.error(f"Erro de conexão ao buscar URLs: {e}")
@@ -251,11 +259,18 @@ def main():
         help="Opcional (com --step process ou --step all). Cria um subconjunto Parquet adicional para estabelecimentos da UF especificada."
     )
     parser.add_argument(
+        '--remote-folder', '-rf',
+        type=str,
+        default=None,
+        metavar='PASTA',
+        help="Opcional (com --step download ou --step all). Especifica a pasta remota para download no formato AAAA-MM (ex: 2023-01). Se não especificado, usa a pasta mais recente."
+    )
+    parser.add_argument(
         '--step', '-s',
         choices=['download', 'process', 'database', 'all'], 
         default='all',
         help="""Especifica qual(is) etapa(s) executar:
-                        'download': Apenas baixa os arquivos ZIP mais recentes.
+                        'download': Apenas baixa os arquivos ZIP mais recentes (ou da pasta especificada em --remote-folder).
                         'process': Apenas processa ZIPs existentes (--source-zip-folder) para Parquet (--output-subfolder).
                         'database': Apenas cria o DuckDB a partir de Parquets existentes (--output-subfolder).
                         'all': Executa todas as etapas: download -> process -> database (padrão)."""
@@ -276,6 +291,10 @@ def main():
         parser.error("--criar-subset-uf deve receber uma sigla de UF com 2 caracteres (ex: SP, RJ).")
     if args.criar_subset_uf:
         args.criar_subset_uf = args.criar_subset_uf.upper()
+        
+    # Validação da pasta remota
+    if args.remote_folder and not re.fullmatch(r'(\d{4})-(\d{2})', args.remote_folder):
+        parser.error("--remote-folder deve estar no formato AAAA-MM (ex: 2023-01).")
 
     tipo_para_nome = {
         'empresas': 'Empresas',
@@ -371,7 +390,7 @@ def main():
     if run_download:
         print_header("Etapa 1: Download")
         tipos_desejados_dl = [tipo_para_nome[t] for t in args.tipos] if args.tipos else None
-        download_successful, latest_folder_from_dl = asyncio.run(run_download_process(tipos_desejados_dl))
+        download_successful, latest_folder_from_dl = asyncio.run(run_download_process(tipos_desejados_dl, args.remote_folder))
         
         if not download_successful:
             print_error("Download falhou ou não encontrou arquivos.")
