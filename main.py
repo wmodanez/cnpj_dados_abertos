@@ -573,7 +573,7 @@ def main():
     start_time = datetime.datetime.now()
 
     print_section("Carregando variáveis de ambiente...")
-    load_dotenv('.env.local')
+    load_dotenv()
     print_success("Variáveis de ambiente carregadas com sucesso")
 
     PATH_ZIP = os.getenv('PATH_ZIP')
@@ -581,6 +581,17 @@ def main():
     PATH_PARQUET = os.getenv('PATH_PARQUET')
     FILE_DB_PARQUET = os.getenv('FILE_DB_PARQUET')
     PATH_REMOTE_PARQUET = os.getenv('PATH_REMOTE_PARQUET')
+    
+    # Garantir que PATH_UNZIP e PATH_PARQUET estão definidos
+    if not PATH_UNZIP:
+        PATH_UNZIP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dados-unzip")
+        os.environ['PATH_UNZIP'] = PATH_UNZIP
+        logger.info(f"Variável PATH_UNZIP não encontrada no arquivo .env. Usando valor padrão: {PATH_UNZIP}")
+    
+    if not PATH_PARQUET:
+        PATH_PARQUET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parquet")
+        os.environ['PATH_PARQUET'] = PATH_PARQUET
+        logger.info(f"Variável PATH_PARQUET não encontrada no arquivo .env. Usando valor padrão: {PATH_PARQUET}")
 
     print_section("Criando diretórios necessários...")
     list_folders = [PATH_ZIP, PATH_UNZIP, PATH_PARQUET]
