@@ -365,28 +365,74 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
             logger.exception(f"[{os.getpid()}] Erro durante a extração do ZIP {path_zip_file}")
             return False
         
-        # --- 2. Conversão --- 
-        # Processa o arquivo CSV principal
-        ddf = apply_empresa_transformations_dask(process_csv_to_df(
-            path_extracao, 
-            dtype=config.empresa_dtypes,
-            column_names=config.empresa_columns
-        ))
-        if ddf is not None:
-            create_parquet(ddf, 'empresas', path_parquet, zip_filename_prefix)
+        # --- 2. Encontrar Arquivos de Dados --- 
+        logger.debug(f"[{os.getpid()}] Fase 2: Encontrar arquivos de dados")
+        data_files_encontrados = []
+        try:
+            for root, _, files in os.walk(path_extracao):
+                for file in files:
+                    # Busca arquivos que contenham "CSV" no nome (case-insensitive)
+                    if "CSV" in file.upper():
+                        data_files_encontrados.append(os.path.join(root, file))
+            logger.debug(f"[{os.getpid()}] Busca em {path_extracao} concluída.")
+        except Exception as e_walk:
+             logger.exception(f"[{os.getpid()}] Erro ao percorrer o diretório de extração {path_extracao}")
+             return False
+             
+        if not data_files_encontrados:
+            logger.warning(f"[{os.getpid()}] Nenhum arquivo contendo 'CSV' encontrado em {path_extracao}.")
+            return False
         
-        # Processa o arquivo CSV secundário (empresa_privada), se create_private for True
+        # --- 3. Conversão --- 
+        # Processar os arquivos CSV encontrados
+        ddf_list = []
+        for csv_path in data_files_encontrados:
+            try:
+                # Usa process_csv_file para processar cada arquivo
+                ddf_part = process_csv_file(csv_path)
+                if ddf_part is not None:
+                    ddf_list.append(ddf_part)
+            except Exception as e_csv:
+                logger.error(f"[{os.getpid()}] Erro processando arquivo {os.path.basename(csv_path)}: {str(e_csv)}")
+                # Continua para o próximo arquivo
+        
+        if not ddf_list:
+            logger.warning(f"[{os.getpid()}] Nenhum DataFrame Dask foi gerado a partir dos arquivos encontrados.")
+            return False
+            
+        # Concatenar os DataFrames se houver mais de um
+        ddf = dd.concat(ddf_list) if len(ddf_list) > 1 else ddf_list[0]
+        
+        # Aplicar transformações
+        ddf = apply_empresa_transformations_dask(ddf)
+        
+        # --- 4. Salvar Parquet ---
+        create_parquet(ddf, 'empresas', path_parquet, zip_filename_prefix)
+        
+        # --- 5. Processar subset empresa_privada, se necessário ---
         if create_private:
-            ddf_privado = ddf[
-                (ddf['natureza_juridica'] >= 2046) & 
-                (ddf['natureza_juridica'] <= 2348)
-            ]
-            create_parquet(ddf_privado, 'empresa_privada', path_parquet, zip_filename_prefix)
+            try:
+                ddf_privado = ddf[
+                    (ddf['natureza_juridica'] >= 2046) & 
+                    (ddf['natureza_juridica'] <= 2348)
+                ]
+                create_parquet(ddf_privado, 'empresa_privada', path_parquet, zip_filename_prefix)
+            except Exception as e_private:
+                logger.error(f"[{os.getpid()}] Erro ao criar subset empresa_privada: {str(e_private)}")
+                # Não falha o processamento principal se o subset falhar
         
         return True
     except Exception as e:
         logger.error(f'Erro processando {zip_file}: {str(e)}')
         return False
+    finally:
+        # Limpar o diretório de extração
+        if path_extracao and os.path.exists(path_extracao):
+            try:
+                shutil.rmtree(path_extracao)
+                logger.info(f"[{os.getpid()}] Diretório de extração {path_extracao} limpo.")
+            except Exception as e_clean:
+                logger.warning(f"[{os.getpid()}] Erro ao limpar diretório {path_extracao}: {e_clean}")
 
 
 # ----- Implementação para Pandas -----
@@ -633,8 +679,8 @@ def process_single_zip_pandas(zip_file, path_zip, path_unzip, path_parquet, crea
         try:
             for root, _, files in os.walk(path_extracao):
                 for file in files:
-                    # Procurar por arquivos que contenham 'csv' ou talvez outros padrões comuns
-                    if "csv" in file.lower(): 
+                    # Busca arquivos que contenham "CSV" no nome (case-insensitive)
+                    if "CSV" in file.upper(): 
                         data_files_encontrados.append(os.path.join(root, file))
             logger.debug(f"[{pid}] Busca em {path_extracao} concluída.")
         except Exception as e_walk:
@@ -642,7 +688,7 @@ def process_single_zip_pandas(zip_file, path_zip, path_unzip, path_parquet, crea
              return {'sucesso': False, 'tempo': time.time() - start_time}
         
         if not data_files_encontrados:
-            logger.error(f"[{pid}] Nenhum arquivo de dados (contendo 'csv') encontrado em {path_extracao}.")
+            logger.error(f"[{pid}] Nenhum arquivo contendo 'CSV' encontrado em {path_extracao}.")
             # Listar conteúdo para depuração
             try:
                 conteudo_dir = os.listdir(path_extracao)
@@ -896,9 +942,52 @@ def apply_empresa_transformations_polars(df: pl.DataFrame, chunk_size: int = 1_0
     if rename_mapping:
         df = df.rename(rename_mapping)
     
-    # Adiciona uma coluna CPF vazia para manter a compatibilidade com o resto do código
-    if 'CPF' not in df.columns:
+    # --- Extração de CPF da razao_social (Polars) ---
+    if 'razao_social' in df.columns:
+        logger.info("Extraindo CPF da razao_social (Polars)...")
+        
+        # Primeiro criamos as expressões para extrair CPF com máscara e sem máscara
+        cpf_com_mascara = pl.col('razao_social').str.extract(r'(\d{3}\.\d{3}\.\d{3}-\d{2})')
+        cpf_sem_mascara = pl.col('razao_social').str.extract(r'(\d{11})')
+        
+        # Combinamos as duas extrações, priorizando o formato com máscara
+        cpf_combinado = (pl.when(cpf_com_mascara.is_not_null())
+                         .then(cpf_com_mascara)
+                         .otherwise(cpf_sem_mascara))
+        
+        # Removemos pontos e traços dos CPFs com máscara
+        cpf_sem_formato = cpf_combinado.str.replace_all(r'[.\-]', '')
+        
+        # Verificamos se o CPF tem 11 dígitos 
+        cpf_validado = (pl.when(cpf_sem_formato.str.len_chars() == 11)
+                        .then(cpf_sem_formato)
+                        .otherwise(None)
+                        .alias('CPF'))
+        
+        # Aplicamos as transformações e adicionamos a coluna CPF
+        df = df.with_columns(cpf_validado)
+        
+        logger.info("Extração de CPF concluída (Polars).")
+        
+        # --- Remoção do CPF da razao_social (Polars) ---
+        logger.info("Removendo CPF da razao_social (Polars)...")
+        
+        # Remove primeiro o padrão com máscara, depois o sem máscara
+        razao_sem_cpf = (pl.col('razao_social')
+                         .str.replace_all(r'\d{3}\.\d{3}\.\d{3}-\d{2}', '')
+                         .str.replace_all(r'\d{11}', '')
+                         .str.strip_chars()  # Usando strip_chars() em vez de strip()
+                         .alias('razao_social'))
+        
+        df = df.with_columns(razao_sem_cpf)
+        logger.info("Remoção do CPF da razao_social concluída (Polars).")
+        
+    # Garante que a coluna CPF exista se razao_social existia mas CPF não foi extraído
+    elif 'razao_social' in df.columns and 'CPF' not in df.columns:
         df = df.with_columns(pl.lit(None).alias('CPF'))
+    
+    # Liberar memória explicitamente
+    gc.collect()
     
     return df
 
@@ -1000,15 +1089,17 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             # Busca CSVs apenas dentro da subpasta de extração
             for root, _, files in os.walk(path_extracao):
                 for file in files:
-                    if "csv" in file.lower(): 
+                    # Busca arquivos que contenham "CSV" no nome (case-insensitive)
+                    if "CSV" in file.upper(): 
                         data_files_encontrados.append(os.path.join(root, file))
         except Exception as e_walk:
              logger.exception(f"[{pid}] Polars: Erro ao percorrer o diretório de extração {path_extracao}")
              return False
 
         if not data_files_encontrados:
-            logger.warning(f"[{pid}] Polars: Nenhum arquivo de dados (contendo 'csv') encontrado em {path_extracao} para {zip_file}." ) # Aviso em vez de erro
-            success = True # Considera sucesso se não há arquivos CSV para processar neste ZIP
+            logger.warning(f"[{pid}] Polars: Nenhum arquivo contendo 'CSV' encontrado em {path_extracao} para {zip_file}." ) # Aviso em vez de erro
+            # Retorna False pois não há dados para processar (não é um sucesso)
+            return False
         else:
             logger.info(f"[{pid}] Polars: Encontrados {len(data_files_encontrados)} arquivos CSV para processar em {zip_file}." )
             # Lista para armazenar DataFrames Polars lidos
@@ -1035,6 +1126,7 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             if not processamento_csv_ok or not dataframes:
                 logger.error(f"[{pid}] Polars: Nenhum DataFrame Polars válido gerado a partir do ZIP {zip_file}. Nenhum Parquet será gerado.")
                 # Mantém success = False
+                return False
             else:
                 # Concatenar os DataFrames se houver mais de um
                 df_final_polars = None
@@ -1127,10 +1219,74 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
     return success
 
 
+def process_empresa_with_polars(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
+    """Processa os dados de empresas usando Polars."""
+    logger.info('=' * 50)
+    logger.info(f'Iniciando processamento de EMPRESAS com Polars (create_private={create_private})')
+    logger.info('=' * 50)
+    
+    try:
+        zip_files = [f for f in os.listdir(path_zip) 
+                    if f.startswith('Empresa') and f.endswith('.zip')]
+        
+        if not zip_files:
+            logger.warning('Nenhum arquivo ZIP de Empresas encontrado.')
+            return True
+        
+        # LIMPEZA MOVIDA PARA CÁ (ANTES DO LOOP)
+        output_dir_empresas = os.path.join(path_parquet, 'empresas')
+        output_dir_privada = os.path.join(path_parquet, 'empresa_privada')
+        try:
+            file_delete(output_dir_empresas)
+            logger.info(f'Diretório {output_dir_empresas} limpo antes do processamento Polars.')
+            if create_private:
+                 file_delete(output_dir_privada)
+                 logger.info(f'Diretório {output_dir_privada} limpo antes do processamento Polars.')
+        except Exception as e:
+            logger.warning(f'Não foi possível limpar diretórios de saída antes do processamento Polars: {str(e)}')
+
+        # Forçar coleta de lixo antes de iniciar o processamento
+        gc.collect()
+            
+        success_count = 0
+        arquivos_sem_dados = []
+        for zip_file in track(zip_files, description="[cyan]Processing Empresas ZIPs (Polars)..."):
+            result = process_single_zip_polars(
+                zip_file=zip_file,
+                path_zip=path_zip,
+                path_unzip=path_unzip,
+                path_parquet=path_parquet,
+                create_private=create_private
+            )
+            if result:
+                success_count += 1
+                logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars")
+            else:
+                # Registra arquivos que não tiveram dados válidos para processar
+                arquivos_sem_dados.append(zip_file)
+            
+            # Forçar coleta de lixo após cada arquivo
+            gc.collect()
+        
+        if success_count == 0:
+            logger.warning("Nenhum arquivo ZIP de Empresas foi processado com sucesso usando Polars.")
+        else:
+            logger.info(f"Processados com sucesso {success_count} de {len(zip_files)} arquivos ZIP de Empresas usando Polars.")
+            
+        if arquivos_sem_dados:
+            logger.warning(f'Os seguintes arquivos não continham dados válidos para processar: {", ".join(arquivos_sem_dados)}')
+        
+        return success_count > 0
+
+    except Exception as e:
+        logger.error(f'Erro no processamento principal de Empresas com Polars: {str(e)}')
+        return False
+
+
 def process_empresa_with_pandas(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
     """Processa os dados de empresas usando Pandas."""
     logger.info('=' * 50)
-    logger.info(f'Iniciando processamento de EMPRESAS com Pandas (create_private={create_private})') # Log da flag
+    logger.info(f'Iniciando processamento de EMPRESAS com Pandas (create_private={create_private})')
     logger.info('=' * 50)
     
     try:
@@ -1154,7 +1310,8 @@ def process_empresa_with_pandas(path_zip: str, path_unzip: str, path_parquet: st
             logger.warning(f'Não foi possível limpar diretórios de saída antes do processamento Pandas: {str(e)}')
 
         # Processar diretamente com Pandas
-        success = False
+        success_count = 0
+        arquivos_sem_dados = []
         for zip_file in track(zip_files, description="[cyan]Processing Empresas ZIPs (Pandas)..."):
             result = process_single_zip_pandas(
                 zip_file=zip_file,
@@ -1163,65 +1320,25 @@ def process_empresa_with_pandas(path_zip: str, path_unzip: str, path_parquet: st
                 path_parquet=path_parquet,
                 create_private=create_private
             )
-            if result['sucesso']:
-                success = True
+            if result.get('sucesso', False):
+                success_count += 1
                 logger.info(f"Arquivo {zip_file} processado com sucesso usando Pandas")
+            else:
+                arquivos_sem_dados.append(zip_file)
+                
+            # Forçar coleta de lixo após cada arquivo
+            gc.collect()
         
-        if not success:
-            logger.warning("Nenhum arquivo processado com sucesso usando Pandas.")
+        if success_count == 0:
+            logger.warning("Nenhum arquivo ZIP de Empresas foi processado com sucesso usando Pandas.")
+        else:
+            logger.info(f"Processados com sucesso {success_count} de {len(zip_files)} arquivos ZIP de Empresas usando Pandas.")
+            
+        if arquivos_sem_dados:
+            logger.warning(f'Os seguintes arquivos não continham dados válidos para processar: {", ".join(arquivos_sem_dados)}')
         
-        return success
+        return success_count > 0
             
     except Exception as e:
-        logger.error(f'Erro no processamento com Pandas: {str(e)}')
-        return False
-
-
-def process_empresa_with_polars(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
-    """Processa os dados de empresas usando Polars."""
-    logger.info('=' * 50)
-    logger.info(f'Iniciando processamento de EMPRESAS com Polars (create_private={create_private})') # Log da flag
-    logger.info('=' * 50)
-    
-    try:
-        zip_files = [f for f in os.listdir(path_zip) 
-                    if f.startswith('Empresa') and f.endswith('.zip')]
-        
-        if not zip_files:
-            logger.warning('Nenhum arquivo ZIP de Empresas encontrado.')
-            return True
-        
-        # LIMPEZA MOVIDA PARA CÁ (ANTES DO LOOP)
-        output_dir_empresas = os.path.join(path_parquet, 'empresas')
-        output_dir_privada = os.path.join(path_parquet, 'empresa_privada')
-        try:
-            file_delete(output_dir_empresas)
-            logger.info(f'Diretório {output_dir_empresas} limpo antes do processamento Polars.')
-            if create_private:
-                 file_delete(output_dir_privada)
-                 logger.info(f'Diretório {output_dir_privada} limpo antes do processamento Polars.')
-        except Exception as e:
-            logger.warning(f'Não foi possível limpar diretórios de saída antes do processamento Polars: {str(e)}')
-
-        # Processar com Polars
-        success = False
-        for zip_file in track(zip_files, description="[cyan]Processing Empresas ZIPs (Polars)..."):
-            result = process_single_zip_polars(
-                zip_file=zip_file,
-                path_zip=path_zip,
-                path_unzip=path_unzip,
-                path_parquet=path_parquet,
-                create_private=create_private
-            )
-            if result:
-                success = True
-                logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars")
-        
-        if not success:
-            logger.warning("Nenhum arquivo processado com sucesso usando Polars.")
-        
-        return success
-            
-    except Exception as e:
-        logger.error(f'Erro no processamento com Polars: {str(e)}')
+        logger.error(f'Erro no processamento principal de Empresas com Pandas: {str(e)}')
         return False

@@ -8,6 +8,7 @@ import numpy as np
 import shutil
 from rich.progress import track
 import pandas as pd
+import gc
 
 from ..config import config
 from ..utils import (
@@ -385,26 +386,38 @@ def apply_estabelecimento_transformations_polars(df: pl.DataFrame) -> pl.DataFra
         'codigo_motivo_situacao_cadastral', 'codigo_cnae', 
         'codigo_municipio'
     ]
+    
+    # Crie uma lista de expressões para todas as conversões numéricas
+    numeric_conversions = []
     for col in int_cols:
         if col in df.columns:
-            df = df.with_columns(pl.col(col).cast(pl.Int64, strict=False))
+            numeric_conversions.append(pl.col(col).cast(pl.Int64, strict=False))
     
-    # Conversão de datas
+    # Aplique todas as conversões numéricas de uma vez, se houver alguma
+    if numeric_conversions:
+        df = df.with_columns(numeric_conversions)
+    
+    # Conversão de datas - combine todas as expressões em uma única chamada
     date_cols = ['data_situacao_cadastral', 'data_inicio_atividades']
+    date_conversions = []
+    
     for col in date_cols:
         if col in df.columns:
-            # Tratar valores inválidos ('0', '', None) antes de converter
-            df = df.with_columns(
+            date_conversions.append(
                 pl.when(
                     pl.col(col).is_in(['0', '00000000']) | 
                     pl.col(col).is_null() | 
                     (pl.col(col).str.len_chars() == 0)
                 )
-                  .then(None)
-                  .otherwise(pl.col(col))
-                  .str.strptime(pl.Date, format="%Y%m%d", strict=False)
-                  .alias(col)
+                .then(None)
+                .otherwise(pl.col(col))
+                .str.strptime(pl.Date, format="%Y%m%d", strict=False)
+                .alias(col)
             )
+    
+    # Aplique todas as conversões de data de uma vez, se houver alguma
+    if date_conversions:
+        df = df.with_columns(date_conversions)
             
     # Criação do CNPJ completo
     if all(col in df.columns for col in ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']):
@@ -427,11 +440,26 @@ def apply_estabelecimento_transformations_polars(df: pl.DataFrame) -> pl.DataFra
     actual_cols_to_drop = [col for col in cols_to_drop if col in df.columns]
     df = df.drop(actual_cols_to_drop)
     
+    # Liberar memória explicitamente
+    gc.collect()
+    
     logger.info("Transformações Polars aplicadas em Estabelecimentos.")
     return df
 
-def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, zip_filename_prefix: str):
-    """Salva um DataFrame Polars como múltiplos arquivos parquet com prefixo."""
+def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, zip_filename_prefix: str, partition_size: int = 500000) -> bool:
+    """
+    Salva DataFrame Polars em arquivos Parquet particionados para reduzir uso de memória.
+    
+    Args:
+        df: DataFrame Polars
+        table_name: Nome da tabela (subpasta)
+        path_parquet: Caminho base para os arquivos parquet (diretório pai de table_name)
+        zip_filename_prefix: Prefixo derivado do nome do arquivo ZIP original
+        partition_size: Tamanho de cada partição (número de linhas)
+        
+    Returns:
+        True se sucesso, False caso contrário
+    """
     try:
         output_dir = os.path.join(path_parquet, table_name)
         os.makedirs(output_dir, exist_ok=True)
@@ -441,41 +469,52 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
         total_rows = df.height
         if total_rows == 0:
             logger.warning(f"DataFrame Polars '{table_name}' (Origem: {zip_filename_prefix}) está vazio. Nenhum Parquet será salvo.")
-            return True # Considera sucesso se não há o que salvar
-            
-        chunk_size = 500000  # Definir tamanho do chunk
-        num_chunks = max(1, int(np.ceil(total_rows / chunk_size))) # Pelo menos 1 chunk
-        adjusted_chunk_size = int(np.ceil(total_rows / num_chunks))
+            return True
         
-        logger.info(f"Salvando '{table_name}' (Origem: {zip_filename_prefix}) com {total_rows} linhas em {num_chunks} chunks Parquet...")
+        num_partitions = (total_rows + partition_size - 1) // partition_size
         
-        for i in range(num_chunks):
-            start_idx = i * adjusted_chunk_size
-            # slice(offset, length)
-            df_chunk = df.slice(start_idx, adjusted_chunk_size)
+        logger.info(f"Salvando DataFrame com {total_rows} linhas em {num_partitions} partições de aproximadamente {partition_size} linhas cada")
+        
+        for i in range(num_partitions):
+            start_idx = i * partition_size
+            end_idx = min((i + 1) * partition_size, total_rows)
             
-            file_name = f"{zip_filename_prefix}_{table_name}_{i:03d}.parquet"
-            file_path = os.path.join(output_dir, file_name)
+            partition = df.slice(start_idx, end_idx - start_idx)
+            output_path = os.path.join(output_dir, f"{zip_filename_prefix}_part{i:03d}.parquet")
             
-            df_chunk.write_parquet(file_path, compression="snappy")
-            logger.debug(f"Chunk {i+1}/{num_chunks} salvo como {file_name} ({df_chunk.height} linhas)")
+            logger.info(f"Salvando partição {i+1}/{num_partitions} com {end_idx-start_idx} linhas para {output_path}")
             
-        logger.info(f"DataFrame Polars '{table_name}' (Origem: {zip_filename_prefix}) salvo com sucesso em {num_chunks} arquivo(s) Parquet.")
+            try:
+                partition.write_parquet(output_path, compression="snappy")
+                logger.info(f"Partição {i+1}/{num_partitions} salva com sucesso")
+            except Exception as e:
+                logger.error(f"Erro ao salvar partição {i+1}: {str(e)}")
+                raise
+            
+            # Liberar memória
+            del partition
+            gc.collect()
+            
         return True
-        
     except Exception as e:
-        logger.error(f"Erro ao salvar DataFrame Polars '{table_name}' (Origem: {zip_filename_prefix}) como parquet: {str(e)}")
+        logger.error(f"Erro ao criar arquivo Parquet com Polars: {str(e)}")
         return False
 
 def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
     """Processa um único arquivo ZIP de estabelecimentos usando Polars.
 
     Args:
-        ...
+        zip_file: Nome do arquivo ZIP
+        path_zip: Caminho para o diretório com os arquivos ZIP
+        path_unzip: Caminho para extrair os arquivos
+        path_parquet: Caminho para salvar os arquivos parquet
         uf_subset (str | None, optional): Sigla da UF para criar um subset. Defaults to None.
+        
+    Returns:
+        bool: True se o processamento foi bem-sucedido, False caso contrário
     """
-    logger = logging.getLogger() # Obter o logger configurado
-    pid = os.getpid() # Para logs, se necessário
+    logger = logging.getLogger()
+    pid = os.getpid()
     zip_filename_prefix = os.path.splitext(zip_file)[0]
     logger.info(f"[{pid}] Iniciando processamento Polars para: {zip_file}")
     path_extracao = ""
@@ -495,20 +534,23 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
         logger.info(f"[{pid}] Extração de {zip_file} concluída para {path_extracao}")
 
         # --- 2. Leitura e Processamento CSV com Polars ---
-        # Busca todos os arquivos dentro da pasta de extração (mais robusto)
         all_files_in_extraction = [
             os.path.join(path_extracao, f)
             for f in os.listdir(path_extracao)
-            if os.path.isfile(os.path.join(path_extracao, f)) # Garante que é um arquivo
+            if os.path.isfile(os.path.join(path_extracao, f))
         ]
         
         if not all_files_in_extraction:
             logger.warning(f"[{pid}] Nenhum arquivo de dados encontrado em {path_extracao} para {zip_file}.")
-            return True # Sucesso, pois não há o que processar
+            # Retorna False pois não há dados para processar
+            return False
+            
+        # Limpar memória antes de começar processamento
+        gc.collect()
 
         dataframes = []
         logger.debug(f"[{pid}] Arquivos encontrados em {path_extracao}: {all_files_in_extraction}")
-        # Tenta processar todos os arquivos encontrados como CSV/dados
+        
         for data_path in all_files_in_extraction:
             file_name = os.path.basename(data_path)
             logger.debug(f"[{pid}] Tentando processar arquivo: {file_name}")
@@ -518,37 +560,51 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
                 dataframes.append(df_polars)
             elif df_polars is not None and df_polars.is_empty():
                  logger.warning(f"[{pid}] Arquivo {file_name} resultou em DataFrame vazio.")
-            # Se df_polars for None, o erro já foi logado em process_csv_file_polars
         
         if not dataframes:
             logger.error(f"[{pid}] Nenhum DataFrame Polars válido gerado a partir do ZIP {zip_file}.")
             return False
 
         # Concatenar e aplicar transformações
+        logger.info(f"[{pid}] Concatenando {len(dataframes)} DataFrames para {zip_file}...")
         df_final = pl.concat(dataframes) if len(dataframes) > 1 else dataframes[0]
+        
+        # Limpar dataframes individuais para economizar memória
+        del dataframes
+        gc.collect()
+        
+        logger.info(f"[{pid}] Aplicando transformações em {df_final.height} linhas para {zip_file}...")
         df_final = apply_estabelecimento_transformations_polars(df_final)
         
         # --- 3. Salvar Parquet (Principal) ---
+        logger.info(f"[{pid}] Salvando Parquet principal para {zip_file}...")
         main_saved = create_parquet_polars(df_final, 'estabelecimentos', path_parquet, zip_filename_prefix)
         
         # --- 4. Salvar Parquet (Subset UF - Condicional) ---
-        subset_saved = True # Assume sucesso se não for criar ou se falhar principal
+        subset_saved = True
         if main_saved and uf_subset and 'uf' in df_final.columns:
             subset_table_name = f"estabelecimentos_{uf_subset.lower()}"
-            logger.debug(f"[{pid}] Polars Criando subset {subset_table_name}...")
+            logger.info(f"[{pid}] Criando e salvando subset {subset_table_name} para {zip_file}...")
+            
             df_subset = df_final.filter(pl.col('uf') == uf_subset)
             if not df_subset.is_empty():
                 subset_saved = create_parquet_polars(df_subset, subset_table_name, path_parquet, zip_filename_prefix)
                 if not subset_saved:
-                     logger.error(f"[{pid}] Polars Falha ao salvar subset {subset_table_name} para {zip_file}.")
+                     logger.error(f"[{pid}] Falha ao salvar subset {subset_table_name} para {zip_file}.")
             else:
-                logger.debug(f"[{pid}] Polars Subset {subset_table_name} vazio para {zip_file}, não será salvo.")
-            del df_subset # Liberar memória
+                logger.info(f"[{pid}] Subset {subset_table_name} vazio para {zip_file}, não será salvo.")
+            
+            # Limpar df_subset
+            del df_subset
+            gc.collect()
         elif main_saved and uf_subset:
-             logger.warning(f"[{pid}] Polars Coluna 'uf' não encontrada, não é possível criar subset para UF {uf_subset}.")
+             logger.warning(f"[{pid}] Coluna 'uf' não encontrada, não é possível criar subset para UF {uf_subset}.")
              
         success = main_saved and subset_saved
-        del df_final # Liberar memória
+        
+        # Limpar df_final
+        del df_final
+        gc.collect()
         
     except Exception as e:
         logger.exception(f"[{pid}] Erro GERAL no processamento Polars de {zip_file}")
@@ -560,8 +616,11 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
                 shutil.rmtree(path_extracao)
                 logger.info(f"[{pid}] Diretório de extração {path_extracao} limpo.")
             except Exception as e_clean:
-                 logger.warning(f"[{pid}] Falha ao limpar diretório de extração {path_extracao}: {e_clean}")
-
+                logger.warning(f"[{pid}] Falha ao limpar diretório de extração {path_extracao}: {e_clean}")
+                
+        # Forçar coleta de lixo novamente ao final do processamento
+        gc.collect()
+    
     logger.info(f"[{pid}] Processamento Polars para {zip_file} concluído com status: {success}")
     return success
 
@@ -602,25 +661,37 @@ def process_estabelecimento_with_polars(path_zip: str, path_unzip: str, path_par
         except Exception as e:
             logger.warning(f'Não foi possível limpar diretórios de saída antes do processamento Polars: {str(e)}')
 
+        # Forçar coleta de lixo antes de iniciar o processamento
+        gc.collect()
+            
         overall_success = False
-        # Usar rich.progress.track para visualização
-        for zip_file in track(zip_files, description="[cyan]Processing Estabelecimentos ZIPs (Polars)..."): 
+        arquivos_sem_dados = []
+        for zip_file in track(zip_files, description="[cyan]Processing Estabelecimentos ZIPs (Polars)..."):
             result = process_single_zip_polars(
                 zip_file=zip_file,
                 path_zip=path_zip,
                 path_unzip=path_unzip,
                 path_parquet=path_parquet,
-                uf_subset=uf_subset # Passa a UF para a função Polars
+                uf_subset=uf_subset
             )
             if result:
-                overall_success = True # Marca que pelo menos um teve sucesso
-                # Log individual já é feito dentro de process_single_zip_polars
-        
+                overall_success = True
+                logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars")
+            else:
+                # Registra arquivos que não tiveram dados válidos para processar
+                arquivos_sem_dados.append(zip_file)
+                
+            # Forçar coleta de lixo após cada arquivo
+            gc.collect()
+
         if not overall_success:
              logger.warning("Nenhum arquivo ZIP de Estabelecimentos foi processado com sucesso usando Polars.")
              
+        if arquivos_sem_dados:
+            logger.warning(f'Os seguintes arquivos não continham dados válidos para processar: {", ".join(arquivos_sem_dados)}')
+
         return overall_success
-            
+
     except Exception as e:
         logger.error(f'Erro no processamento principal com Polars: {str(e)}')
         return False

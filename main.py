@@ -231,27 +231,27 @@ def setup_dask_cluster():
 def main():
     """Função principal que orquestra todo o processo."""
     parser = argparse.ArgumentParser(description='Processa dados do CNPJ')
-    parser.add_argument('--tipos', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
+    parser.add_argument('--tipos', '-t', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
                         help='Tipos de dados a serem processados. Se não especificado, processa todos (relevante para steps \'process\' e \'all\').')
-    parser.add_argument('--engine', choices=['pandas', 'dask', 'polars'], default='polars',
+    parser.add_argument('--engine', '-e', choices=['pandas', 'dask', 'polars'], default='polars',
                         help='Motor de processamento a ser utilizado (relevante para steps \'process\' e \'all\'). Padrão: polars')
-    parser.add_argument('--source-zip-folder', type=str, default=None,
+    parser.add_argument('--source-zip-folder', '-z', type=str, default=None,
                         help='Caminho para a pasta contendo os arquivos ZIP a serem processados (Obrigatório para --step process).')
-    parser.add_argument('--output-subfolder', type=str, default=None,
+    parser.add_argument('--output-subfolder', '-o', type=str, default=None,
                         help='Nome da subpasta dentro de PATH_PARQUET onde os arquivos Parquet serão salvos ou lidos (Obrigatório para --step process e --step database).')
-    parser.add_argument('--criar-empresa-privada', action='store_true',
+    parser.add_argument('--criar-empresa-privada', '-priv', action='store_true',
                         help='Se presente (com --step process ou --step all), cria um subconjunto Parquet adicional para empresas privadas.')
-    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO',
+    parser.add_argument('--log-level', '-l', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO',
                         help='Define o nível mínimo de log a ser exibido/salvo. Padrão: INFO.')
     parser.add_argument(
-        '--criar-subset-uf',
+        '--criar-subset-uf', '-uf',
         type=str,
         default=None,
         metavar='UF',
         help="Opcional (com --step process ou --step all). Cria um subconjunto Parquet adicional para estabelecimentos da UF especificada."
     )
     parser.add_argument(
-        '--step', 
+        '--step', '-s',
         choices=['download', 'process', 'database', 'all'], 
         default='all',
         help="""Especifica qual(is) etapa(s) executar:
