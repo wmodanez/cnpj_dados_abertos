@@ -13,11 +13,11 @@ Exemplos de uso:
 4. Baixa e processa apenas Estabelecimentos usando Polars (salva em subpasta com nome da data baixada):
    python main.py --tipos estabelecimentos --engine polars
 
-5. Pular o download e processar todos os tipos da pasta ZIP '../dados-abertos-zip', salvando Parquet na subpasta 'meu_processamento_manual' (dentro de PATH_PARQUET):
-   python main.py --step process --source-zip-folder ../dados-abertos-zip --output-subfolder meu_processamento_manual
+5. Pular o download e processar todos os tipos da pasta ZIP '../dados-abertos-zip/2023-05', salvando Parquet na subpasta 'meu_processamento_manual' (dentro de PATH_PARQUET):
+   python main.py --step process --source-zip-folder ../dados-abertos-zip/2023-05 --output-subfolder meu_processamento_manual
 
-6. Pular o download, processar apenas Simples e Sócios da pasta ZIP 'D:/MeusDownloads/CNPJ_ZIPs', usando Dask, salvando Parquet na subpasta 'simples_socios_dask' (dentro de PATH_PARQUET):
-   python main.py --step process --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs" --output-subfolder simples_socios_dask --tipos simples socios --engine dask
+6. Pular o download, processar apenas Simples e Sócios da pasta ZIP 'D:/MeusDownloads/CNPJ_ZIPs/2023-01', usando Dask, salvando Parquet na subpasta 'simples_socios_dask' (dentro de PATH_PARQUET):
+   python main.py --step process --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs/2023-01" --output-subfolder simples_socios_dask --tipos simples socios --engine dask
 
 7. Baixa e processa apenas Empresas usando Pandas (salva em subpasta com nome da data baixada):
    python main.py --tipos empresas --engine pandas
@@ -31,8 +31,8 @@ Exemplos de uso:
 10. Pular download E processamento, criando apenas o arquivo DuckDB a partir dos Parquets existentes na subpasta 'processamento_anterior' (dentro de PATH_PARQUET):
     python main.py --step database --output-subfolder processamento_anterior
 
-11. Pular download, processar com Dask, e depois criar o DuckDB, usando a pasta de origem 'meus_zips' e salvando na subpasta 'resultado_dask':
-    python main.py --step process --source-zip-folder meus_zips --engine dask --output-subfolder resultado_dask
+11. Pular download, processar com Dask, e depois criar o DuckDB, usando a pasta de origem 'meus_zips/2023-05' e salvando na subpasta 'resultado_dask':
+    python main.py --step process --source-zip-folder meus_zips/2023-05 --engine dask --output-subfolder resultado_dask
 
 12. Processar apenas estabelecimentos com Polars, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
     python main.py --tipos estabelecimentos --engine polars --output-subfolder process_sp --criar-subset-uf SP
@@ -43,14 +43,18 @@ Exemplos de uso:
 14. Baixar arquivos de TODOS os diretórios remotos disponíveis (salvando em subpastas separadas):
     python main.py --all-folders --step download
 
-15. Processar dados de uma pasta específica dentro da estrutura de subpastas (supondo que fizemos download com --all-folders antes):
-    python main.py --step process --source-zip-folder pasta_zips --output-subfolder processados_2023_05
+15. Processar dados de uma pasta baixada anteriormente (aponta diretamente para a subpasta com arquivos):
+    python main.py --step process --source-zip-folder pasta_zips/2023-05 --output-subfolder processados_2023_05
 
 16. Baixar arquivos forçando download mesmo que já existam localmente ou no cache:
     python main.py --remote-folder 2023-05 --force-download
 
-NOTA: O download sempre salvará os arquivos em uma subpasta com o nome da pasta remota (ex: 2023-05)
-      dentro do diretório ZIP. Ao usar --source-zip-folder, aponte para o diretório que contém estas subpastas.
+17. Processar todas as pastas no formato AAAA-MM encontradas dentro de PATH_ZIP (útil após download com --all-folders):
+    python main.py --step process --process-all-folders --output-subfolder processados_completos
+
+NOTA: O download sempre salvará os arquivos em uma subpasta com o nome da pasta remota.
+      Exemplo: se --remote-folder=2023-05, os arquivos serão salvos em PATH_ZIP/2023-05/.
+      Ao usar --source-zip-folder, aponte diretamente para o diretório que contém os arquivos ZIP.
 """
 import argparse
 import asyncio
@@ -58,6 +62,7 @@ import datetime
 import logging
 import os
 from multiprocessing import freeze_support
+import re
 
 import aiohttp
 from dask.distributed import Client, LocalCluster
@@ -280,9 +285,12 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
         # Modo normal: baixar de uma pasta específica ou a mais recente
         # 1. Buscar URLs mais recentes ou da pasta específica
         try:
-            all_zip_urls, latest_folder = get_latest_month_zip_urls(base_url)
+            all_zip_urls, latest_folder = get_latest_month_zip_urls(base_url, remote_folder)
             if not all_zip_urls:
-                logger.warning("Nenhuma URL .zip encontrada na origem.")
+                if remote_folder:
+                    logger.warning(f"Nenhuma URL .zip encontrada na pasta remota especificada: {remote_folder}.")
+                else:
+                    logger.warning("Nenhuma URL .zip encontrada na origem.")
                 return False, ""
         except aiohttp.ClientError as e:
             logger.error(f"Erro de conexão ao buscar URLs: {e}")
@@ -482,7 +490,7 @@ def main():
     parser.add_argument('--engine', '-e', choices=['pandas', 'dask', 'polars'], default='polars',
                         help='Motor de processamento a ser utilizado (relevante para steps \'process\' e \'all\'). Padrão: polars')
     parser.add_argument('--source-zip-folder', '-z', type=str, default=None,
-                        help='Caminho para a pasta contendo as subpastas com arquivos ZIP (as subpastas têm nomes no formato AAAA-MM, ex: 2023-05). Obrigatório para --step process.')
+                        help='Caminho para o diretório contendo os arquivos ZIP ou suas subpastas. No modo "all", usa automaticamente a subpasta com nome da pasta remota dentro de PATH_ZIP.')
     parser.add_argument('--output-subfolder', '-o', type=str, default=None,
                         help='Nome da subpasta dentro de PATH_PARQUET onde os arquivos Parquet serão salvos ou lidos (Obrigatório para --step process e --step database).')
     parser.add_argument('--criar-empresa-privada', '-priv', action='store_true',
@@ -514,6 +522,11 @@ def main():
         help="Força o download de todos os arquivos, mesmo que já existam localmente ou no cache."
     )
     parser.add_argument(
+        '--process-all-folders', '-paf',
+        action='store_true',
+        help="Processa todas as pastas no formato AAAA-MM encontradas no diretório ZIP. Útil após download com --all-folders."
+    )
+    parser.add_argument(
         '--step', '-s',
         choices=['download', 'process', 'database', 'all'], 
         default='all',
@@ -527,18 +540,26 @@ def main():
 
     # --- Validação de Argumentos --- 
     # Validação baseada no --step escolhido
-    if args.step == 'process' and (not args.source_zip_folder or not args.output_subfolder):
-        parser.error("--step 'process' requer que --source-zip-folder e --output-subfolder sejam especificados.")
+    if args.step == 'process' and not args.process_all_folders and (not args.source_zip_folder or not args.output_subfolder):
+        parser.error("--step 'process' requer que --source-zip-folder e --output-subfolder sejam especificados, a menos que --process-all-folders esteja presente.")
     if args.step == 'database' and not args.output_subfolder:
         parser.error("--step 'database' requer que --output-subfolder seja especificado.")
     if args.source_zip_folder and not os.path.isdir(args.source_zip_folder):
          parser.error(f"A pasta de origem especificada (--source-zip-folder) não existe ou não é um diretório: {args.source_zip_folder}")
-
+    
+    # Verificar incompatibilidades
+    if args.process_all_folders and args.source_zip_folder:
+        parser.error("--process-all-folders e --source-zip-folder são mutuamente exclusivos. Use apenas um deles.")
+    
     # Validação da UF (mantida)
     if args.criar_subset_uf and len(args.criar_subset_uf) != 2:
         parser.error("--criar-subset-uf deve receber uma sigla de UF com 2 caracteres (ex: SP, RJ).")
     if args.criar_subset_uf:
         args.criar_subset_uf = args.criar_subset_uf.upper()
+        
+    # Validação da pasta remota
+    if args.remote_folder and not re.fullmatch(r'(\d{4})-(\d{2})', args.remote_folder):
+        parser.error("--remote-folder deve estar no formato AAAA-MM (ex: 2023-01).")
 
     tipo_para_nome = {
         'empresas': 'Empresas',
@@ -687,11 +708,103 @@ def main():
     processing_performed = False
     if run_process:
         print_header("Etapa 2: Processamento para Parquet")
-        # Verifica se os caminhos necessários estão definidos
-        if not path_zip_to_use or not target_parquet_output_path:
-             print_error("Erro interno: Caminhos de entrada ZIP ou saída Parquet não definidos para a etapa de processamento.")
-             if dask_manager: dask_manager.shutdown()
-             return
+        
+        # Caso especial: processar todas as pastas
+        if args.process_all_folders:
+            print_section("Modo de processamento de múltiplas pastas ativado.")
+            # Encontrar todas as pastas no formato AAAA-MM dentro do PATH_ZIP
+            year_month_folders = []
+            
+            try:
+                for item in os.listdir(PATH_ZIP):
+                    item_path = os.path.join(PATH_ZIP, item)
+                    if os.path.isdir(item_path) and re.fullmatch(r'(\d{4})-(\d{2})', item):
+                        year_month_folders.append(item)
+                
+                if not year_month_folders:
+                    print_error(f"Nenhuma pasta no formato AAAA-MM encontrada em {PATH_ZIP}")
+                    if dask_manager: dask_manager.shutdown()
+                    return
+                
+                # Ordenar as pastas (mais recente primeiro)
+                year_month_folders.sort(reverse=True)
+                print_success(f"Encontradas {len(year_month_folders)} pastas para processamento: {', '.join(year_month_folders)}")
+                
+                # Processar cada pasta
+                overall_success = False
+                for folder in year_month_folders:
+                    folder_path = os.path.join(PATH_ZIP, folder)
+                    
+                    # Determinar pasta de saída
+                    if args.output_subfolder:
+                        # Se usuário especificou pasta de saída base, criar subpasta para cada diretório processado
+                        output_path = os.path.join(PATH_PARQUET, args.output_subfolder, folder)
+                    else:
+                        # Caso contrário, usar nome da pasta como subpasta dentro de PATH_PARQUET
+                        output_path = os.path.join(PATH_PARQUET, folder)
+                    
+                    os.makedirs(output_path, exist_ok=True)
+                    
+                    print_section(f"Processando pasta: {folder}")
+                    logger.info(f"Lendo ZIPs de: {folder_path}")
+                    logger.info(f"Salvando Parquets em: {output_path}")
+                    
+                    # Processar a pasta atual
+                    success = process_folder(
+                        folder_path, PATH_UNZIP, output_path, 
+                        args.tipos, args.engine, args.criar_empresa_privada, args.criar_subset_uf,
+                        tipos_a_processar, dask_manager
+                    )
+                    
+                    if success:
+                        print_success(f"Processamento da pasta {folder} concluído com sucesso.")
+                        overall_success = True
+                        processing_performed = True
+                    else:
+                        print_warning(f"Processamento da pasta {folder} não foi bem-sucedido.")
+                
+                if overall_success:
+                    print_success("Pelo menos uma pasta foi processada com sucesso.")
+                else:
+                    print_error("Nenhuma pasta foi processada com sucesso.")
+                
+                # Se a etapa era APENAS processamento, encerra aqui.
+                if args.step == 'process':
+                    print_success("Etapa 'process' concluída.")
+                    if dask_manager: dask_manager.shutdown()
+                    return
+                    
+            except Exception as e:
+                logger.exception(f"Erro ao processar múltiplas pastas: {e}")
+                print_error(f"Erro ao processar múltiplas pastas: {e}")
+                if dask_manager: dask_manager.shutdown()
+                return
+        
+        # Processamento normal (uma única pasta)
+        # Determinar fonte dos arquivos (ZIP) 
+        if args.step == 'process':
+            # Se a etapa for apenas 'process', precisamos ter --source-zip-folder e --output-subfolder especificados
+            if not path_zip_to_use or not target_parquet_output_path:
+                print_error("Erro interno: Caminhos de entrada ZIP ou saída Parquet não definidos para a etapa de processamento.")
+                if dask_manager: dask_manager.shutdown()
+                return
+        else:
+            # Se viemos do download (etapa 'all'), usamos o diretório da pasta remota baixada
+            if not path_zip_to_use:
+                print_error("Erro interno: Caminho de entrada ZIP não definido para a etapa de processamento.")
+                if dask_manager: dask_manager.shutdown()
+                return
+                
+            if latest_folder_from_dl:
+                # Usamos a subpasta específica dentro do diretório ZIP
+                path_zip_to_use = os.path.join(PATH_ZIP, latest_folder_from_dl)
+                logger.info(f"Usando caminho dos ZIPs baseado no download: {path_zip_to_use}")
+        
+        # Verificar se o caminho de saída Parquet está definido
+        if not target_parquet_output_path:
+            print_error("Erro interno: Caminho de saída Parquet não definido para a etapa de processamento.")
+            if dask_manager: dask_manager.shutdown()
+            return
         
         logger.info(f"Lendo ZIPs de: {path_zip_to_use}")
         logger.info(f"Salvando Parquets em: {target_parquet_output_path}")
