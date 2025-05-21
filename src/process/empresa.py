@@ -874,7 +874,7 @@ def process_csv_file_polars(csv_path):
         return None
 
 
-def apply_empresa_transformations_polars(df):
+def apply_empresa_transformations_polars(df: pl.DataFrame, chunk_size: int = 1_000_000) -> pl.DataFrame:
     """Aplica transformações específicas para Empresas usando Polars."""
     logger.info("Aplicando transformações em Empresas com Polars...")
     
@@ -889,89 +889,31 @@ def apply_empresa_transformations_polars(df):
         'ente_federativo_responsavel': 'ente_federativo_responsavel'
     }
     
-    # Filtrar para incluir apenas colunas que existem no DataFrame
-    actual_rename_mapping = {k: v for k, v in rename_mapping.items() if k in df.columns}
-    df = df.rename(actual_rename_mapping)
+    # Filtrar para manter apenas colunas que existem no DataFrame
+    rename_mapping = {k: v for k, v in rename_mapping.items() if k in df.columns}
     
-    # Conversão de tipos numéricos
-    int_cols = ['natureza_juridica', 'qualificacao_responsavel', 'porte_empresa']
-    for col in int_cols:
-        if col in df.columns:
-            df = df.with_columns(pl.col(col).cast(pl.Int64, strict=False))
+    # Aplicar renomeação se houver colunas para renomear
+    if rename_mapping:
+        df = df.rename(rename_mapping)
     
-    # Conversão do capital_social
-    if 'capital_social' in df.columns:
-        df = df.with_columns(
-            pl.col('capital_social')
-              .str.replace(',', '.', literal=True)
-              .cast(pl.Float64, strict=False)
-              .alias('capital_social')
-        )
+    # Adiciona uma coluna CPF vazia para manter a compatibilidade com o resto do código
+    if 'CPF' not in df.columns:
+        df = df.with_columns(pl.lit(None).alias('CPF'))
     
-    # --- Extração de CPF da razao_social (Polars) ---
-    if 'razao_social' in df.columns:
-        logger.info("Extraindo CPF da razao_social (Polars)...")
-        df = df.with_columns([
-            # Extrai formato com máscara
-            pl.col('razao_social').str.extract(r'(\d{3}\.\d{3}\.\d{3}-\d{2})').alias('cpf_com_mascara'),
-            # Extrai formato sem máscara
-            pl.col('razao_social').str.extract(r'(\d{11})').alias('cpf_sem_mascara')
-        ])
-
-        df = df.with_columns([
-            # Combina: usa cpf_com_mascara se não for null, senão usa cpf_sem_mascara
-            pl.when(pl.col('cpf_com_mascara').is_not_null())
-              .then(pl.col('cpf_com_mascara'))
-              .otherwise(pl.col('cpf_sem_mascara'))
-              .alias('CPF_temp')
-        ])
-
-        df = df.with_columns([
-            # Limpa a máscara
-            pl.col('CPF_temp').str.replace_all(r'[.\-]', '').alias('CPF')
-        ])
-
-        # Valida comprimento
-        df = df.with_columns([
-            pl.when(pl.col('CPF').str.len_chars() == 11)
-              .then(pl.col('CPF'))
-              .otherwise(None) # Define como null se não tiver 11 chars
-              .alias('CPF')
-        ])
-
-        # Remove colunas temporárias
-        df = df.drop(['cpf_com_mascara', 'cpf_sem_mascara', 'CPF_temp'])
-        logger.info("Extração de CPF concluída (Polars).")
-
-        # --- Remoção do CPF da razao_social (Polars - Regex Fixas) ---
-        logger.info("Removendo CPF da razao_social (Polars - regex fixas)...")
-        if 'CPF' in df.columns: # Only attempt removal if CPF was potentially extracted
-            df = df.with_columns(
-                pl.col('razao_social')
-                  .str.replace_all(r'\d{3}\.\d{3}\.\d{3}-\d{2}', '') # Remove masked first
-                  .str.replace_all(r'\b\d{11}\b', '') # Remove unmasked (using word boundaries)
-                  .str.strip_chars() # Strip whitespace
-                  .alias('razao_social')
-            )
-            logger.info("Remoção do CPF da razao_social concluída (Polars - regex fixas).")
-        else:
-            logger.warning("Coluna 'CPF' não encontrada, remoção da razao_social não realizada (Polars).")
-
-    # Garante que a coluna CPF exista se razao_social existia
-    elif 'razao_social' in df.columns and 'CPF' not in df.columns:
-        df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias('CPF'))
-
     return df
 
 
-def create_parquet_polars(df, table_name, path_parquet, zip_filename_prefix: str):
-    """Salva um DataFrame Polars como parquet, usando prefixo para nomes de chunk.
+def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
+                         zip_filename_prefix: str, partition_size: int = 500_000) -> bool:
+    """
+    Salva DataFrame Polars em arquivos Parquet particionados para reduzir uso de memória.
     
     Args:
         df: DataFrame Polars
         table_name: Nome da tabela (subpasta)
         path_parquet: Caminho base para os arquivos parquet (diretório pai de table_name)
         zip_filename_prefix: Prefixo derivado do nome do arquivo ZIP original
+        partition_size: Tamanho de cada partição (número de linhas)
         
     Returns:
         True se sucesso, False caso contrário
@@ -979,54 +921,40 @@ def create_parquet_polars(df, table_name, path_parquet, zip_filename_prefix: str
     try:
         output_dir = os.path.join(path_parquet, table_name)
         
-        # A LIMPEZA FOI MOVIDA PARA ANTES DO LOOP PRINCIPAL
-        # try:
-        #     file_delete(output_dir)
-        #     logger.info(f'Diretório {output_dir} limpo antes de criar novos arquivos parquet')
-        # except Exception as e:
-        #     logger.warning(f'Não foi possível limpar diretório {output_dir}: {str(e)}')
-        
         # Garante que o diretório de saída existe
         os.makedirs(output_dir, exist_ok=True)
         
         # Log das colunas antes de salvar
         logger.info(f"Colunas do DataFrame Polars '{table_name}' (Origem: {zip_filename_prefix}) antes de salvar em Parquet: {df.columns}")
         
-        # Calcular número total de chunks baseado no tamanho
         total_rows = df.height
-        chunk_size = 100000  # Mesmo tamanho usado nas outras funções
-        # Garantir pelo menos 2 chunks para ter múltiplos arquivos
-        num_chunks = max(2, int(np.ceil(total_rows / chunk_size)))
+        num_partitions = (total_rows + partition_size - 1) // partition_size
         
-        # Ajustar o tamanho dos chunks para distribuir igualmente
-        adjusted_chunk_size = int(np.ceil(total_rows / num_chunks))
+        logger.info(f"Salvando DataFrame com {total_rows} linhas em {num_partitions} partições de aproximadamente {partition_size} linhas cada")
         
-        logger.info(f"Dividindo DataFrame com {total_rows} linhas em {num_chunks} chunks")
-        
-        # Criar os arquivos parquet em chunks
-        for i in range(num_chunks):
-            start_idx = i * adjusted_chunk_size
-            end_idx = min((i + 1) * adjusted_chunk_size, total_rows)
+        for i in range(num_partitions):
+            start_idx = i * partition_size
+            end_idx = min((i + 1) * partition_size, total_rows)
             
-            # Criar um chunk do DataFrame
-            df_chunk = df.slice(start_idx, end_idx - start_idx)
+            partition = df.slice(start_idx, end_idx - start_idx)
+            output_path = os.path.join(output_dir, f"{zip_filename_prefix}_part{i:03d}.parquet")
             
-            # Criar nome do arquivo com prefixo
-            chunk_index = i
-            file_name = f"{zip_filename_prefix}_{table_name}_{chunk_index:03d}.parquet"
-            file_path = os.path.join(output_dir, file_name)
+            logger.info(f"Salvando partição {i+1}/{num_partitions} com {end_idx-start_idx} linhas para {output_path}")
             
-            # Salvar o chunk como parquet
-            df_chunk.write_parquet(
-                file_path,
-                compression="snappy"
-            )
+            try:
+                partition.write_parquet(output_path, compression="snappy")
+                logger.info(f"Partição {i+1}/{num_partitions} salva com sucesso")
+            except Exception as e:
+                logger.error(f"Erro ao salvar partição {i+1}: {str(e)}")
+                raise
             
-            logger.debug(f"Chunk {i+1}/{num_chunks} salvo como {file_name} ({end_idx-start_idx} linhas)")
-        
+            # Liberar memória
+            del partition
+            gc.collect()
+            
         return True
     except Exception as e:
-        logger.error(f"Erro ao salvar DataFrame Polars como parquet: {str(e)}")
+        logger.error(f"Erro ao criar arquivo Parquet com Polars: {str(e)}")
         return False
 
 
