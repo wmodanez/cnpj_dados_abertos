@@ -4,14 +4,6 @@ from typing import Dict, List
 
 
 @dataclass
-class DaskConfig:
-    n_workers: int = os.cpu_count() or 4
-    threads_per_worker: int = 1
-    memory_limit: str = '4GB'
-    dashboard_address: str = ':8787'
-
-
-@dataclass
 class FileConfig:
     separator: str = ';'
     encoding: str = 'latin1'
@@ -47,7 +39,10 @@ class CacheConfig:
 
 @dataclass
 class Config:
-    dask: DaskConfig = field(default_factory=DaskConfig)
+    # Configurações de paralelismo
+    n_workers: int = os.cpu_count() or 4
+    memory_limit: str = '4GB'
+    
     file: FileConfig = field(default_factory=FileConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)

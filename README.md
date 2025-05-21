@@ -136,11 +136,8 @@ python main.py
 # Equivalente a:
 python main.py --step all --engine polars
 
-# 2. Execução completa usando Pandas:
-python main.py --step all --engine pandas
-
-# 3. Execução completa usando Dask:
-python main.py --step all --engine dask
+# 2. Execução completa usando Polars:
+python main.py --step all --engine polars
 
 # 4. Apenas baixar os arquivos ZIP mais recentes (todos os tipos):
 python main.py --step download
@@ -152,8 +149,8 @@ python main.py --step download --tipos empresas socios
 #    (Necessário especificar a pasta de origem dos ZIPs e a subpasta de saída Parquet)
 python main.py --step process --source-zip-folder ../dados-abertos-zip --output-subfolder meu_processamento_manual --engine polars
 
-# 7. Apenas processar ZIPs existentes de Simples e Sócios usando Dask:
-python main.py --step process --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs" --output-subfolder simples_socios_dask --tipos simples socios --engine dask
+# 7. Apenas processar ZIPs existentes de Simples e Sócios:
+python main.py --step process --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs" --output-subfolder simples_socios --tipos simples socios
 
 # 8. Apenas criar/atualizar o banco DuckDB a partir de Parquets existentes:
 #    (Necessário especificar a subpasta onde os Parquets estão)
@@ -171,7 +168,7 @@ python main.py --step all --tipos estabelecimentos --engine polars --output-subf
 **Argumentos Principais:**
 
 *   `--step {download,process,database,all}`: Define qual(is) etapa(s) executar (padrão: `all`).
-*   `--engine {pandas,dask,polars}`: Escolhe o motor de processamento para a etapa `process` (padrão: `polars`).
+*   `--engine {polars}`: Escolhe o motor de processamento para a etapa `process` (padrão: `polars`).
 *   `--tipos {empresas,estabelecimentos,simples,socios}`: Filtra quais tipos de dados baixar ou processar (padrão: todos).
 *   `--source-zip-folder <caminho>`: Pasta de origem dos arquivos ZIP (obrigatório para `--step process`).
 *   `--output-subfolder <nome>`: Subpasta em `PATH_PARQUET` para salvar/ler Parquets (obrigatório para `--step process` e `--step database`).
@@ -191,7 +188,7 @@ python -m src.cache_manager clear-cache
 
 ### Benchmarks
 
-O projeto inclui scripts de benchmark para comparar o desempenho de diferentes bibliotecas (Pandas, Dask, Polars) no processamento dos dados:
+O projeto inclui scripts de benchmark para comparar o desempenho de diferentes configurações no processamento dos dados:
 
 ```bash
 # Benchmark para dados de Empresas

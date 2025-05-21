@@ -59,7 +59,7 @@ def file_extractor(folder_ori: str, folder_dest: str, filename: str = '*.*') -> 
             logger.error(f'Erro ao descompactar {zip_path}: {str(e)}')
 
     # Usa ThreadPoolExecutor para extrair arquivos em paralelo
-    with ThreadPoolExecutor(max_workers=config.dask.n_workers) as executor:
+    with ThreadPoolExecutor(max_workers=config.n_workers) as executor:
         executor.map(extract_file, zip_file_list)
 
 
@@ -75,7 +75,7 @@ def file_delete(folder: str, filename: str = '*') -> None:
             logger.error(f'Erro ao remover arquivo {file_path}: {str(e)}')
 
     # Usa ThreadPoolExecutor para remover arquivos em paralelo
-    with ThreadPoolExecutor(max_workers=config.dask.n_workers) as executor:
+    with ThreadPoolExecutor(max_workers=config.n_workers) as executor:
         executor.map(delete_file, file_list)
 
 

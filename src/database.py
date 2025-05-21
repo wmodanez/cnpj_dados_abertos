@@ -110,7 +110,7 @@ def create_duckdb_file(path_parquet_folder: str, file_db_parquet: str, path_remo
         # Conecta ao banco de dados com configurações otimizadas
         conn = duckdb.connect(db_path, config={
             'threads': config.database.threads,
-            'memory_limit': config.dask.memory_limit,
+            'memory_limit': config.memory_limit,
             'checkpoint_threshold': '1GB'
         })
         logger.info(f"Banco de dados criado em {db_path}")

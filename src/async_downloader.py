@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import time
-from typing import List, Tuple
+from typing import List, Tuple, Callable, Dict, Any
 from urllib.parse import urljoin
 
 # Bibliotecas de terceiros
@@ -26,6 +26,10 @@ from rich.progress import (
 # Importações locais do projeto
 from .config import config
 from .utils import DownloadCache
+from .process.empresa import process_single_zip_polars as process_empresa_zip
+from .process.estabelecimento import process_single_zip_polars as process_estabelecimento_zip
+from .process.simples import process_single_zip_polars as process_simples_zip
+from .process.socio import process_single_zip_polars as process_socio_zip
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -35,6 +39,17 @@ load_dotenv()
 download_cache = DownloadCache(config.cache.cache_path)
 
 logger = logging.getLogger(__name__)
+
+# Mapeamento de tipos de arquivo para funções de processamento
+PROCESSOR_MAP = {
+    'Empresas': process_empresa_zip,
+    'Estabelecimentos': process_estabelecimento_zip,
+    'Simples': process_simples_zip,
+    'Socios': process_socio_zip
+}
+
+# Semáforo para limitar o número de processamentos simultâneos
+process_semaphore = asyncio.Semaphore(os.cpu_count() // 2 or 1)  # Metade do número de CPUs
 
 
 def _fetch_and_parse(url: str) -> BeautifulSoup | None:
@@ -101,20 +116,24 @@ def _filter_urls_by_type(urls: List[str], tipos: Tuple[str, ...]) -> Tuple[List[
     return filtered_urls, ignored_count
 
 
-def get_latest_month_zip_urls(base_url: str) -> Tuple[List[str], str]:
-    """Busca URLs de arquivos .zip na pasta AAAA-MM mais recente.
+def get_latest_month_zip_urls(base_url: str, remote_folder: str | None = None) -> Tuple[List[str], str]:
+    """Busca URLs de arquivos .zip na pasta AAAA-MM mais recente ou na pasta especificada.
 
     1. Busca e parseia a URL base.
     2. Encontra links de diretórios.
-    3. Filtra diretórios no formato AAAA-MM e encontra o mais recente.
-    4. Busca e parseia a URL do diretório mais recente.
+    3. Filtra diretórios no formato AAAA-MM e encontra o mais recente ou usa o especificado.
+    4. Busca e parseia a URL do diretório escolhido.
     5. Encontra links .zip nesse diretório.
     
+    Args:
+        base_url: URL base para buscar diretórios
+        remote_folder: Pasta específica a ser usada (formato AAAA-MM), se None usa a mais recente
+
     Returns:
-        Tuple[List[str], str]: Lista de URLs e nome da pasta mais recente
+        Tuple[List[str], str]: Lista de URLs e nome da pasta escolhida
     """
     zip_urls = []
-    latest_month_folder_url = None
+    folder_url = None
     year_month_folders = []
 
     # 1 & 2: Buscar e encontrar links de diretórios na URL base
@@ -126,36 +145,52 @@ def get_latest_month_zip_urls(base_url: str) -> Tuple[List[str], str]:
     directory_links = _find_links(base_soup, base_url,
                                   ends_with=None)  # ends_with=None busca diretórios terminados em /
 
-    # 3: Filtrar diretórios AAAA-MM e encontrar o mais recente
+    # 3: Filtrar diretórios AAAA-MM e encontrar o mais recente ou o especificado
     for dir_url in directory_links:
         folder_name = dir_url.strip('/').split('/')[-1]
         match = re.fullmatch(r'(\d{4})-(\d{2})', folder_name)
         if match:
+            # Se existe um remote_folder específico e esse é o diretório
+            if remote_folder and folder_name == remote_folder:
+                folder_url = dir_url
+                logger.info(f"Diretório especificado encontrado: {folder_name} ({folder_url})")
+                break
+            
             year_month_folders.append((folder_name, dir_url))
             logger.debug(f"Encontrado diretório AAAA-MM: {folder_name} -> {dir_url}")
 
-    if not year_month_folders:
-        logger.warning(f"Nenhum diretório no formato AAAA-MM encontrado em {base_url}")
-        return [], ""
+    # Se não temos um folder_url específico (porque remote_folder não foi encontrado ou não foi especificado)
+    if not folder_url:
+        if remote_folder:
+            # Se o usuário solicitou uma pasta específica, mas não foi encontrada
+            logger.warning(f"Diretório solicitado '{remote_folder}' não foi encontrado.")
+            return [], ""
+            
+        if not year_month_folders:
+            logger.warning(f"Nenhum diretório no formato AAAA-MM encontrado em {base_url}")
+            return [], ""
 
-    # Ordena pela chave (nome da pasta AAAA-MM) para encontrar o mais recente
-    year_month_folders.sort(key=lambda x: x[0], reverse=True)
-    latest_folder_name, latest_month_folder_url = year_month_folders[0]
-    logger.info(f"Diretório mais recente encontrado: {latest_folder_name} ({latest_month_folder_url})")
+        # Ordena pela chave (nome da pasta AAAA-MM) para encontrar o mais recente
+        year_month_folders.sort(key=lambda x: x[0], reverse=True)
+        folder_name, folder_url = year_month_folders[0]
+        logger.info(f"Diretório mais recente encontrado: {folder_name} ({folder_url})")
+    else:
+        # Usamos a pasta específica encontrada
+        folder_name = folder_url.strip('/').split('/')[-1]
 
-    # 4 & 5: Buscar e encontrar links .zip no diretório mais recente
-    logger.info(f"Buscando arquivos .zip em: {latest_month_folder_url}")
-    latest_soup = _fetch_and_parse(latest_month_folder_url)
-    if not latest_soup:
-        return [], latest_folder_name  # Erro já logado
+    # 4 & 5: Buscar e encontrar links .zip no diretório escolhido
+    logger.info(f"Buscando arquivos .zip em: {folder_url}")
+    folder_soup = _fetch_and_parse(folder_url)
+    if not folder_soup:
+        return [], folder_name  # Erro já logado
 
-    zip_urls = _find_links(latest_soup, latest_month_folder_url, ends_with='.zip')
+    zip_urls = _find_links(folder_soup, folder_url, ends_with='.zip')
 
     if not zip_urls:
-        logger.warning(f"Nenhum arquivo .zip encontrado em {latest_month_folder_url}")
+        logger.warning(f"Nenhum arquivo .zip encontrado em {folder_url}")
 
-    logger.info(f"Total de {len(zip_urls)} URLs .zip encontradas na pasta {latest_folder_name}. ")
-    return zip_urls, latest_folder_name  # Retorna URLs e nome da pasta
+    logger.info(f"Total de {len(zip_urls)} URLs .zip encontradas na pasta {folder_name}. ")
+    return zip_urls, folder_name  # Retorna URLs e nome da pasta
 
 
 async def _process_download_response(response: aiohttp.ClientResponse, destination_path: str, file_mode: str,
@@ -367,7 +402,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
 
             async with session.get(url, headers=resume_header,
                                    timeout=aiohttp.ClientTimeout(total=None, sock_connect=30,
-                                                                 sock_read=1200)) as response:
+                                                                 sock_read=1800)) as response:
                 if attempt_resume:
                     if response.status == 206:
                         logger.info(f"Servidor aceitou retomar download para {filename}.")
@@ -390,7 +425,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                                         description=f"[red]{filename[:30]} (fallback download)[/red]", style="red")
                         response.release()
                         async with session.get(url, timeout=aiohttp.ClientTimeout(total=None, sock_connect=30,
-                                                                                  sock_read=1200)) as response_fallback:
+                                                                                  sock_read=1800)) as response_fallback:
                             response_fallback.raise_for_status()
                             return await _process_download_response(response_fallback, destination_path, file_mode,
                                                                     progress, task_id, remote_size, initial_size,
@@ -452,19 +487,108 @@ async def get_remote_file_metadata(session: aiohttp.ClientSession, url: str) -> 
         return None, None
 
 
+async def process_downloaded_file(filename: str, destination_path: str, path_unzip: str, path_parquet: str) -> Tuple[str, Exception | None]:
+    """
+    Processa um arquivo ZIP baixado de forma assíncrona.
+    Descompacta e converte para parquet usando Polars.
+    
+    Args:
+        filename: Nome do arquivo baixado
+        destination_path: Caminho completo do arquivo ZIP
+        path_unzip: Diretório para descompactar
+        path_parquet: Diretório onde salvar os arquivos parquet
+        
+    Returns:
+        Tuple[str, Exception | None]: Nome do arquivo e erro (se ocorrer)
+    """
+    try:
+        logger.info(f"Iniciando processamento paralelo de: {filename}")
+        async with process_semaphore:
+            # Determinar qual processador usar com base no nome do arquivo
+            processo_encontrado = False
+            for tipo_prefixo, processor_fn in PROCESSOR_MAP.items():
+                if filename.lower().startswith(tipo_prefixo.lower()):
+                    logger.info(f"Processando {filename} como {tipo_prefixo}")
+                    
+                    # Chamada do processador apropriado
+                    try:
+                        # Criar argumentos específicos para cada tipo de processador
+                        kwargs = {}
+                        if tipo_prefixo == "Empresas":
+                            kwargs = {
+                                "zip_file": filename,
+                                "path_zip": os.path.dirname(destination_path),
+                                "path_unzip": path_unzip,
+                                "path_parquet": path_parquet,
+                                "create_private": False  # Configuração padrão
+                            }
+                        else:
+                            # Para os outros tipos, os parâmetros são os mesmos
+                            kwargs = {
+                                "zip_file": filename,
+                                "path_zip": os.path.dirname(destination_path),
+                                "path_unzip": path_unzip,
+                                "path_parquet": path_parquet
+                            }
+                            
+                        # Executar o processamento em um thread separado para não bloquear o event loop
+                        loop = asyncio.get_event_loop()
+                        
+                        # Todas as funções agora são do tipo polars e retornam bool
+                        result = await loop.run_in_executor(
+                            None,
+                            lambda: processor_fn(**kwargs)
+                        )
+                        
+                        # Verificar o resultado (agora é sempre um bool)
+                        if result is True:
+                            logger.info(f"Processamento de {filename} concluído com sucesso")
+                        else:
+                            logger.warning(f"Processamento de {filename} falhou")
+                    except Exception as e:
+                        logger.error(f"Erro durante o processamento de {filename}: {str(e)}")
+                        return filename, e
+                    
+                    processo_encontrado = True
+                    break
+            
+            if not processo_encontrado:
+                logger.warning(f"Não foi possível determinar o tipo de processamento para {filename}")
+                
+        return filename, None
+    except Exception as e:
+        logger.error(f"Erro geral durante o processamento de {filename}: {str(e)}")
+        return filename, e
+
+
 async def download_multiple_files(urls: List[str], destination_folder: str, max_concurrent: int = 5):
     """
     Downloads multiple files asynchronously with progress bars using Rich.
+    Also processes each file immediately after download is completed or identified as already existing.
     """
     if not os.path.exists(destination_folder):
         os.makedirs(destination_folder)
         logger.info(f"Diretório criado: {destination_folder}")
 
     semaphore = asyncio.Semaphore(max_concurrent)
-    tasks = []
+    download_tasks = []
+    processing_tasks = []
     downloaded_files = []
     failed_downloads = []
     skipped_files = []  # Lista para guardar arquivos pulados e motivo
+    processed_files = []
+    failed_processing = []
+    
+    # Fila para comunicação entre downloads e processamento
+    processing_queue = asyncio.Queue()
+    
+    # Pegar caminhos para processamento dos arquivos
+    path_unzip = os.getenv('PATH_UNZIP')
+    path_parquet = os.getenv('PATH_PARQUET')
+    
+    if not path_unzip or not path_parquet:
+        logger.error("PATH_UNZIP ou PATH_PARQUET não definidos, o processamento paralelo será desabilitado.")
+        # Continua com os downloads, mas não vai processar
 
     # Configurar colunas do Rich Progress
     progress_columns = [
@@ -478,12 +602,51 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
         "•",  # Readicionar separador
         TimeRemainingColumn(),
     ]
+    
+    # Função que processa os arquivos da fila
+    async def process_files_from_queue():
+        """Consome a fila de processamento e processa os arquivos em tempo real."""
+        while True:
+            try:
+                file_path = await processing_queue.get()
+                
+                # Verifica se recebemos o sinal de encerramento (None)
+                if file_path is None:
+                    logger.debug("Sinal de encerramento recebido pelo consumidor da fila de processamento")
+                    processing_queue.task_done()
+                    break
+                
+                filename = os.path.basename(file_path)
+                logger.info(f"Iniciando processamento paralelo para {filename}")
+                
+                try:
+                    result, error = await process_downloaded_file(filename, file_path, path_unzip, path_parquet)
+                    if error is None:
+                        processed_files.append(result)
+                        logger.info(f"Processamento de {filename} concluído com sucesso")
+                    else:
+                        failed_processing.append((result, error))
+                        logger.warning(f"Falha ao processar {filename}: {error}")
+                except Exception as e:
+                    logger.error(f"Erro ao processar {filename}: {e}")
+                    failed_processing.append((filename, e))
+                
+                processing_queue.task_done()
+            except Exception as e:
+                logger.error(f"Erro no processador de fila: {e}")
+    
+    # Iniciar o consumidor de arquivos para processamento (se os caminhos estiverem definidos)
+    processor_task = None
+    if path_unzip and path_parquet:
+        processor_task = asyncio.create_task(process_files_from_queue())
+        logger.info("Inicializando processador de arquivos em tempo real")
 
     # Usar uma única sessão para todos os downloads
     async with aiohttp.ClientSession() as session:
         # Envolver o processo com o Progress do Rich
         with Progress(*progress_columns,
                       transient=False) as progress:  # transient=False para manter as barras após concluir
+            # Iniciar os downloads
             for url in urls:
                 filename = url.split('/')[-1]
                 destination_path = os.path.join(destination_folder, filename)
@@ -493,22 +656,43 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
                                             start=False)  # Inicia sem total definido e não iniciada
 
                 # Passar o progress e task_id para a função de download
-                tasks.append(download_file(session, url, destination_path, semaphore, progress, task_id))
+                download_task = download_file(session, url, destination_path, semaphore, progress, task_id)
+                download_tasks.append(download_task)
 
-            results = await asyncio.gather(*tasks)
-            for result in results:
-                file_or_url, error, skip_reason = result  # Desempacota o skip_reason
+            # Usar asyncio.as_completed para processar os arquivos à medida que os downloads são concluídos
+            for download_future in asyncio.as_completed(download_tasks):
+                file_or_url, error, skip_reason = await download_future
+                
                 if error is None:
                     # Se não houve erro, verifica se foi pulado
                     if skip_reason:
                         filename = os.path.basename(file_or_url)  # Pega nome do arquivo do path
                         skipped_files.append((filename, skip_reason))
+                        
+                        # Adicionar arquivo pulado à fila de processamento
+                        if path_unzip and path_parquet and processor_task:
+                            logger.info(f"Arquivo {filename} já existe e será processado")
+                            await processing_queue.put(file_or_url)
                     else:
                         # Download bem-sucedido (não pulado)
                         downloaded_files.append(file_or_url)
+                        
+                        # Adicionar à fila de processamento
+                        if path_unzip and path_parquet and processor_task:
+                            await processing_queue.put(file_or_url)
                 else:
                     # Download falhou
                     failed_downloads.append((file_or_url, error))
+    
+    # Enviar sinal de encerramento para o consumidor (se ele existir)
+    if processor_task:
+        await processing_queue.put(None)
+        await processor_task
+    
+    # Aguardar a conclusão de todos os itens na fila
+    if path_unzip and path_parquet:
+        await processing_queue.join()
+        logger.info(f"Todos os arquivos da fila foram processados")
 
     # --- Resumo dos Arquivos Pulados ---
     if skipped_files:
@@ -523,9 +707,19 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
             else:
                 logger.info(f"  - {filename}: Pulado (motivo: {reason})")
 
+    # --- Resumo do Processamento Paralelo ---
+    if processed_files:
+        logger.info(f"\n--- Resumo do Processamento Paralelo ---")
+        logger.info(f"Arquivos processados com sucesso: {len(processed_files)}")
+    
+    if failed_processing:
+        logger.warning(f"Total de processamentos falhados: {len(failed_processing)}")
+        for filename, error in failed_processing:
+            logger.warning(f"  - Falha ao processar {filename}: {error}")
+
     # --- Resumo Final --- (Movido para depois do resumo de skips)
     logger.info(f"\n--- Resumo Final dos Downloads ---")
-    logger.info(f"Arquivos baixados/processados nesta execução: {len(downloaded_files)}")
+    logger.info(f"Arquivos baixados nesta execução: {len(downloaded_files)}")
     # Removido log individual de sucesso aqui, a barra já indica
 
     if failed_downloads:
@@ -534,5 +728,8 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
 
     # Mantém a contagem total
     logger.info(f"Total de arquivos pulados (cache/local): {len(skipped_files)}")
+    
+    # Adiciona contagem de arquivos processados (incluindo os que já existiam localmente)
+    logger.info(f"Total de arquivos processados: {len(processed_files)}")
 
     return downloaded_files, failed_downloads
