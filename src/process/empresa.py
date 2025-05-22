@@ -88,6 +88,108 @@ def process_csv_file_polars(csv_path):
         return None
 
 
+def process_data_file_polars(data_path: str):
+    """
+    Processa um único arquivo de dados usando Polars, seja ele CSV ou outro formato de texto.
+    
+    Args:
+        data_path: Caminho para o arquivo
+        
+    Returns:
+        DataFrame Polars ou None em caso de erro
+    """
+    logger = logging.getLogger(__name__)
+    
+    # Verificar se o arquivo é um arquivo de texto
+    try:
+        # Tentar ler as primeiras linhas para verificar se é um arquivo de texto
+        is_text_file = True
+        with open(data_path, 'rb') as f:
+            sample = f.read(4096)  # Ler os primeiros 4KB
+            # Verificar se há caracteres nulos ou muitos bytes não-ASCII
+            # o que pode indicar que é um arquivo binário
+            if b'\x00' in sample or len([b for b in sample if b > 127]) > len(sample) * 0.3:
+                logger.warning(f"Arquivo {os.path.basename(data_path)} parece ser binário, não texto.")
+                is_text_file = False
+        
+        if not is_text_file:
+            return None
+    except Exception as e:
+        logger.error(f"Erro ao verificar se {os.path.basename(data_path)} é um arquivo de texto: {str(e)}")
+        return None
+
+    # Usar colunas da config
+    original_column_names = config.empresa_columns
+
+    # Primeiro, tentar com o separador padrão
+    try:
+        df = pl.read_csv(
+            data_path,
+            separator=config.file.separator,
+            encoding=config.file.encoding,
+            has_header=False,
+            new_columns=original_column_names,
+            infer_schema_length=0,  # Não inferir schema
+            dtypes={col: pl.Utf8 for col in original_column_names},  # Inicialmente lê tudo como string
+            ignore_errors=True  # Ignorar linhas com erros
+        )
+        if not df.is_empty():
+            logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando separador padrão")
+            return df
+    except Exception as e:
+        logger.warning(f"Erro ao processar {os.path.basename(data_path)} com separador padrão: {str(e)}")
+    
+    # Se falhar com o separador padrão, tentar detectar o separador
+    separators = [';', ',', '|', '\t']
+    for sep in separators:
+        if sep == config.file.separator:
+            continue  # Já tentamos esse
+        
+        try:
+            df = pl.read_csv(
+                data_path,
+                separator=sep,
+                encoding=config.file.encoding,
+                has_header=False,
+                new_columns=original_column_names,
+                infer_schema_length=0,
+                dtypes={col: pl.Utf8 for col in original_column_names},
+                ignore_errors=True
+            )
+            if not df.is_empty():
+                logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando separador '{sep}'")
+                return df
+        except Exception as e:
+            logger.debug(f"Erro ao processar {os.path.basename(data_path)} com separador '{sep}': {str(e)}")
+    
+    # Se ainda falhar, tentar com diferentes codificações
+    encodings = ['latin1', 'utf-8', 'utf-16', 'cp1252']
+    for enc in encodings:
+        if enc == config.file.encoding:
+            continue  # Já tentamos esse
+        
+        try:
+            df = pl.read_csv(
+                data_path,
+                separator=config.file.separator,
+                encoding=enc,
+                has_header=False,
+                new_columns=original_column_names,
+                infer_schema_length=0,
+                dtypes={col: pl.Utf8 for col in original_column_names},
+                ignore_errors=True
+            )
+            if not df.is_empty():
+                logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando codificação '{enc}'")
+                return df
+        except Exception as e:
+            logger.debug(f"Erro ao processar {os.path.basename(data_path)} com codificação '{enc}': {str(e)}")
+    
+    # Se chegamos até aqui, não conseguimos processar o arquivo
+    logger.error(f"Não foi possível processar o arquivo {os.path.basename(data_path)} com nenhuma combinação de separadores e codificações")
+    return None
+
+
 def apply_empresa_transformations_polars(df: pl.DataFrame, chunk_size: int = 1_000_000) -> pl.DataFrame:
     """Aplica transformações específicas para Empresas usando Polars."""
     logger.info("Aplicando transformações em Empresas com Polars...")
@@ -293,32 +395,48 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             return False
             
         # --- 2. Leitura e Processamento --- 
-        logger.info(f"[{pid}] Polars Fase 2: Iniciando leitura e processamento CSV..." )
+        logger.info(f"[{pid}] Polars Fase 2: Iniciando leitura e processamento de arquivos de dados..." )
         
-        # Buscar arquivos CSV no diretório de extração
-        csv_files = []
+        # Buscar arquivos de dados no diretório extraído
+        data_files = []
         for root, _, files in os.walk(path_extracao):
             for file in files:
-                if file.endswith('.csv') or file.endswith('.CSV'):
-                    csv_files.append(os.path.join(root, file))
+                # Verificar extensão ou padrão do arquivo
+                file_path = os.path.join(root, file)
+                file_size = os.path.getsize(file_path)
+                
+                # Pular arquivos vazios
+                if file_size == 0:
+                    continue
+                
+                # Verificar extensões que claramente não são de dados
+                invalid_extensions = ['.exe', '.dll', '.zip', '.rar', '.gz', '.tar', '.bz2', '.7z', 
+                                     '.png', '.jpg', '.jpeg', '.gif', '.pdf']
+                file_ext = os.path.splitext(file.lower())[1]
+                if file_ext in invalid_extensions:
+                    continue
+                
+                # Adicionar à lista de arquivos para processar
+                data_files.append(file_path)
         
-        if not csv_files:
-            logger.warning(f"[{pid}] Polars: Nenhum arquivo CSV encontrado no diretório {path_extracao} após extração")
+        if not data_files:
+            logger.warning(f"[{pid}] Polars: Nenhum arquivo de dados encontrado no diretório {path_extracao} após extração")
             return False
             
-        # Processar cada arquivo CSV encontrado
-        logger.info(f"[{pid}] Polars: Processando {len(csv_files)} arquivos CSV...")
+        # Processar cada arquivo de dados encontrado
+        logger.info(f"[{pid}] Polars: Processando {len(data_files)} arquivos de dados...")
         dataframes_polars = []
         
-        for csv_file in csv_files:
-            logger.debug(f"[{pid}] Polars: Processando arquivo {os.path.basename(csv_file)}")
+        for data_file in data_files:
+            logger.debug(f"[{pid}] Polars: Processando arquivo {os.path.basename(data_file)}")
             try:
-                df_polars = process_csv_file_polars(csv_file)
-                if df_polars is not None:
+                df_polars = process_data_file_polars(data_file)
+                if df_polars is not None and not df_polars.is_empty():
                     dataframes_polars.append(df_polars)
-            except Exception as e_csv:
-                logger.error(f"[{pid}] Polars: Erro ao processar arquivo CSV {os.path.basename(csv_file)}: {e_csv}")
-                # Continuamos com outros CSVs mesmo se um falhar
+                    logger.info(f"[{pid}] Polars: Arquivo {os.path.basename(data_file)} processado com sucesso: {df_polars.height} linhas")
+            except Exception as e_data:
+                logger.error(f"[{pid}] Polars: Erro ao processar arquivo {os.path.basename(data_file)}: {e_data}")
+                # Continuamos com outros arquivos mesmo se um falhar
         
         # Se não temos DataFrames Polars válidos, encerramos
         if not dataframes_polars:
