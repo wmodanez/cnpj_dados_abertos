@@ -402,7 +402,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
 
             async with session.get(url, headers=resume_header,
                                    timeout=aiohttp.ClientTimeout(total=None, sock_connect=30,
-                                                                 sock_read=1800)) as response:
+                                                                 sock_read=3600)) as response:
                 if attempt_resume:
                     if response.status == 206:
                         logger.info(f"Servidor aceitou retomar download para {filename}.")
@@ -425,7 +425,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                                         description=f"[red]{filename[:30]} (fallback download)[/red]", style="red")
                         response.release()
                         async with session.get(url, timeout=aiohttp.ClientTimeout(total=None, sock_connect=30,
-                                                                                  sock_read=1800)) as response_fallback:
+                                                                                  sock_read=3600)) as response_fallback:
                             response_fallback.raise_for_status()
                             return await _process_download_response(response_fallback, destination_path, file_mode,
                                                                     progress, task_id, remote_size, initial_size,

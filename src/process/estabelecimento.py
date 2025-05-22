@@ -251,8 +251,6 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
         # Usando a função que garante a estrutura correta de pastas
         output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, table_name)
         
-        logger.info(f"Colunas do DataFrame Polars '{table_name}' (Origem: {zip_filename_prefix}) antes de salvar em Parquet: {df.columns}")
-        
         total_rows = df.height
         if total_rows == 0:
             logger.warning(f"DataFrame Polars '{table_name}' (Origem: {zip_filename_prefix}) está vazio. Nenhum Parquet será salvo.")
