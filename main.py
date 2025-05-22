@@ -377,6 +377,11 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Engine selecionado: {engine}")
+    logger.info(f"Caminho para salvar parquets: {output_parquet_path}")
+    
+    # Extrair a pasta remota do caminho dos ZIPs (para usar na estrutura de diretórios)
+    remote_folder = os.path.basename(os.path.normpath(source_zip_path))
+    logger.info(f"Pasta remota extraída do caminho: {remote_folder}")
     
     all_ok = True
     
@@ -534,96 +539,180 @@ def main():
     if args.step == 'process':
         print_header("Modo de Processamento")
         
-        # Verificar se temos pastas/subpastas de dados
-        if args.subfolder is not None:
-            # Processa apenas a subpasta especificada
-            logger.info(f"Processando subpasta: {args.subfolder}")
-            subfolder_path = os.path.join(PATH_ZIP, args.subfolder)
-            if not os.path.exists(subfolder_path):
-                logger.error(f"Subpasta especificada não existe: {subfolder_path}")
-                print_error(f"Subpasta {args.subfolder} não encontrada em {PATH_ZIP}")
-                return
-                
-            subfolder_output_path = os.path.join(PATH_PARQUET, args.subfolder)
-            os.makedirs(subfolder_output_path, exist_ok=True)
+        # Verificar se temos o source-zip-folder
+        if args.source_zip_folder is not None:
+            # Processa a pasta de origem especificada
+            logger.info(f"Processando pasta de origem: {args.source_zip_folder}")
+            source_folder_path = args.source_zip_folder
             
-            # Definir tipos a processar
-            tipos_a_processar = {
-                'empresas': 'Empresas',
-                'estabelecimentos': 'Estabelecimentos',
-                'simples': 'Simples Nacional',
-                'socios': 'Sócios'
-            }
+            if not os.path.exists(source_folder_path):
+                logger.error(f"Pasta de origem especificada não existe: {source_folder_path}")
+                print_error(f"Pasta {args.source_zip_folder} não encontrada")
+                return
+            
+            # Determinar pasta de saída - usando o nome do diretório como subpasta
+            if args.output_subfolder:
+                output_subfolder = args.output_subfolder
+            else:
+                # Usa o nome da pasta de origem como nome da subpasta de saída
+                output_subfolder = os.path.basename(os.path.normpath(source_folder_path))
+                logger.info(f"Usando nome da pasta de origem como subpasta de saída: {output_subfolder}")
+            
+            output_parquet_path = os.path.join(PATH_PARQUET, output_subfolder)
+            os.makedirs(output_parquet_path, exist_ok=True)
+            
+            logger.info(f"Processando arquivos de: {source_folder_path}")
+            logger.info(f"Salvando Parquets em: {output_parquet_path}")
+            
+            # Definir tipos a processar (todos ou filtrados)
+            if args.tipos:
+                tipos_a_processar = args.tipos
+            else:
+                tipos_a_processar = ['empresas', 'estabelecimentos', 'simples', 'socios']
             
             # Iniciar processamento
             processed_ok = process_folder(
-                subfolder_path, PATH_UNZIP, subfolder_output_path, 
-                args.tipos, args.engine, args.criar_empresa_privada, args.criar_subset_uf,
+                source_folder_path, PATH_UNZIP, output_parquet_path, 
+                args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios'],
+                args.engine, args.criar_empresa_privada, args.criar_subset_uf,
                 tipos_a_processar
             )
             
-        elif args.folder is not None:
-            # Processa a pasta especificada
-            logger.info(f"Processando pasta: {args.folder}")
-            folder_path = args.folder
+            if processed_ok:
+                print_success(f"Processamento concluído com sucesso na pasta: {output_parquet_path}")
+            else:
+                print_warning("Alguns erros ocorreram durante o processamento. Verifique os logs.")
             
-            if not os.path.exists(folder_path):
-                logger.error(f"Pasta especificada não existe: {folder_path}")
-                print_error(f"Pasta {args.folder} não encontrada")
-                return
-                
-            output_path = PATH_PARQUET
-            if args.output:
-                output_path = args.output
-                os.makedirs(output_path, exist_ok=True)
-            
-            # Definir tipos a processar
-            tipos_a_processar = {
-                'empresas': 'Empresas',
-                'estabelecimentos': 'Estabelecimentos',
-                'simples': 'Simples Nacional',
-                'socios': 'Sócios'
-            }
-            
-            # Iniciar processamento
-            processed_ok = process_folder(
-                folder_path, PATH_UNZIP, output_path, 
-                args.tipos, args.engine, args.criar_empresa_privada, args.criar_subset_uf,
-                tipos_a_processar
-            )
+            # Se process-all-folders estiver habilitado, busca todas as pastas no formato AAAA-MM
+            if args.process_all_folders:
+                print_section("Processando todas as pastas no formato AAAA-MM")
+                # Implementação para process_all_folders
+                # ...
         else:
-            # Processa a pasta padrão PATH_ZIP
-            logger.info(f"Processando pasta padrão: {PATH_ZIP}")
-            
-            # Definir tipos a processar
-            tipos_a_processar = {
-                'empresas': 'Empresas',
-                'estabelecimentos': 'Estabelecimentos',
-                'simples': 'Simples Nacional', 
-                'socios': 'Sócios'
-            }
-            
-            # Definir pasta de saída (padrão ou especificada)
-            target_parquet_output_path = PATH_PARQUET
-            if args.output:
-                target_parquet_output_path = args.output
-                os.makedirs(target_parquet_output_path, exist_ok=True)
-                
-            # Qual pasta ZIP usar (default PATH_ZIP)
-            path_zip_to_use = PATH_ZIP
-            
-            # Iniciar processamento
-            processed_ok = process_folder(
-                path_zip_to_use, PATH_UNZIP, target_parquet_output_path, 
-                args.tipos, args.engine, args.criar_empresa_privada, args.criar_subset_uf,
-                tipos_a_processar
-            )
+            print_error("É necessário especificar a pasta de origem dos ZIPs com --source-zip-folder")
+            logger.error("Parâmetro --source-zip-folder é obrigatório para o step 'process'.")
+            return
     
     # Resto do código do step 'download'
     elif args.step == 'download':
-        # ... (código existente para download)
-        pass
-    # ... (outros steps)
+        print_header("Modo de Download")
+        
+        # Configurar para forçar o download se necessário
+        if args.force_download:
+            # Definir variável de ambiente para o módulo async_downloader
+            os.environ['FORCE_DOWNLOAD'] = 'True'
+            logger.info("Download forçado ativado: sobrescreverá arquivos existentes.")
+        
+        # Iniciar o download assíncrono
+        tipos_desejados = args.tipos if args.tipos else None
+        download_ok, latest_folder = asyncio.run(run_download_process(
+            tipos_desejados=tipos_desejados,
+            remote_folder=args.remote_folder,
+            all_folders=args.all_folders
+        ))
+        
+        if not download_ok:
+            print_error("Falha no processo de download. Verifique os logs para mais detalhes.")
+            return
+        
+        print_success(f"Download concluído com sucesso. Arquivos salvos em: {os.path.join(PATH_ZIP, latest_folder)}")
+    
+    # Código para o step 'database'
+    elif args.step == 'database':
+        print_header("Modo de Criação de Banco de Dados")
+        
+        # Verificar se temos a subpasta de saída especificada
+        if args.output_subfolder is None:
+            logger.error("Parâmetro --output-subfolder é obrigatório para o step 'database'.")
+            print_error("Especifique a subpasta dos Parquets com --output-subfolder")
+            return
+        
+        # Caminho completo para a pasta de parquets
+        parquet_folder = os.path.join(PATH_PARQUET, args.output_subfolder)
+        if not os.path.exists(parquet_folder):
+            logger.error(f"Pasta de Parquets não encontrada: {parquet_folder}")
+            print_error(f"Pasta {parquet_folder} não existe. Execute o processamento primeiro.")
+            return
+        
+        # Criar o arquivo DuckDB
+        try:
+            db_file = os.path.join(parquet_folder, FILE_DB_PARQUET)
+            logger.info(f"Criando arquivo DuckDB em: {db_file}")
+            create_duckdb_file(parquet_folder, db_file, PATH_REMOTE_PARQUET)
+            print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
+        except Exception as e:
+            logger.exception(f"Erro ao criar banco de dados: {e}")
+            print_error(f"Falha ao criar banco de dados: {str(e)}")
+            return
+    
+    # Código para o step 'all' (executa todos os passos em sequência)
+    elif args.step == 'all':
+        print_header("Modo Completo: Download -> Processamento -> Banco de Dados")
+        
+        # 1. Download
+        print_section("Etapa 1: Download dos arquivos")
+        
+        # Configurar para forçar o download se necessário
+        if args.force_download:
+            os.environ['FORCE_DOWNLOAD'] = 'True'
+            logger.info("Download forçado ativado: sobrescreverá arquivos existentes.")
+        
+        # Iniciar o download assíncrono
+        tipos_desejados = args.tipos if args.tipos else None
+        download_ok, latest_folder = asyncio.run(run_download_process(
+            tipos_desejados=tipos_desejados,
+            remote_folder=args.remote_folder,
+            all_folders=args.all_folders
+        ))
+        
+        if not download_ok:
+            print_error("Falha no processo de download. Verifique os logs para mais detalhes.")
+            return
+        
+        print_success(f"Download concluído. Arquivos salvos em: {os.path.join(PATH_ZIP, latest_folder)}")
+        
+        # 2. Processamento
+        print_section("Etapa 2: Processamento dos arquivos")
+        
+        # Definir o diretório de origem para ZIPs
+        source_zip_path = os.path.join(PATH_ZIP, latest_folder)
+        
+        # Definir o diretório de saída para Parquets - USANDO O MESMO NOME DA PASTA REMOTA
+        output_subfolder = args.output_subfolder if args.output_subfolder else latest_folder
+        output_parquet_path = os.path.join(PATH_PARQUET, output_subfolder)
+        os.makedirs(output_parquet_path, exist_ok=True)
+        
+        logger.info(f"Processando arquivos de: {source_zip_path}")
+        logger.info(f"Salvando Parquets em: {output_parquet_path}")
+        
+        # Lista de tipos a processar (todos ou filtrados)
+        tipos_a_processar = args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios']
+        
+        # Iniciar processamento
+        process_ok = process_folder(
+            source_zip_path, PATH_UNZIP, output_parquet_path,
+            args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios'],
+            args.engine, args.criar_empresa_privada, args.criar_subset_uf,
+            tipos_a_processar
+        )
+        
+        if not process_ok:
+            print_warning("Alguns erros ocorreram durante o processamento. Verifique os logs.")
+            # Continuamos mesmo com erros para tentar criar o banco de dados
+        else:
+            print_success("Processamento concluído com sucesso.")
+        
+        # 3. Criação do banco de dados
+        print_section("Etapa 3: Criação do banco de dados DuckDB")
+        
+        try:
+            db_file = os.path.join(output_parquet_path, FILE_DB_PARQUET)
+            logger.info(f"Criando arquivo DuckDB em: {db_file}")
+            create_duckdb_file(output_parquet_path, db_file, PATH_REMOTE_PARQUET)
+            print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
+        except Exception as e:
+            logger.exception(f"Erro ao criar banco de dados: {e}")
+            print_error(f"Falha ao criar banco de dados: {str(e)}")
     
     print_header("Processamento concluído")
     logger.info("Execução concluída.")

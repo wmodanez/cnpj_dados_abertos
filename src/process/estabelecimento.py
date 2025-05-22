@@ -10,9 +10,12 @@ import time
 import sys
 import re
 from typing import Tuple, List, Dict, Any, Optional
+import gc
+from multiprocessing import Pool
 
 from ..config import config
 from ..utils import file_delete, check_disk_space, verify_csv_integrity
+from ..utils.folders import get_output_path, ensure_correct_folder_structure
 import inspect
 
 logger = logging.getLogger(__name__)
@@ -33,38 +36,106 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str, u
     return process_estabelecimento_with_polars(path_zip, path_unzip, path_parquet, uf_subset)
 
 
-def process_csv_file_polars(csv_path: str):
+def process_data_file_polars(data_path: str):
     """
-    Processa um único arquivo CSV de estabelecimento usando Polars.
+    Processa um arquivo de dados usando Polars, seja ele CSV ou outro formato de texto.
     
     Args:
-        csv_path: Caminho para o arquivo CSV
+        data_path: Caminho para o arquivo
         
     Returns:
         DataFrame Polars ou None em caso de erro
     """
-    # Verifica a integridade do CSV
-    if not verify_csv_integrity(csv_path):
+    logger = logging.getLogger(__name__)
+    
+    # Verificar se o arquivo é um arquivo de texto
+    try:
+        # Tentar ler as primeiras linhas para verificar se é um arquivo de texto
+        is_text_file = True
+        with open(data_path, 'rb') as f:
+            sample = f.read(4096)  # Ler os primeiros 4KB
+            # Verificar se há caracteres nulos ou muitos bytes não-ASCII
+            # o que pode indicar que é um arquivo binário
+            if b'\x00' in sample or len([b for b in sample if b > 127]) > len(sample) * 0.3:
+                logger.warning(f"Arquivo {os.path.basename(data_path)} parece ser binário, não texto.")
+                is_text_file = False
+        
+        if not is_text_file:
+            return None
+    except Exception as e:
+        logger.error(f"Erro ao verificar se {os.path.basename(data_path)} é um arquivo de texto: {str(e)}")
         return None
 
-    # Usa colunas da config
+    # Usar colunas da config
     original_column_names = config.estabelecimento_columns
 
+    # Primeiro, tentar com o separador padrão
     try:
-        # Usa polars.read_csv com os parâmetros apropriados
         df = pl.read_csv(
-            csv_path,
+            data_path,
             separator=config.file.separator,
             encoding=config.file.encoding,
             has_header=False,
             new_columns=original_column_names,
             infer_schema_length=0,  # Não inferir schema
-            dtypes={col: pl.Utf8 for col in original_column_names}  # Inicialmente lê tudo como string
+            dtypes={col: pl.Utf8 for col in original_column_names},  # Inicialmente lê tudo como string
+            ignore_errors=True  # Ignorar linhas com erros
         )
-        return df
+        if not df.is_empty():
+            logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando separador padrão")
+            return df
     except Exception as e:
-        logger.error(f'Erro ao processar o arquivo {os.path.basename(csv_path)} com Polars: {str(e)}')
-        return None
+        logger.warning(f"Erro ao processar {os.path.basename(data_path)} com separador padrão: {str(e)}")
+    
+    # Se falhar com o separador padrão, tentar detectar o separador
+    separators = [';', ',', '|', '\t']
+    for sep in separators:
+        if sep == config.file.separator:
+            continue  # Já tentamos esse
+        
+        try:
+            df = pl.read_csv(
+                data_path,
+                separator=sep,
+                encoding=config.file.encoding,
+                has_header=False,
+                new_columns=original_column_names,
+                infer_schema_length=0,
+                dtypes={col: pl.Utf8 for col in original_column_names},
+                ignore_errors=True
+            )
+            if not df.is_empty():
+                logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando separador '{sep}'")
+                return df
+        except Exception as e:
+            logger.debug(f"Erro ao processar {os.path.basename(data_path)} com separador '{sep}': {str(e)}")
+    
+    # Se ainda falhar, tentar com diferentes codificações
+    encodings = ['latin1', 'utf-8', 'utf-16', 'cp1252']
+    for enc in encodings:
+        if enc == config.file.encoding:
+            continue  # Já tentamos esse
+        
+        try:
+            df = pl.read_csv(
+                data_path,
+                separator=config.file.separator,
+                encoding=enc,
+                has_header=False,
+                new_columns=original_column_names,
+                infer_schema_length=0,
+                dtypes={col: pl.Utf8 for col in original_column_names},
+                ignore_errors=True
+            )
+            if not df.is_empty():
+                logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando codificação '{enc}'")
+                return df
+        except Exception as e:
+            logger.debug(f"Erro ao processar {os.path.basename(data_path)} com codificação '{enc}': {str(e)}")
+    
+    # Se chegamos até aqui, não conseguimos processar o arquivo
+    logger.error(f"Não foi possível processar o arquivo {os.path.basename(data_path)} com nenhuma combinação de separadores e codificações")
+    return None
 
 
 def apply_estabelecimento_transformations_polars(df: pl.DataFrame) -> pl.DataFrame:
@@ -161,8 +232,34 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
         True se sucesso, False caso contrário
     """
     try:
-        output_dir = os.path.join(path_parquet, table_name)
-        os.makedirs(output_dir, exist_ok=True)
+        # Extrair pasta remota do caminho ou do prefixo do arquivo
+        remote_folder = None
+        
+        # Verificar se podemos extrair uma data no formato YYYY-MM do caminho
+        parts = path_parquet.split(os.path.sep)
+        for part in parts:
+            if len(part) == 7 and part[4] == '-':  # Formato AAAA-MM
+                remote_folder = part
+                break
+        
+        # Se não conseguimos extrair do caminho, tentar extrair do prefixo do arquivo ou path_parquet
+        if not remote_folder:
+            match = re.search(r'(20\d{2}-\d{2})', path_parquet)
+            if match:
+                remote_folder = match.group(1)
+            else:
+                # Tentar extrair do prefixo do arquivo
+                match = re.search(r'(20\d{2}-\d{2})', zip_filename_prefix)
+                if match:
+                    remote_folder = match.group(1)
+                else:
+                    # Último recurso: usar um valor padrão
+                    remote_folder = os.path.basename(os.path.dirname(path_parquet)) or "dados"
+        
+        logger.info(f"Pasta remota identificada em create_parquet_polars: {remote_folder}")
+        
+        # Usando a função que garante a estrutura correta de pastas
+        output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, table_name)
         
         logger.info(f"Colunas do DataFrame Polars '{table_name}' (Origem: {zip_filename_prefix}) antes de salvar em Parquet: {df.columns}")
         
@@ -193,7 +290,6 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
             
             # Liberar memória
             del partition
-            import gc
             gc.collect()
             
         return True
@@ -209,6 +305,20 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
     extract_dir = ""
     success = False
     zip_filename_prefix = os.path.splitext(zip_file)[0]
+    
+    # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
+    remote_folder = os.path.basename(os.path.normpath(path_zip))
+    # Verificar se o formato é AAAA-MM
+    if not re.match(r'^\d{4}-\d{2}$', remote_folder):
+        # Se não for uma pasta no formato esperado, tentar extrair do caminho
+        match = re.search(r'(20\d{2}-\d{2})', path_zip)
+        if match:
+            remote_folder = match.group(1)
+        else:
+            # Último recurso: usar um valor padrão
+            remote_folder = "dados"
+    
+    logger.info(f"[{pid}] Pasta remota identificada: {remote_folder}")
     
     try:
         zip_path = os.path.join(path_zip, zip_file)
@@ -260,39 +370,52 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             return False
         
         # Limpar memória antes de começar processamento
-        import gc
         gc.collect()
         
-        # Procurar CSVs na pasta de extração
-        csv_files = []
+        # Procurar arquivos de dados na pasta de extração
+        data_files = []
         for root, _, files in os.walk(extract_dir):
             for file in files:
-                # Busca arquivos que contenham "CSV" no nome (case-insensitive)
-                if "CSV" in file.upper():
-                    csv_files.append(os.path.join(root, file))
+                # Verificar extensão ou padrão do arquivo
+                file_path = os.path.join(root, file)
+                file_size = os.path.getsize(file_path)
+                
+                # Pular arquivos vazios
+                if file_size == 0:
+                    continue
+                
+                # Verificar extensões que claramente não são de dados
+                # Essas extensões são apenas exemplos - ajuste conforme necessário
+                invalid_extensions = ['.exe', '.dll', '.zip', '.rar', '.gz', '.tar', '.bz2', '.7z', '.png', '.jpg', '.jpeg', '.gif', '.pdf']
+                file_ext = os.path.splitext(file.lower())[1]
+                if file_ext in invalid_extensions:
+                    continue
+                
+                # Adicionar à lista de arquivos para processar
+                data_files.append(file_path)
         
-        if not csv_files:
-            logger.warning(f"[{pid}] Nenhum arquivo contendo 'CSV' encontrado em {extract_dir}")
+        if not data_files:
+            logger.warning(f"[{pid}] Nenhum arquivo de dados encontrado em {extract_dir}")
             # Retorna False pois não há dados para processar (não é um sucesso)
             return False
         
-        logger.info(f"[{pid}] Encontrados {len(csv_files)} arquivos CSV para processar")
+        logger.info(f"[{pid}] Encontrados {len(data_files)} arquivos para processar")
         
-        # Processar cada CSV
+        # Processar cada arquivo de dados
         dataframes = []
-        for csv_path in csv_files:
-            csv_file = os.path.basename(csv_path)
-            logger.debug(f"[{pid}] Processando CSV: {csv_file}")
+        for data_path in data_files:
+            data_file = os.path.basename(data_path)
+            logger.debug(f"[{pid}] Processando arquivo: {data_file}")
             
             try:
-                df = process_csv_file_polars(csv_path)
+                df = process_data_file_polars(data_path)
                 if df is not None and not df.is_empty():
-                    logger.info(f"[{pid}] CSV {csv_file} processado com sucesso: {df.height} linhas")
+                    logger.info(f"[{pid}] Arquivo {data_file} processado com sucesso: {df.height} linhas")
                     dataframes.append(df)
                 elif df is not None and df.is_empty():
-                    logger.warning(f"[{pid}] DataFrame Polars vazio para CSV: {csv_file}")
+                    logger.warning(f"[{pid}] DataFrame Polars vazio para arquivo: {data_file}")
             except Exception as e:
-                logger.error(f"[{pid}] Erro ao processar o CSV {csv_file} com Polars: {str(e)}")
+                logger.error(f"[{pid}] Erro ao processar o arquivo {data_file} com Polars: {str(e)}")
         
         if not dataframes:
             logger.warning(f"[{pid}] Nenhum DataFrame Polars válido gerado a partir do ZIP {zip_file}")
@@ -321,7 +444,14 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             
             # --- 3. Salvar Parquet (Principal) ---
             main_saved = False
+            
+            # Usar diretamente path_parquet sem adicionar a pasta remota
+            # A função ensure_correct_folder_structure já adiciona a pasta remota se necessário
+            logger.info(f"[{pid}] Polars: Usando path_parquet direto: {path_parquet}")
+            
             try:
+                # Usamos diretamente path_parquet e a função ensure_correct_folder_structure dentro de create_parquet_polars
+                # vai garantir a estrutura correta de pastas
                 main_saved = create_parquet_polars(df_transformed, 'estabelecimentos', path_parquet, zip_filename_prefix)
                 logger.info(f"[{pid}] Parquet principal salvo com sucesso para {zip_file}")
             except Exception as e_parq_main:
@@ -338,6 +468,7 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
                 # Apenas tentamos salvar se o subset não estiver vazio
                 if not df_subset.is_empty():
                     try:
+                        # Usamos diretamente path_parquet aqui também
                         subset_saved = create_parquet_polars(df_subset, subset_table_name, path_parquet, zip_filename_prefix)
                         logger.info(f"[{pid}] Subset {subset_table_name} salvo com sucesso para {zip_file}")
                     except Exception as e_parq_subset:
@@ -377,7 +508,6 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
                 logger.warning(f"[{pid}] Erro ao limpar diretório de extração: {e_clean}")
         
         # Forçar coleta de lixo novamente
-        import gc
         gc.collect()
     
     return success
@@ -406,9 +536,25 @@ def process_estabelecimento_with_polars(path_zip: str, path_unzip: str, path_par
         if not zip_files:
             logger.warning('Nenhum arquivo ZIP de Estabelecimentos encontrado.')
             return True
+        
+        # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
+        remote_folder = os.path.basename(os.path.normpath(path_zip))
+        # Verificar se o formato é AAAA-MM
+        if not re.match(r'^\d{4}-\d{2}$', remote_folder):
+            # Se não for uma pasta no formato esperado, tentar extrair do caminho
+            match = re.search(r'(20\d{2}-\d{2})', path_zip)
+            if match:
+                remote_folder = match.group(1)
+            else:
+                # Último recurso: usar um valor padrão
+                remote_folder = "dados"
+        
+        logger.info(f"Pasta remota identificada: {remote_folder}")
+        
+        # Usar ensure_correct_folder_structure para criar o caminho correto
+        output_dir_main = ensure_correct_folder_structure(path_parquet, remote_folder, 'estabelecimentos')
             
         # LIMPEZA PRÉVIA do diretório de saída principal
-        output_dir_main = os.path.join(path_parquet, 'estabelecimentos')
         try:
             file_delete(output_dir_main)
             logger.info(f'Diretório {output_dir_main} limpo antes do processamento.')
@@ -418,7 +564,8 @@ def process_estabelecimento_with_polars(path_zip: str, path_unzip: str, path_par
         # Limpar também o diretório de subset de UF se especificado
         if uf_subset:
             uf_subset = uf_subset.upper()  # Garante caixa alta
-            subset_dir = os.path.join(path_parquet, f'estabelecimentos_{uf_subset.lower()}')
+            subset_table_name = f"estabelecimentos_{uf_subset.lower()}"
+            subset_dir = ensure_correct_folder_structure(path_parquet, remote_folder, subset_table_name)
             try:
                 file_delete(subset_dir)
                 logger.info(f'Diretório de subset {subset_dir} limpo antes do processamento.')
@@ -431,7 +578,6 @@ def process_estabelecimento_with_polars(path_zip: str, path_unzip: str, path_par
             os.makedirs(subset_dir, exist_ok=True)
         
         # Forçar coleta de lixo antes de iniciar o processamento
-        import gc
         gc.collect()
         
         # Processar com Polars em paralelo

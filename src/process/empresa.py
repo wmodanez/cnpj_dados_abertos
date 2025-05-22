@@ -10,6 +10,8 @@ import logging.handlers
 import sys
 import time
 from rich.progress import track
+from multiprocessing import Pool
+import re
 
 from ..config import config
 from ..utils import (
@@ -17,6 +19,7 @@ from ..utils import (
     process_csv_files_parallel, verify_csv_integrity, 
     create_parquet_filename
 )
+from ..utils.folders import get_output_path, ensure_correct_folder_structure
 import inspect
 
 logger = logging.getLogger(__name__)
@@ -25,40 +28,23 @@ logger = logging.getLogger(__name__)
 _worker_logger_configured = False
 
 def configure_worker_logging(log_file):
-    """Configura o logger para o processo worker."""
-    global _worker_logger_configured
-    if _worker_logger_configured or log_file is None:
-        return
+    """Configura o logging para o processo worker."""
+    import logging
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
     
-    try:
-        worker_logger = logging.getLogger() # Pega o logger raiz
-        # Remover handlers existentes para evitar duplicação se o worker for reutilizado?
-        # Não remover, pois pode afetar outros usos. Adicionar filtro?
-        # Ou verificar se handler já existe?
-        
-        # Verificar se já existe um FileHandler para este arquivo
-        handler_exists = False
-        for handler in worker_logger.handlers:
-            if isinstance(handler, logging.FileHandler) and handler.baseFilename == log_file:
-                handler_exists = True
-                break
-        
-        if not handler_exists:
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - [Worker:%(process)d] - %(message)s')
-            file_handler = logging.FileHandler(log_file)
-            file_handler.setFormatter(formatter)
-            worker_logger.addHandler(file_handler)
-            # Definir o nível do logger raiz do worker (pode ser ajustado)
-            worker_logger.setLevel(logging.DEBUG) # Capturar tudo a partir de DEBUG
-            worker_logger.info(f"Logger do worker configurado para escrever em {log_file}")
-            _worker_logger_configured = True
-        else:
-             worker_logger.debug(f"FileHandler para {log_file} já existe neste worker.")
-             _worker_logger_configured = True # Marcar como configurado mesmo se já existia
-
-    except Exception as e:
-        # Usar print aqui pois o logging pode ter falhado
-        print(f"[Worker PID: {os.getpid()}] Erro ao configurar logging do worker para {log_file}: {e}", file=sys.stderr)
+    # Handler de arquivo
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(logging.INFO)
+    
+    # Formato
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    
+    # Adicionar handler
+    logger.addHandler(fh)
+    
+    return logger
 
 
 def process_empresa(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
@@ -190,10 +176,34 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str,
         True se sucesso, False caso contrário
     """
     try:
-        output_dir = os.path.join(path_parquet, table_name)
+        # Extrair pasta remota do caminho ou do prefixo do arquivo
+        # Assume que o prefixo do arquivo pode conter informações sobre a pasta remota
+        # Por exemplo, se o ZIP vem de 2025-05, o prefixo poderia ser algo como "Empresas4_2025-05"
+        remote_folder = None
         
-        # Garante que o diretório de saída existe
-        os.makedirs(output_dir, exist_ok=True)
+        # Verificar se podemos extrair uma data no formato YYYY-MM do caminho
+        parts = path_parquet.split(os.path.sep)
+        for part in parts:
+            if len(part) == 7 and part[4] == '-':  # Formato AAAA-MM
+                remote_folder = part
+                break
+        
+        # Se não conseguimos extrair do caminho, usar um valor padrão baseado no prefixo
+        if not remote_folder:
+            # Tenta extrair do prefixo do arquivo (menos confiável)
+            # Se o prefixo não tem o padrão AAAA-MM, usamos a pasta atual
+            import re
+            match = re.search(r'(20\d{2}-\d{2})', path_parquet)
+            if match:
+                remote_folder = match.group(1)
+            else:
+                # Último recurso: usar o diretório atual ou um valor padrão
+                remote_folder = os.path.basename(os.path.dirname(path_parquet)) or "dados"
+        
+        logger.info(f"Pasta remota identificada: {remote_folder}")
+        
+        # Usando a função que garante a estrutura correta de pastas
+        output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, table_name)
         
         # Log das colunas antes de salvar
         logger.info(f"Colunas do DataFrame Polars '{table_name}' (Origem: {zip_filename_prefix}) antes de salvar em Parquet: {df.columns}")
@@ -237,180 +247,236 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
     path_extracao = "" # Inicializa fora do try/finally
     success = False
     zip_filename_prefix = os.path.splitext(zip_file)[0] # Usar para nomear arquivos parquet
-
+    
+    # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
+    remote_folder = os.path.basename(os.path.normpath(path_zip))
+    # Verificar se o formato é AAAA-MM
+    if not re.match(r'^\d{4}-\d{2}$', remote_folder):
+        # Se não for uma pasta no formato esperado, tentar extrair do caminho
+        match = re.search(r'(20\d{2}-\d{2})', path_zip)
+        if match:
+            remote_folder = match.group(1)
+        else:
+            # Último recurso: usar um valor padrão
+            remote_folder = "dados"
+    
+    logger.info(f"[{pid}] Pasta remota identificada: {remote_folder}")
+    
     try:
         # --- 1. Extração --- 
-        logger.debug(f"[{pid}] Polars Fase 1: Extração")
-        # Cria subpasta única para este ZIP
-        nome_arquivo_sem_ext = os.path.splitext(zip_file)[0]
-        path_extracao = os.path.join(path_unzip, nome_arquivo_sem_ext)
+        logger.info(f"[{pid}] Polars Fase 1: Iniciando extração de {zip_file}..." )
         
+        # Verificar se o arquivo ZIP existe
+        zip_file_path = os.path.join(path_zip, zip_file)
+        if not os.path.exists(zip_file_path):
+            logger.error(f"[{pid}] Polars: Arquivo ZIP {zip_file_path} não existe")
+            return False
+        
+        # Criar diretório para extração (específico para este ZIP)
+        path_extracao = os.path.join(path_unzip, os.path.splitext(zip_file)[0])
         if os.path.exists(path_extracao):
-            logger.warning(f"[{pid}] Polars: Diretório de extração {path_extracao} já existe. Removendo.")
+            logger.debug(f"[{pid}] Polars: Limpando diretório de extração: {path_extracao}")
             try:
                 shutil.rmtree(path_extracao)
-            except Exception as e_rem_dir:
-                logger.error(f"[{pid}] Polars: Erro ao remover diretório de extração antigo {path_extracao}: {e_rem_dir}")
-                return False
-
-        os.makedirs(path_extracao, exist_ok=True)
-
-        path_zip_file = os.path.join(path_zip, zip_file)
+            except Exception as e_clean:
+                logger.warning(f"[{pid}] Polars: Erro ao limpar diretório de extração prévio {path_extracao}: {e_clean}")
         
-        # Verificar se o arquivo ZIP existe e tem tamanho válido
-        if not os.path.exists(path_zip_file):
-            logger.error(f"[{pid}] Polars: Arquivo ZIP {path_zip_file} não existe")
-            return False
-            
-        if os.path.getsize(path_zip_file) == 0:
-            logger.error(f"[{pid}] Polars: Arquivo ZIP {path_zip_file} está vazio (tamanho 0 bytes)")
-            return False
-            
-        # Verificar se é um arquivo ZIP válido antes de tentar extrair
+        os.makedirs(path_extracao, exist_ok=True)
+        
+        # Extrair arquivo ZIP
+        logger.info(f"[{pid}] Polars: Extraindo {zip_file} para {path_extracao}")
         try:
-            with zipfile.ZipFile(path_zip_file, 'r') as test_zip:
-                file_list = test_zip.namelist()
-                if not file_list:
-                    logger.warning(f"[{pid}] Polars: Arquivo ZIP {path_zip_file} existe mas não contém arquivos")
-                    return False
-                else:
-                    logger.info(f"[{pid}] Polars: Arquivo ZIP {path_zip_file} é válido e contém {len(file_list)} arquivos")
-        except zipfile.BadZipFile:
-            logger.error(f"[{pid}] Polars: Arquivo {path_zip_file} não é um arquivo ZIP válido")
-            return False
-        except Exception as e_test_zip:
-            logger.error(f"[{pid}] Polars: Erro ao verificar arquivo ZIP {path_zip_file}: {str(e_test_zip)}")
+            with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+                zip_ref.extractall(path_extracao)
+        except Exception as e_extract:
+            logger.error(f"[{pid}] Polars: Erro ao extrair arquivo ZIP {zip_file}: {e_extract}")
             return False
             
-        logger.info(f"[{pid}] Polars: Extraindo {zip_file} para {path_extracao}...") # Extrai para subpasta
-        try:
-            with zipfile.ZipFile(path_zip_file, 'r') as zip_ref:
-                zip_ref.extractall(path_extracao) # Extrai para subpasta
-        except zipfile.BadZipFile:
-            logger.error(f"[{pid}] Polars: Arquivo {path_zip_file} não é um arquivo ZIP válido")
+        # --- 2. Leitura e Processamento --- 
+        logger.info(f"[{pid}] Polars Fase 2: Iniciando leitura e processamento CSV..." )
+        
+        # Buscar arquivos CSV no diretório de extração
+        csv_files = []
+        for root, _, files in os.walk(path_extracao):
+            for file in files:
+                if file.endswith('.csv') or file.endswith('.CSV'):
+                    csv_files.append(os.path.join(root, file))
+        
+        if not csv_files:
+            logger.warning(f"[{pid}] Polars: Nenhum arquivo CSV encontrado no diretório {path_extracao} após extração")
             return False
-        except Exception as e_zip:
-            logger.exception(f"[{pid}] Polars: Erro durante a extração do ZIP {path_zip_file}")
-            return False
-
-        # --- 2. Encontrar e Processar CSVs com Polars --- 
-        logger.debug(f"[{pid}] Polars Fase 2: Leitura CSV e Transformações")
-        data_files_encontrados = []
-        try:
-            # Busca CSVs apenas dentro da subpasta de extração
-            for root, _, files in os.walk(path_extracao):
-                for file in files:
-                    # Busca arquivos que contenham "CSV" no nome (case-insensitive)
-                    if "CSV" in file.upper(): 
-                        data_files_encontrados.append(os.path.join(root, file))
-        except Exception as e_walk:
-             logger.exception(f"[{pid}] Polars: Erro ao percorrer o diretório de extração {path_extracao}")
-             return False
-
-        if not data_files_encontrados:
-            logger.warning(f"[{pid}] Polars: Nenhum arquivo contendo 'CSV' encontrado em {path_extracao} para {zip_file}." ) # Aviso em vez de erro
-            # Retorna False pois não há dados para processar (não é um sucesso)
-            return False
-        else:
-            logger.info(f"[{pid}] Polars: Encontrados {len(data_files_encontrados)} arquivos CSV para processar em {zip_file}." )
-            # Lista para armazenar DataFrames Polars lidos
-            dataframes = []
-            processamento_csv_ok = False
             
-            # Processar cada arquivo CSV individualmente (encontrado na subpasta)
-            for csv_path in data_files_encontrados:
-                csv_file_name = os.path.basename(csv_path)
-                try:
-                    df_polars = process_csv_file_polars(csv_path)
-                    
-                    if df_polars is not None and not df_polars.is_empty():
-                        dataframes.append(df_polars)
-                        logger.info(f"[{pid}] Polars: CSV {csv_file_name} processado com sucesso: {df_polars.height} linhas")
-                        processamento_csv_ok = True
-                    elif df_polars is not None and df_polars.is_empty():
-                         logger.warning(f"[{pid}] Polars: CSV {csv_file_name} resultou em DataFrame vazio.")
-                    # Se df_polars for None, o erro já foi logado em process_csv_file_polars
-                except Exception as e:
-                    logger.error(f"[{pid}] Polars: Erro ao processar o CSV {csv_file_name}: {str(e)}")
+        # Processar cada arquivo CSV encontrado
+        logger.info(f"[{pid}] Polars: Processando {len(csv_files)} arquivos CSV...")
+        dataframes_polars = []
+        
+        for csv_file in csv_files:
+            logger.debug(f"[{pid}] Polars: Processando arquivo {os.path.basename(csv_file)}")
+            try:
+                df_polars = process_csv_file_polars(csv_file)
+                if df_polars is not None:
+                    dataframes_polars.append(df_polars)
+            except Exception as e_csv:
+                logger.error(f"[{pid}] Polars: Erro ao processar arquivo CSV {os.path.basename(csv_file)}: {e_csv}")
+                # Continuamos com outros CSVs mesmo se um falhar
+        
+        # Se não temos DataFrames Polars válidos, encerramos
+        if not dataframes_polars:
+            logger.warning(f"[{pid}] Polars: Nenhum DataFrame válido gerado. Encerrando processamento de {zip_file}")
+            return False
             
-            # Verificar se temos DataFrames para processar
-            if not processamento_csv_ok or not dataframes:
-                logger.error(f"[{pid}] Polars: Nenhum DataFrame Polars válido gerado a partir do ZIP {zip_file}. Nenhum Parquet será gerado.")
-                # Mantém success = False
+        # Concatenar DataFrames do Polars se houver mais de um
+        if len(dataframes_polars) > 1:
+            logger.info(f"[{pid}] Polars: Concatenando {len(dataframes_polars)} DataFrames...")
+            try:
+                df_final_polars = pl.concat(dataframes_polars)
+                # Liberar memória dos DataFrames individuais
+                for df in dataframes_polars:
+                    del df
+                dataframes_polars = []
+                gc.collect()
+            except Exception as e_concat:
+                logger.error(f"[{pid}] Polars: Erro ao concatenar DataFrames: {e_concat}")
                 return False
-            else:
-                # Concatenar os DataFrames se houver mais de um
-                df_final_polars = None
-                logger.info(f"[{pid}] Polars: Concatenando {len(dataframes)} DataFrames para {zip_file}...")
+        else:
+            df_final_polars = dataframes_polars[0]
+            dataframes_polars = []
+            gc.collect()
+            
+        # Verificar se o DataFrame final tem dados
+        if df_final_polars is not None and not df_final_polars.is_empty():
+            # Aplicar transformações no DataFrame
+            logger.info(f"[{pid}] Polars: Aplicando transformações em DataFrame com {df_final_polars.height} linhas...")
+            try:
+                df_final_polars = apply_empresa_transformations_polars(df_final_polars)
+                
+                if df_final_polars.is_empty():
+                    logger.warning(f"[{pid}] Polars: DataFrame vazio após transformações para {zip_file}")
+                    return False
+                
+                logger.info(f"[{pid}] Polars: Transformações aplicadas com sucesso para {zip_file}")
+                
+                # --- 3. Salvar Parquet (Principal) --- 
+                logger.info(f"[{pid}] Polars Fase 3: Salvando Parquet principal para {zip_file}..." )
+                
+                # Criar diretório para cada tipo usando a função ensure_correct_folder_structure
+                # que vai cuidar de garantir a estrutura correta
+                logger.info(f"[{pid}] Polars: Salvando empresas usando ensure_correct_folder_structure")
+                
+                # Passa o prefixo do nome do zip para a função de salvar
+                parquet_main_saved = False
                 try:
-                    if len(dataframes) > 1:
-                        df_final_polars = pl.concat(dataframes, how="vertical")
-                    else:
-                        df_final_polars = dataframes[0]
-                    logger.info(f"[{pid}] Polars: Concatenação concluída. DataFrame final com {df_final_polars.height} linhas.")
-                    del dataframes # Liberar memória
-                    gc.collect()
-                except Exception as e_concat:
-                     logger.exception(f"[{pid}] Polars: Erro ao concatenar DataFrames para {zip_file}")
-                     df_final_polars = None
-                     # Mantém success = False
-                
-                if df_final_polars is not None and not df_final_polars.is_empty():
-                    # Aplicar transformações
-                    logger.info(f"[{pid}] Polars: Aplicando transformações para {zip_file}...")
-                    df_final_polars = apply_empresa_transformations_polars(df_final_polars)
-                    logger.info(f"[{pid}] Polars: Transformações aplicadas para {zip_file}.")
+                    # Usar ensure_correct_folder_structure para criar o caminho correto
+                    output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, 'empresas')
                     
-                    # --- 3. Salvar Parquet (Principal) --- 
-                    logger.info(f"[{pid}] Polars Fase 3: Salvando Parquet principal para {zip_file}..." )
-                    # Passa o prefixo do nome do zip para a função de salvar
-                    parquet_main_saved = create_parquet_polars(df_final_polars, 'empresas', path_parquet, zip_filename_prefix)
-                    if parquet_main_saved:
-                         logger.info(f"[{pid}] Polars: Parquet principal salvo para {zip_file}.")
-                    else:
-                         logger.error(f"[{pid}] Polars: Falha ao salvar Parquet principal para {zip_file}." )
-                         # Mantém success = False se falhar aqui
+                    # Salvamento direto sem adicionar a pasta remota no caminho
+                    total_rows = df_final_polars.height
+                    partition_size = 500_000
+                    num_partitions = (total_rows + partition_size - 1) // partition_size
+                    
+                    logger.info(f"[{pid}] Salvando DataFrame de empresas com {total_rows} linhas para {output_dir}")
+                    
+                    for i in range(num_partitions):
+                        start_idx = i * partition_size
+                        end_idx = min((i + 1) * partition_size, total_rows)
+                        
+                        partition = df_final_polars.slice(start_idx, end_idx - start_idx)
+                        output_path = os.path.join(output_dir, f"{zip_filename_prefix}_part{i:03d}.parquet")
+                        
+                        logger.info(f"[{pid}] Salvando partição {i+1}/{num_partitions} para {output_path}")
+                        
+                        partition.write_parquet(output_path, compression="snappy")
+                        logger.info(f"[{pid}] Partição {i+1}/{num_partitions} salva com sucesso")
+                        
+                        # Liberar memória
+                        del partition
+                        gc.collect()
+                        
+                    parquet_main_saved = True
+                except Exception as e:
+                    logger.error(f"[{pid}] Erro ao salvar Parquet principal: {e}")
+                
+                if parquet_main_saved:
+                     logger.info(f"[{pid}] Polars: Parquet principal salvo para {zip_file}.")
+                else:
+                     logger.error(f"[{pid}] Polars: Falha ao salvar Parquet principal para {zip_file}." )
+                     # Mantém success = False se falhar aqui
+            except Exception as e:
+                logger.error(f"[{pid}] Erro ao aplicar transformações: {e}")
+                return False
 
-                    # --- 4. Salvar Parquet (Empresa Privada - Condicional) --- 
-                    private_subset_success = True # Assume sucesso se não precisar criar
-                    if parquet_main_saved and create_private:
-                        logger.info(f"[{pid}] Polars Fase 4: Criando e salvando subset Empresa Privada para {zip_file}..." )
-                        if 'natureza_juridica' in df_final_polars.columns:
-                            logger.debug(f"[{pid}] Polars: Filtrando empresas privadas...")
-                            df_privada = df_final_polars.filter(
-                                (pl.col('natureza_juridica') >= 2046) & 
-                                (pl.col('natureza_juridica') <= 2348)
-                            )
-                            if not df_privada.is_empty():
-                                logger.info(f"[{pid}] Polars: Salvando subset empresa_privada...")
-                                # Passa o prefixo do nome do zip para a função de salvar
-                                private_saved = create_parquet_polars(df_privada, 'empresa_privada', path_parquet, zip_filename_prefix)
-                                if private_saved:
-                                    logger.info(f"[{pid}] Polars: Subset empresa_privada salvo com sucesso para {zip_file}.")
-                                else:
-                                    logger.error(f"[{pid}] Polars: Falha ao salvar subset empresa_privada para {zip_file}." )
-                                    private_subset_success = False # Falha no subset
-                            else:
-                                logger.info(f"[{pid}] Polars: Subset empresa_privada vazio para {zip_file}, não será salvo.")
-                            del df_privada
-                            gc.collect()
+            # --- 4. Salvar Parquet (Empresa Privada - Condicional) --- 
+            private_subset_success = True # Assume sucesso se não precisar criar
+            if parquet_main_saved and create_private:
+                logger.info(f"[{pid}] Polars Fase 4: Criando e salvando subset Empresa Privada para {zip_file}..." )
+                if 'natureza_juridica' in df_final_polars.columns:
+                    logger.debug(f"[{pid}] Polars: Filtrando empresas privadas...")
+                    df_privada = df_final_polars.filter(
+                        (pl.col('natureza_juridica') >= 2046) & 
+                        (pl.col('natureza_juridica') <= 2348)
+                    )
+                    if not df_privada.is_empty():
+                        logger.info(f"[{pid}] Polars: Salvando subset empresa_privada...")
+                        
+                        # Usa o mesmo padrão de salvamento direto
+                        private_saved = False
+                        try:
+                            # Usar ensure_correct_folder_structure para criar o caminho correto
+                            output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, 'empresa_privada')
+                            
+                            # Salvamento direto 
+                            total_rows = df_privada.height
+                            partition_size = 500_000
+                            num_partitions = (total_rows + partition_size - 1) // partition_size
+                            
+                            logger.info(f"[{pid}] Salvando DataFrame de empresas privadas com {total_rows} linhas")
+                            
+                            for i in range(num_partitions):
+                                start_idx = i * partition_size
+                                end_idx = min((i + 1) * partition_size, total_rows)
+                                
+                                partition = df_privada.slice(start_idx, end_idx - start_idx)
+                                output_path = os.path.join(output_dir, f"{zip_filename_prefix}_part{i:03d}.parquet")
+                                
+                                logger.info(f"[{pid}] Salvando partição {i+1}/{num_partitions} de empresas privadas")
+                                
+                                partition.write_parquet(output_path, compression="snappy")
+                                logger.info(f"[{pid}] Partição {i+1}/{num_partitions} de empresas privadas salva")
+                                
+                                # Liberar memória
+                                del partition
+                                gc.collect()
+                                
+                            private_saved = True
+                        except Exception as e:
+                            logger.error(f"[{pid}] Erro ao salvar subset empresa_privada: {e}")
+                        
+                        if private_saved:
+                            logger.info(f"[{pid}] Polars: Subset empresa_privada salvo com sucesso para {zip_file}.")
                         else:
-                            logger.warning(f"[{pid}] Polars: Coluna 'natureza_juridica' não encontrada, não é possível criar subset empresa_privada para {zip_file}." )
-                            # Não considera falha se a coluna não existe
-                    elif not create_private:
-                        logger.info(f"[{pid}] Polars: Criação do subset empresa_privada pulada (create_private=False) para {zip_file}." )
-                    
-                    # Sucesso final depende do principal E do subset (se tentado)
-                    success = parquet_main_saved and private_subset_success 
-                
-                elif df_final_polars is not None and df_final_polars.is_empty():
-                    logger.warning(f"[{pid}] Polars: DataFrame final vazio após concatenação para {zip_file}. Nenhum Parquet será gerado.")
-                    success = True # Considera sucesso se não havia dados
-                
-                # Limpar df_final_polars se ele existir
-                if df_final_polars is not None:
-                     del df_final_polars
-                     gc.collect()
+                            logger.error(f"[{pid}] Polars: Falha ao salvar subset empresa_privada para {zip_file}." )
+                            private_subset_success = False # Falha no subset
+                    else:
+                        logger.info(f"[{pid}] Polars: Subset empresa_privada vazio para {zip_file}, não será salvo.")
+                    del df_privada
+                    gc.collect()
+                else:
+                    logger.warning(f"[{pid}] Polars: Coluna 'natureza_juridica' não encontrada, não é possível criar subset empresa_privada para {zip_file}." )
+                    # Não considera falha se a coluna não existe
+            elif not create_private:
+                logger.info(f"[{pid}] Polars: Criação do subset empresa_privada pulada (create_private=False) para {zip_file}." )
+            
+            # Sucesso final depende do principal E do subset (se tentado)
+            success = parquet_main_saved and private_subset_success 
+        
+        elif df_final_polars is not None and df_final_polars.is_empty():
+            logger.warning(f"[{pid}] Polars: DataFrame final vazio após concatenação para {zip_file}. Nenhum Parquet será gerado.")
+            success = True # Considera sucesso se não havia dados
+        
+        # Limpar df_final_polars se ele existir
+        if df_final_polars is not None:
+             del df_final_polars
+             gc.collect()
 
     except Exception as e_general:
         logger.exception(f"[{pid}] Polars: Erro GERAL e inesperado processando {zip_file}")
@@ -444,9 +510,29 @@ def process_empresa_with_polars(path_zip: str, path_unzip: str, path_parquet: st
             logger.warning('Nenhum arquivo ZIP de Empresas encontrado.')
             return True
         
+        # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
+        remote_folder = os.path.basename(os.path.normpath(path_zip))
+        # Verificar se o formato é AAAA-MM
+        if not re.match(r'^\d{4}-\d{2}$', remote_folder):
+            # Se não for uma pasta no formato esperado, tentar extrair do caminho
+            match = re.search(r'(20\d{2}-\d{2})', path_zip)
+            if match:
+                remote_folder = match.group(1)
+            else:
+                # Último recurso: usar um valor padrão
+                remote_folder = "dados"
+        
+        logger.info(f"Pasta remota identificada: {remote_folder}")
+        
         # LIMPEZA MOVIDA PARA CÁ (ANTES DO LOOP)
-        output_dir_empresas = os.path.join(path_parquet, 'empresas')
-        output_dir_privada = os.path.join(path_parquet, 'empresa_privada')
+        # Usar ensure_correct_folder_structure para criar o caminho correto
+        output_dir_empresas = ensure_correct_folder_structure(path_parquet, remote_folder, 'empresas')
+        logger.info(f"Diretório de saída para empresas: {output_dir_empresas}")
+        
+        if create_private:
+            output_dir_privada = ensure_correct_folder_structure(path_parquet, remote_folder, 'empresa_privada')
+            logger.info(f"Diretório de saída para empresa_privada: {output_dir_privada}")
+        
         try:
             file_delete(output_dir_empresas)
             logger.info(f'Diretório {output_dir_empresas} limpo antes do processamento Polars.')
