@@ -17,8 +17,8 @@ from ..utils.folders import get_output_path, ensure_correct_folder_structure
 logger = logging.getLogger(__name__)
 
 def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
-    """Processa os dados de sócios usando Polars."""
-    return process_socio_with_polars(path_zip, path_unzip, path_parquet)
+    """Processa os dados de sócios."""
+    return process_socio_files(path_zip, path_unzip, path_parquet)
 
 def process_data_file_polars(data_path: str):
     """
@@ -418,9 +418,9 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
     
     return success
 
-def process_socio_with_polars(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
+def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """
-    Processa os arquivos de sócios usando Polars.
+    Processa os arquivos de sócios.
     
     Args:
         path_zip: Caminho para o diretório dos arquivos zip
@@ -431,7 +431,7 @@ def process_socio_with_polars(path_zip: str, path_unzip: str, path_parquet: str)
         bool: True se sucesso, False caso contrário
     """
     logger.info('=' * 50)
-    logger.info('Iniciando processamento de SÓCIOS com Polars')
+    logger.info('Iniciando processamento de SÓCIOS')
     logger.info('=' * 50)
     
     try:
@@ -497,22 +497,22 @@ def process_socio_with_polars(path_zip: str, path_unzip: str, path_parquet: str)
                     result = future.result()
                     if result:
                         success = True
-                        logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars")
+                        logger.info(f"Arquivo {zip_file} processado com sucesso")
                     else:
                         arquivos_com_falha.append(zip_file)
-                        logger.warning(f"Falha no processamento do arquivo {zip_file} com Polars")
+                        logger.warning(f"Falha no processamento do arquivo {zip_file}")
                 except Exception as e:
                     arquivos_com_falha.append(zip_file)
-                    logger.error(f"Exceção no processamento do arquivo {zip_file} com Polars: {str(e)}")
+                    logger.error(f"Exceção no processamento do arquivo {zip_file}: {str(e)}")
         
         if not success:
-            logger.warning('Nenhum arquivo ZIP de sócios foi processado com sucesso com Polars.')
+            logger.warning('Nenhum arquivo ZIP de sócios foi processado com sucesso.')
             
         if arquivos_com_falha:
             logger.warning(f'Os seguintes arquivos falharam no processamento: {", ".join(arquivos_com_falha)}')
         
         return success
     except Exception as e:
-        logger.error(f'Erro no processamento principal de sócios com Polars: {str(e)}')
+        logger.error(f'Erro no processamento principal de sócios: {str(e)}')
         traceback.print_exc()
         return False

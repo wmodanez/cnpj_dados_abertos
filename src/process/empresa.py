@@ -49,7 +49,7 @@ def configure_worker_logging(log_file):
 
 def process_empresa(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
     """Processa arquivos de empresa usando Polars."""
-    return process_empresa_with_polars(path_zip, path_unzip, path_parquet, create_private)
+    return process_empresa_files(path_zip, path_unzip, path_parquet, create_private)
 
 
 # ----- Implementação para Polars -----
@@ -614,10 +614,10 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
     return success
 
 
-def process_empresa_with_polars(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
-    """Processa os dados de empresas usando Polars."""
+def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
+    """Processa os dados de empresas."""
     logger.info('=' * 50)
-    logger.info(f'Iniciando processamento de EMPRESAS com Polars (create_private={create_private})')
+    logger.info(f'Iniciando processamento de EMPRESAS (create_private={create_private})')
     logger.info('=' * 50)
     
     try:

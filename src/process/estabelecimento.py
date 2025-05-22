@@ -22,18 +22,8 @@ logger = logging.getLogger(__name__)
 
 
 def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
-    """Processa os dados de estabelecimentos usando Polars.
-    
-    Args:
-        path_zip: Caminho para o diretório dos arquivos ZIP
-        path_unzip: Caminho para o diretório de extração
-        path_parquet: Caminho para o diretório dos arquivos parquet
-        uf_subset: Sigla da UF para criar um subset (opcional)
-        
-    Returns:
-        bool: True se o processamento foi bem-sucedido, False caso contrário
-    """
-    return process_estabelecimento_with_polars(path_zip, path_unzip, path_parquet, uf_subset)
+    """Processa arquivos de estabelecimentos."""
+    return process_estabelecimento_files(path_zip, path_unzip, path_parquet, uf_subset)
 
 
 def process_data_file_polars(data_path: str):
@@ -513,8 +503,8 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
     return success
 
 
-def process_estabelecimento_with_polars(path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
-    """Processa os dados de estabelecimentos usando Polars.
+def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
+    """Processa os dados de estabelecimentos.
     
     Args:
         path_zip: Caminho para o diretório dos arquivos ZIP
@@ -526,7 +516,7 @@ def process_estabelecimento_with_polars(path_zip: str, path_unzip: str, path_par
         bool: True se o processamento foi bem-sucedido, False caso contrário
     """
     logger.info('=' * 50)
-    logger.info(f'Iniciando processamento de ESTABELECIMENTOS com Polars')
+    logger.info(f'Iniciando processamento de ESTABELECIMENTOS')
     logger.info('=' * 50)
     
     try:
@@ -606,22 +596,22 @@ def process_estabelecimento_with_polars(path_zip: str, path_unzip: str, path_par
                     result = future.result()
                     if result:
                         success = True
-                        logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars")
+                        logger.info(f"Arquivo {zip_file} processado com sucesso")
                     else:
                         arquivos_com_falha.append(zip_file)
-                        logger.warning(f"Falha no processamento do arquivo {zip_file} com Polars")
+                        logger.warning(f"Falha no processamento do arquivo {zip_file}")
                 except Exception as e:
                     arquivos_com_falha.append(zip_file)
-                    logger.error(f"Exceção no processamento do arquivo {zip_file} com Polars: {str(e)}")
+                    logger.error(f"Exceção no processamento do arquivo {zip_file}: {str(e)}")
         
         if not success:
-            logger.warning('Nenhum arquivo ZIP de Estabelecimentos foi processado com sucesso com Polars.')
+            logger.warning('Nenhum arquivo ZIP de Estabelecimentos foi processado com sucesso.')
             
         if arquivos_com_falha:
             logger.warning(f'Os seguintes arquivos falharam no processamento: {", ".join(arquivos_com_falha)}')
         
         return success
     except Exception as e:
-        logger.error(f'Erro no processamento principal de Estabelecimentos com Polars: {str(e)}')
+        logger.error(f'Erro no processamento principal de Estabelecimentos: {str(e)}')
         traceback.print_exc()
         return False

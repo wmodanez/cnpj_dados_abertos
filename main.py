@@ -71,10 +71,10 @@ from rich.logging import RichHandler
 from src.async_downloader import get_latest_month_zip_urls, download_multiple_files, _filter_urls_by_type
 from src.config import config
 from src.database import create_duckdb_file
-from src.process.empresa import process_empresa_with_polars
-from src.process.estabelecimento import process_estabelecimento_with_polars
-from src.process.simples import process_simples_with_polars
-from src.process.socio import process_socio_with_polars
+from src.process.empresa import process_empresa_files
+from src.process.estabelecimento import process_estabelecimento_files
+from src.process.simples import process_simples_files
+from src.process.socio import process_socio_files
 from src.utils import check_basic_folders
 
 
@@ -389,7 +389,7 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     if 'empresas' in tipos_a_processar:
         if 'Empresas' in tipos_list or 'empresas' in tipos_list:
             # Agora só usamos polars
-            empresas_ok = process_empresa_with_polars(
+            empresas_ok = process_empresa_files(
                 source_zip_path, unzip_path, output_parquet_path, criar_empresa_privada
             )
                 
@@ -410,7 +410,7 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
                 else:
                     logger.warning(f"Valor inválido para subset UF: {criar_subset_uf}. Ignorando.")
             
-            estab_ok = process_estabelecimento_with_polars(
+            estab_ok = process_estabelecimento_files(
                 source_zip_path, unzip_path, output_parquet_path, uf_subset
             )
             
@@ -421,7 +421,7 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     # Processa Simples Nacional
     if 'simples' in tipos_a_processar:
         if 'Simples' in tipos_list or 'simples' in tipos_list:
-            simples_ok = process_simples_with_polars(
+            simples_ok = process_simples_files(
                 source_zip_path, unzip_path, output_parquet_path
             )
             
@@ -432,7 +432,7 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     # Processa Sócios
     if 'socios' in tipos_a_processar:
         if 'Socios' in tipos_list or 'socios' in tipos_list:
-            socios_ok = process_socio_with_polars(
+            socios_ok = process_socio_files(
                 source_zip_path, unzip_path, output_parquet_path
             )
             
