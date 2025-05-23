@@ -26,10 +26,10 @@ from rich.progress import (
 # Importações locais do projeto
 from .config import config
 from .utils import DownloadCache
-from .process.empresa import process_single_zip_polars as process_empresa_zip
-from .process.estabelecimento import process_single_zip_polars as process_estabelecimento_zip
-from .process.simples import process_single_zip_polars as process_simples_zip
-from .process.socio import process_single_zip_polars as process_socio_zip
+from .process.empresa import process_single_zip as process_empresa_zip
+from .process.estabelecimento import process_single_zip as process_estabelecimento_zip
+from .process.simples import process_single_zip as process_simples_zip
+from .process.socio import process_single_zip as process_socio_zip
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -228,12 +228,22 @@ async def _process_download_response(response: aiohttp.ClientResponse, destinati
                 f"Download de {filename} parece incompleto. Esperado: {current_task.total}, Obtido: {final_local_size}")
             # Marca a barra como erro (vermelho)
             progress.update(task_id, description=f"[red]{filename[:30]} (incompleto)[/red]", style="red")
+            
+            # Registra o erro no cache
+            if config.cache.enabled:
+                error_msg = f"Download incompleto: Esperado {current_task.total}, Obtido {final_local_size}"
+                download_cache.register_file_error(filename, error_msg)
 
         elif current_task.total and final_local_size > current_task.total:
             logger.warning(
                 f"Download de {filename} maior que o esperado? Esperado: {current_task.total}, Obtido: {final_local_size}")
             # Marca a barra como aviso (amarelo)
             progress.update(task_id, description=f"[yellow]{filename[:30]} (tamanho>esperado)[/yellow]", style="yellow")
+            
+            # Registra o aviso no cache
+            if config.cache.enabled:
+                error_msg = f"Tamanho maior que o esperado: Esperado {current_task.total}, Obtido {final_local_size}"
+                download_cache.register_file_error(filename, error_msg)
 
         # Garante que a barra chegue a 100% se o total era conhecido e foi atingido
         # Rich faz isso automaticamente se advance cobrir o total.
@@ -255,17 +265,25 @@ async def _process_download_response(response: aiohttp.ClientResponse, destinati
                 download_cache.update_file_cache(filename, expected_size, remote_last_modified)
                 logger.debug(f"Cache atualizado para {filename}")
             else:
-                logger.error(
-                    f"Tamanho final do arquivo {filename} ({final_local_size}) difere do remoto esperado ({expected_size}). Cache não atualizado.")
+                error_msg = f"Tamanho final ({final_local_size}) difere do remoto esperado ({expected_size})"
+                logger.error(f"Arquivo {filename}: {error_msg}. Cache não atualizado.")
+                # Registra o erro no cache
+                download_cache.register_file_error(filename, error_msg)
                 # Marca a barra como erro se o cache falhar devido ao tamanho
                 progress.update(task_id, description=f"[red]{filename[:30]} (erro cache)[/red]", style="red")
 
         return destination_path, None
 
     except Exception as e_proc:
-        logger.error(f"Erro durante o processamento da resposta/escrita para {filename}: {e_proc}")
+        error_msg = f"Erro durante o processamento da resposta/escrita: {e_proc}"
+        logger.error(f"{filename}: {error_msg}")
         # Marca a barra como erro
         progress.update(task_id, description=f"[red]{filename[:30]} (ERRO escrita)[/red]", style="red")
+        
+        # Registra o erro no cache
+        if config.cache.enabled:
+            download_cache.register_file_error(filename, error_msg)
+            
         return filename, e_proc
 
 
@@ -286,8 +304,19 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
         resume_header = {}
         initial_size = 0
         skip_download = False
+        force_download = False
 
         try:
+            # Verificar se o arquivo tem erros registrados no cache
+            if config.cache.enabled and download_cache.has_file_error(filename):
+                logger.warning(f"Arquivo {filename} tem erros registrados no cache. Forçando download completo.")
+                force_download = True
+                # Atualiza barra Rich (laranja para forçar download)
+                progress.update(task_id, description=f"[orange]{filename[:30]} (forçando download)[/orange]",
+                               style="yellow")
+                file_mode = 'wb'
+                initial_size = 0
+
             # 1. Obter metadados remotos - Atualiza descrição na barra Rich
             progress.update(task_id, description=f"[cyan]{filename[:30]} (verificando...)[/cyan]")
             remote_size, remote_last_modified = await get_remote_file_metadata(session, url)
@@ -303,7 +332,7 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
             local_size = os.path.getsize(destination_path) if file_exists else 0
             attempt_resume = False
 
-            if file_exists:
+            if file_exists and not force_download:
                 # Checa cache primeiro (se habilitado)
                 if config.cache.enabled and download_cache.is_file_cached(filename, remote_size, remote_last_modified):
                     if local_size == remote_size:
@@ -377,15 +406,18 @@ async def download_file(session: aiohttp.ClientSession, url: str, destination_pa
                     file_mode = 'wb'
                     initial_size = 0
             else:
-                # Arquivo não existe localmente -> Baixar completo
-                logger.info(f"Arquivo {filename} não encontrado localmente. Baixando completo.")
+                # Arquivo não existe localmente ou foi forçado o download -> Baixar completo
+                if force_download:
+                    logger.info(f"Download forçado para {filename} devido a erros anteriores.")
+                else:
+                    logger.info(f"Arquivo {filename} não encontrado localmente. Baixando completo.")
                 # Atualiza barra Rich (cinza para novo download)
                 progress.update(task_id, description=f"[grey]{filename[:30]} (novo download)[/grey]",
                                 style="white")  # Usando branco como cor padrão
                 file_mode = 'wb'
                 initial_size = 0
 
-            if skip_download:
+            if skip_download and not force_download:
                 progress.update(task_id, completed=remote_size)
                 if config.cache.enabled and not download_cache.is_file_cached(filename, remote_size,
                                                                               remote_last_modified):
@@ -579,6 +611,15 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
     processed_files = []
     failed_processing = []
     
+    # Verificar se há arquivos com erros no cache
+    files_with_errors = []
+    if config.cache.enabled:
+        files_with_errors = download_cache.get_files_with_errors()
+        if files_with_errors:
+            logger.warning(f"Encontrados {len(files_with_errors)} arquivos com erros no cache. Eles serão baixados novamente.")
+            for error_file in files_with_errors:
+                logger.info(f"Arquivo com erro: {error_file}")
+    
     # Fila para comunicação entre downloads e processamento
     processing_queue = asyncio.Queue()
     
@@ -619,17 +660,42 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
                 filename = os.path.basename(file_path)
                 logger.info(f"Iniciando processamento paralelo para {filename}")
                 
+                # Verificar se arquivo tem erros no cache
+                if config.cache.enabled and download_cache.has_file_error(filename):
+                    logger.warning(f"Arquivo {filename} tem erros registrados no cache. Pulando processamento.")
+                    processing_queue.task_done()
+                    continue
+                
                 try:
                     result, error = await process_downloaded_file(filename, file_path, path_unzip, path_parquet)
                     if error is None:
                         processed_files.append(result)
                         logger.info(f"Processamento de {filename} concluído com sucesso")
+                        # Atualiza o cache para indicar processamento bem-sucedido
+                        if config.cache.enabled:
+                            # Obtém informações atuais do arquivo
+                            file_info = download_cache.get_file_info(filename)
+                            if file_info:
+                                download_cache.update_file_cache(
+                                    filename, 
+                                    file_info.get("size", 0), 
+                                    file_info.get("modified", 0),
+                                    status="success"
+                                )
                     else:
                         failed_processing.append((result, error))
                         logger.warning(f"Falha ao processar {filename}: {error}")
+                        # Registra o erro de processamento no cache
+                        if config.cache.enabled:
+                            error_msg = f"Erro de processamento: {str(error)}"
+                            download_cache.register_file_error(filename, error_msg)
                 except Exception as e:
                     logger.error(f"Erro ao processar {filename}: {e}")
                     failed_processing.append((filename, e))
+                    # Registra o erro no cache
+                    if config.cache.enabled:
+                        error_msg = f"Erro não tratado: {str(e)}"
+                        download_cache.register_file_error(filename, error_msg)
                 
                 processing_queue.task_done()
             except Exception as e:
@@ -646,8 +712,26 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
         # Envolver o processo com o Progress do Rich
         with Progress(*progress_columns,
                       transient=False) as progress:  # transient=False para manter as barras após concluir
+            # Adicionar URLs de arquivos com erros (se houver)
+            urls_to_download = urls.copy()
+            error_urls_added = False
+            
+            # Se temos arquivos com erros no cache, encontrar os URLs correspondentes
+            if files_with_errors and urls:
+                for error_file in files_with_errors:
+                    for url in urls:
+                        if url.endswith(error_file):
+                            # Verificar se o URL já não está na lista
+                            if url not in urls_to_download:
+                                urls_to_download.append(url)
+                                logger.info(f"Adicionado URL para redownload do arquivo com erro: {error_file}")
+                                error_urls_added = True
+                
+                if not error_urls_added and files_with_errors:
+                    logger.warning("Não foi possível encontrar URLs para alguns arquivos com erro no cache. Eles não serão baixados novamente.")
+            
             # Iniciar os downloads
-            for url in urls:
+            for url in urls_to_download:
                 filename = url.split('/')[-1]
                 destination_path = os.path.join(destination_folder, filename)
 

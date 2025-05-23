@@ -12,6 +12,8 @@ import time
 from rich.progress import track
 from multiprocessing import Pool
 import re
+import datetime
+import concurrent.futures
 
 from ..config import config
 from ..utils import (
@@ -54,7 +56,7 @@ def process_empresa(path_zip: str, path_unzip: str, path_parquet: str, create_pr
 
 # ----- Implementação para Polars -----
 
-def process_csv_file_polars(csv_path):
+def process_csv_file(csv_path):
     """
     Processa um único arquivo CSV de empresa usando Polars.
     
@@ -88,7 +90,7 @@ def process_csv_file_polars(csv_path):
         return None
 
 
-def process_data_file_polars(data_path: str):
+def process_data_file(data_path: str):
     """
     Processa um único arquivo de dados usando Polars, seja ele CSV ou outro formato de texto.
     
@@ -190,9 +192,9 @@ def process_data_file_polars(data_path: str):
     return None
 
 
-def apply_empresa_transformations_polars(df: pl.DataFrame, chunk_size: int = 1_000_000) -> pl.DataFrame:
+def apply_empresa_transformations(df: pl.DataFrame, chunk_size: int = 1_000_000) -> pl.DataFrame:
     """Aplica transformações específicas para Empresas usando Polars."""
-    logger.info("Aplicando transformações em Empresas com Polars...")
+    logger.info("Aplicando transformações em Empresas...")
     
     # Renomeação de colunas
     rename_mapping = {
@@ -262,7 +264,7 @@ def apply_empresa_transformations_polars(df: pl.DataFrame, chunk_size: int = 1_0
     return df
 
 
-def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
+def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str, 
                          zip_filename_prefix: str, partition_size: int = 500_000) -> bool:
     """
     Salva DataFrame Polars em arquivos Parquet particionados para reduzir uso de memória.
@@ -279,8 +281,6 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str,
     """
     try:
         # Extrair pasta remota do caminho ou do prefixo do arquivo
-        # Assume que o prefixo do arquivo pode conter informações sobre a pasta remota
-        # Por exemplo, se o ZIP vem de 2025-05, o prefixo poderia ser algo como "Empresas4_2025-05"
         remote_folder = None
         
         # Verificar se podemos extrair uma data no formato YYYY-MM do caminho
@@ -290,20 +290,31 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str,
                 remote_folder = part
                 break
         
-        # Se não conseguimos extrair do caminho, usar um valor padrão baseado no prefixo
+        # Se não conseguimos extrair do caminho, tentar extrair do prefixo do arquivo ou path_parquet
         if not remote_folder:
-            # Tenta extrair do prefixo do arquivo (menos confiável)
-            # Se o prefixo não tem o padrão AAAA-MM, usamos a pasta atual
-            import re
+            # Tentar extrair de path_parquet
             match = re.search(r'(20\d{2}-\d{2})', path_parquet)
             if match:
                 remote_folder = match.group(1)
             else:
-                # Último recurso: usar o diretório atual ou um valor padrão
-                remote_folder = os.path.basename(os.path.dirname(path_parquet)) or "dados"
+                # Tentar extrair do prefixo do arquivo
+                match = re.search(r'(20\d{2}-\d{2})', zip_filename_prefix)
+                if match:
+                    remote_folder = match.group(1)
+                else:
+                    # Tentar extrair do diretório pai do path_parquet
+                    parent_dir = os.path.basename(os.path.dirname(path_parquet))
+                    if re.match(r'^\d{4}-\d{2}$', parent_dir):
+                        remote_folder = parent_dir
+                    else:
+                        # Último recurso: usar um valor padrão
+                        current_date = datetime.datetime.now()
+                        remote_folder = f"{current_date.year}-{current_date.month:02d}"
+                        logger.warning(f"Não foi possível extrair pasta remota do caminho. Usando data atual: {remote_folder}")
         
         logger.info(f"Pasta remota identificada: {remote_folder}")
         
+        # Forçar a utilização do remote_folder para garantir que não salve na raiz do parquet
         # Usando a função que garante a estrutura correta de pastas
         output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, table_name)
                 
@@ -334,15 +345,15 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str,
             
         return True
     except Exception as e:
-        logger.error(f"Erro ao criar arquivo Parquet com Polars: {str(e)}")
+        logger.error(f"Erro ao criar arquivo Parquet: {str(e)}")
         return False
 
 
-def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, create_private: bool) -> bool:
-    """Processa um único arquivo ZIP usando Polars para eficiência."""
+def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, create_private: bool) -> bool:
+    """Processa um único arquivo ZIP."""
     logger = logging.getLogger()
     pid = os.getpid()
-    logger.info(f"[{pid}] Iniciando processamento Polars para: {zip_file} (create_private={create_private})" )
+    logger.info(f"[{pid}] Iniciando processamento para: {zip_file} (create_private={create_private})" )
     path_extracao = "" # Inicializa fora do try/finally
     success = False
     zip_filename_prefix = os.path.splitext(zip_file)[0] # Usar para nomear arquivos parquet
@@ -427,7 +438,7 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
         for data_file in data_files:
             logger.debug(f"[{pid}] Polars: Processando arquivo {os.path.basename(data_file)}")
             try:
-                df_polars = process_data_file_polars(data_file)
+                df_polars = process_data_file(data_file)
                 if df_polars is not None and not df_polars.is_empty():
                     dataframes_polars.append(df_polars)
                     logger.info(f"[{pid}] Polars: Arquivo {os.path.basename(data_file)} processado com sucesso: {df_polars.height} linhas")
@@ -463,7 +474,7 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             # Aplicar transformações no DataFrame
             logger.info(f"[{pid}] Polars: Aplicando transformações em DataFrame com {df_final_polars.height} linhas...")
             try:
-                df_final_polars = apply_empresa_transformations_polars(df_final_polars)
+                df_final_polars = apply_empresa_transformations(df_final_polars)
                 
                 if df_final_polars.is_empty():
                     logger.warning(f"[{pid}] Polars: DataFrame vazio após transformações para {zip_file}")
@@ -612,14 +623,27 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
 
 
 def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
-    """Processa os dados de empresas."""
+    """Processa os dados de empresas.
+    
+    Args:
+        path_zip: Caminho para o diretório dos arquivos ZIP
+        path_unzip: Caminho para o diretório de extração
+        path_parquet: Caminho para o diretório dos arquivos parquet
+        create_private: Flag para criar subset de empresas privadas
+        
+    Returns:
+        bool: True se o processamento foi bem-sucedido, False caso contrário
+    """
+    import time
+    start_time = time.time()
+    
     logger.info('=' * 50)
-    logger.info(f'Iniciando processamento de EMPRESAS (create_private={create_private})')
+    logger.info(f'Iniciando processamento de EMPRESAS')
     logger.info('=' * 50)
     
     try:
-        zip_files = [f for f in os.listdir(path_zip) 
-                    if f.startswith('Empresa') and f.endswith('.zip')]
+        zip_files = [f for f in os.listdir(path_zip)
+                     if f.startswith('Empr') and f.endswith('.zip')]
         
         if not zip_files:
             logger.warning('Nenhum arquivo ZIP de Empresas encontrado.')
@@ -639,57 +663,128 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
         
         logger.info(f"Pasta remota identificada: {remote_folder}")
         
-        # LIMPEZA MOVIDA PARA CÁ (ANTES DO LOOP)
-        # Usar ensure_correct_folder_structure para criar o caminho correto
-        output_dir_empresas = ensure_correct_folder_structure(path_parquet, remote_folder, 'empresas')
-        logger.info(f"Diretório de saída para empresas: {output_dir_empresas}")
+        # Garantir estrutura correta para o diretório principal de empresas
+        output_dir_main = ensure_correct_folder_structure(path_parquet, remote_folder, 'empresas')
         
-        if create_private:
-            output_dir_privada = ensure_correct_folder_structure(path_parquet, remote_folder, 'empresa_privada')
-            logger.info(f"Diretório de saída para empresa_privada: {output_dir_privada}")
-        
+        # LIMPEZA PRÉVIA do diretório de saída principal
         try:
-            file_delete(output_dir_empresas)
-            logger.info(f'Diretório {output_dir_empresas} limpo antes do processamento Polars.')
-            if create_private:
-                 file_delete(output_dir_privada)
-                 logger.info(f'Diretório {output_dir_privada} limpo antes do processamento Polars.')
+            file_delete(output_dir_main)
+            logger.info(f'Diretório {output_dir_main} limpo antes do processamento.')
         except Exception as e:
-            logger.warning(f'Não foi possível limpar diretórios de saída antes do processamento Polars: {str(e)}')
-
+            logger.warning(f'Não foi possível limpar diretório de saída {output_dir_main}: {str(e)}')
+        
+        # Criar também a estrutura para o diretório de empresas privadas se necessário
+        if create_private:
+            output_dir_private = ensure_correct_folder_structure(path_parquet, remote_folder, 'empresa_privada')
+            try:
+                file_delete(output_dir_private)
+                logger.info(f'Diretório {output_dir_private} limpo antes do processamento.')
+            except Exception as e:
+                logger.warning(f'Não foi possível limpar diretório de saída {output_dir_private}: {str(e)}')
+            
+            # Garantir que o diretório existe
+            os.makedirs(output_dir_private, exist_ok=True)
+        
+        # Garantir que o diretório principal existe
+        os.makedirs(output_dir_main, exist_ok=True)
+        
         # Forçar coleta de lixo antes de iniciar o processamento
         gc.collect()
-            
-        success_count = 0
-        arquivos_sem_dados = []
-        for zip_file in track(zip_files, description="[cyan]Processing Empresas ZIPs (Polars)..."):
-            result = process_single_zip_polars(
-                zip_file=zip_file,
-                path_zip=path_zip,
-                path_unzip=path_unzip,
-                path_parquet=path_parquet,
-                create_private=create_private
-            )
-            if result:
-                success_count += 1
-                logger.info(f"Arquivo {zip_file} processado com sucesso usando Polars")
-            else:
-                # Registra arquivos que não tiveram dados válidos para processar
-                arquivos_sem_dados.append(zip_file)
-            
-            # Forçar coleta de lixo após cada arquivo
-            gc.collect()
         
-        if success_count == 0:
-            logger.warning("Nenhum arquivo ZIP de Empresas foi processado com sucesso usando Polars.")
-        else:
-            logger.info(f"Processados com sucesso {success_count} de {len(zip_files)} arquivos ZIP de Empresas usando Polars.")
-            
-        if arquivos_sem_dados:
-            logger.warning(f'Os seguintes arquivos não continham dados válidos para processar: {", ".join(arquivos_sem_dados)}')
+        # Processar com Polars em paralelo - Otimizado
+        # Usar 75% dos CPUs disponíveis para não sobrecarregar
+        available_cpus = os.cpu_count() or 4
+        max_workers = max(1, int(available_cpus * 0.75))
         
-        return success_count > 0
-
+        logger.info(f"Iniciando processamento paralelo com {max_workers} workers (75% dos {available_cpus} CPUs disponíveis)")
+        
+        # Timeout para cada tarefa (em segundos) - para evitar travamentos
+        timeout_per_task = 3600  # 1 hora por arquivo
+        
+        success = False
+        arquivos_com_falha = []
+        arquivos_com_timeout = []
+        total_files = len(zip_files)
+        completed_files = 0
+        
+        # Processar todos os arquivos ZIP em paralelo
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            logger.info(f"Processando {total_files} arquivos de empresas...")
+            
+            # Mapear cada arquivo ZIP para ser processado
+            futures = {}
+            for zip_file in zip_files:
+                future = executor.submit(
+                    process_single_zip, 
+                    zip_file, 
+                    path_zip, 
+                    path_unzip, 
+                    path_parquet,
+                    create_private
+                )
+                futures[future] = zip_file
+            
+            # Coletar resultados à medida que são concluídos
+            try:
+                for future in concurrent.futures.as_completed(futures, timeout=timeout_per_task):
+                    zip_file = futures[future]
+                    completed_files += 1
+                    elapsed_time = time.time() - start_time
+                    
+                    # Calcular métricas de progresso
+                    progress_pct = (completed_files / total_files) * 100
+                    avg_time_per_file = elapsed_time / completed_files if completed_files > 0 else 0
+                    estimated_remaining = avg_time_per_file * (total_files - completed_files)
+                    
+                    try:
+                        result = future.result()
+                        if result:
+                            success = True
+                            logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Arquivo {zip_file} processado com sucesso. "
+                                       f"Tempo médio: {avg_time_per_file:.1f}s/arquivo. "
+                                       f"Tempo estimado restante: {estimated_remaining:.1f}s")
+                        else:
+                            arquivos_com_falha.append(zip_file)
+                            logger.warning(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Falha no processamento do arquivo {zip_file}")
+                    except Exception as e:
+                        arquivos_com_falha.append(zip_file)
+                        logger.error(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Exceção no processamento do arquivo {zip_file}: {str(e)}")
+            
+            except concurrent.futures.TimeoutError:
+                # Identificar quais tarefas não foram concluídas (timeout)
+                for future, zip_file in futures.items():
+                    if not future.done():
+                        arquivos_com_timeout.append(zip_file)
+                        logger.error(f"TIMEOUT: Arquivo {zip_file} excedeu o tempo limite de {timeout_per_task} segundos")
+                        # Cancelar a tarefa para liberar recursos
+                        future.cancel()
+        
+        # Calcular estatísticas finais
+        total_time = time.time() - start_time
+        
+        if not success:
+            logger.warning('Nenhum arquivo ZIP de Empresas foi processado com sucesso.')
+            
+        if arquivos_com_falha:
+            logger.warning(f'Os seguintes arquivos falharam no processamento: {", ".join(arquivos_com_falha)}')
+            
+        if arquivos_com_timeout:
+            logger.warning(f'Os seguintes arquivos excederam o tempo limite: {", ".join(arquivos_com_timeout)}')
+        
+        # Logar resumo completo
+        logger.info("=" * 50)
+        logger.info("RESUMO DO PROCESSAMENTO DE EMPRESAS:")
+        logger.info("=" * 50)
+        logger.info(f"Arquivos processados com sucesso: {completed_files - len(arquivos_com_falha) - len(arquivos_com_timeout)}/{total_files}")
+        logger.info(f"Arquivos com falha: {len(arquivos_com_falha)}/{total_files}")
+        logger.info(f"Arquivos com timeout: {len(arquivos_com_timeout)}/{total_files}")
+        logger.info(f"Tempo total de processamento: {total_time:.2f} segundos")
+        logger.info(f"Tempo médio por arquivo: {total_time/completed_files if completed_files > 0 else 0:.2f} segundos")
+        logger.info("=" * 50)
+        
+        # Verificar se pelo menos um arquivo foi processado com sucesso
+        return success
     except Exception as e:
-        logger.error(f'Erro no processamento principal de Empresas com Polars: {str(e)}')
+        logger.error(f'Erro no processamento principal de Empresas: {str(e)}')
+        traceback.print_exc()
         return False

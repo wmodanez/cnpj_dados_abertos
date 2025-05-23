@@ -63,6 +63,7 @@ import logging
 import os
 from multiprocessing import freeze_support
 import re
+import time
 
 import aiohttp
 from dotenv import load_dotenv
@@ -157,6 +158,7 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
             - Se all_folders=True, a segunda posição conterá "all_folders"
     """
     logger = logging.getLogger(__name__)
+    start_time = time.time()
     logger.info("Iniciando processo de download centralizado...")
 
     try:
@@ -350,6 +352,10 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                 return False, ""
             logger.warning("Continuando processamento com os arquivos baixados com sucesso.")
 
+        # Adicionar medição de tempo no final
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        logger.info(f"Tempo total de download: {elapsed_time:.2f} segundos")
         return True, latest_folder
 
     except Exception as e:
@@ -359,7 +365,7 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
 
 def process_folder(source_zip_path, unzip_path, output_parquet_path, 
                  tipos_list, engine, criar_empresa_privada, criar_subset_uf,
-                 tipos_a_processar) -> bool:
+                 tipos_a_processar) -> dict:
     """Processa os arquivos da pasta, usando o engine especificado.
     
     Args:
@@ -373,7 +379,7 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
         tipos_a_processar: Lista de tipos a processar
         
     Returns:
-        bool: Sucesso ou falha
+        dict: Dicionário com o status de cada tipo e tempo de processamento
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Engine selecionado: {engine}")
@@ -384,14 +390,24 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     logger.info(f"Pasta remota extraída do caminho: {remote_folder}")
     
     all_ok = True
+    processing_results = {}
+    total_start_time = time.time()
     
     # Processa Empresas
     if 'empresas' in tipos_a_processar:
         if 'Empresas' in tipos_list or 'empresas' in tipos_list:
+            start_time = time.time()
             # Agora só usamos polars
             empresas_ok = process_empresa_files(
                 source_zip_path, unzip_path, output_parquet_path, criar_empresa_privada
             )
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            processing_results['empresas'] = {
+                'success': empresas_ok,
+                'time': elapsed_time
+            }
                 
             if not empresas_ok:
                 logger.error("Erro no processamento de empresas.")
@@ -400,6 +416,7 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     # Processa Estabelecimentos
     if 'estabelecimentos' in tipos_a_processar:
         if 'Estabelecimentos' in tipos_list or 'estabelecimentos' in tipos_list:
+            start_time = time.time()
             uf_subset = None
             
             # Se criar_subset_uf foi especificado, extrai a sigla da UF
@@ -413,6 +430,13 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
             estab_ok = process_estabelecimento_files(
                 source_zip_path, unzip_path, output_parquet_path, uf_subset
             )
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            processing_results['estabelecimentos'] = {
+                'success': estab_ok,
+                'time': elapsed_time
+            }
             
             if not estab_ok:
                 logger.error("Erro no processamento de estabelecimentos.")
@@ -421,9 +445,17 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     # Processa Simples Nacional
     if 'simples' in tipos_a_processar:
         if 'Simples' in tipos_list or 'simples' in tipos_list:
+            start_time = time.time()
             simples_ok = process_simples_files(
                 source_zip_path, unzip_path, output_parquet_path
             )
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            processing_results['simples'] = {
+                'success': simples_ok,
+                'time': elapsed_time
+            }
             
             if not simples_ok:
                 logger.error("Erro no processamento do simples nacional.")
@@ -432,19 +464,47 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     # Processa Sócios
     if 'socios' in tipos_a_processar:
         if 'Socios' in tipos_list or 'socios' in tipos_list:
+            start_time = time.time()
             socios_ok = process_socio_files(
                 source_zip_path, unzip_path, output_parquet_path
             )
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            processing_results['socios'] = {
+                'success': socios_ok,
+                'time': elapsed_time
+            }
             
             if not socios_ok:
                 logger.error("Erro no processamento de sócios.")
                 all_ok = False
     
-    return all_ok
+    # Calcular tempo total
+    total_elapsed_time = time.time() - total_start_time
+    processing_results['total_time'] = total_elapsed_time
+    processing_results['all_ok'] = all_ok
+    
+    # Logar resumo de processamento
+    logger.info("=" * 50)
+    logger.info("RESUMO DO PROCESSAMENTO:")
+    logger.info("=" * 50)
+    for tipo, resultado in processing_results.items():
+        if tipo != 'total_time' and tipo != 'all_ok':
+            status = "SUCESSO" if resultado['success'] else "FALHA"
+            logger.info(f"{tipo.upper()}: {status} - Tempo: {resultado['time']:.2f} segundos")
+    logger.info("-" * 50)
+    logger.info(f"TEMPO TOTAL DE PROCESSAMENTO: {total_elapsed_time:.2f} segundos")
+    logger.info(f"STATUS GERAL: {'SUCESSO' if all_ok else 'FALHA'}")
+    logger.info("=" * 50)
+    
+    return processing_results
 
 
 def main():
     """Função principal de execução."""
+    start_time = time.time()
+    
     parser = argparse.ArgumentParser(description='Realizar download e processamento dos dados de CNPJ')
     parser.add_argument('--tipos', '-t', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
                         help='Tipos de dados a serem processados. Se não especificado, processa todos (relevante para steps \'process\' e \'all\').')
@@ -571,14 +631,14 @@ def main():
                 tipos_a_processar = ['empresas', 'estabelecimentos', 'simples', 'socios']
             
             # Iniciar processamento
-            processed_ok = process_folder(
+            process_results = process_folder(
                 source_folder_path, PATH_UNZIP, output_parquet_path, 
                 args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios'],
                 args.engine, args.criar_empresa_privada, args.criar_subset_uf,
                 tipos_a_processar
             )
             
-            if processed_ok:
+            if process_results['all_ok']:
                 print_success(f"Processamento concluído com sucesso na pasta: {output_parquet_path}")
             else:
                 print_warning("Alguns erros ocorreram durante o processamento. Verifique os logs.")
@@ -651,6 +711,7 @@ def main():
         
         # 1. Download
         print_section("Etapa 1: Download dos arquivos")
+        download_start_time = time.time()
         
         # Configurar para forçar o download se necessário
         if args.force_download:
@@ -665,14 +726,23 @@ def main():
             all_folders=args.all_folders
         ))
         
+        download_time = time.time() - download_start_time
+        logger.info(f"Tempo de download: {download_time:.2f} segundos")
+        
         if not download_ok:
             print_error("Falha no processo de download. Verifique os logs para mais detalhes.")
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {total_time:.2f} segundos")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
             return
         
         print_success(f"Download concluído. Arquivos salvos em: {os.path.join(PATH_ZIP, latest_folder)}")
         
         # 2. Processamento
         print_section("Etapa 2: Processamento dos arquivos")
+        process_start_time = time.time()
         
         # Definir o diretório de origem para ZIPs
         source_zip_path = os.path.join(PATH_ZIP, latest_folder)
@@ -689,32 +759,59 @@ def main():
         tipos_a_processar = args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios']
         
         # Iniciar processamento
-        process_ok = process_folder(
+        process_results = process_folder(
             source_zip_path, PATH_UNZIP, output_parquet_path,
             args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios'],
             args.engine, args.criar_empresa_privada, args.criar_subset_uf,
             tipos_a_processar
         )
         
-        if not process_ok:
-            print_warning("Alguns erros ocorreram durante o processamento. Verifique os logs.")
-            # Continuamos mesmo com erros para tentar criar o banco de dados
+        process_time = time.time() - process_start_time
+        logger.info(f"Tempo de processamento: {process_time:.2f} segundos")
+        
+        if not process_results['all_ok']:
+            print_warning("Alguns erros ocorreram durante o processamento. O banco de dados NÃO será criado.")
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {total_time:.2f} segundos")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
+            return
         else:
             print_success("Processamento concluído com sucesso.")
         
         # 3. Criação do banco de dados
         print_section("Etapa 3: Criação do banco de dados DuckDB")
+        db_start_time = time.time()
         
         try:
             db_file = os.path.join(output_parquet_path, FILE_DB_PARQUET)
             logger.info(f"Criando arquivo DuckDB em: {db_file}")
             create_duckdb_file(output_parquet_path, db_file, PATH_REMOTE_PARQUET)
+            db_time = time.time() - db_start_time
+            logger.info(f"Tempo de criação do banco: {db_time:.2f} segundos")
             print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
         except Exception as e:
             logger.exception(f"Erro ao criar banco de dados: {e}")
             print_error(f"Falha ao criar banco de dados: {str(e)}")
+            db_time = time.time() - db_start_time
+            logger.info(f"Tempo de criação do banco (falhou): {db_time:.2f} segundos")
     
+    total_time = time.time() - start_time
+    
+    # Resumo final
     print_header("Processamento concluído")
+    logger.info("=" * 50)
+    logger.info("RESUMO FINAL DE EXECUÇÃO:")
+    logger.info("=" * 50)
+    
+    if args.step == 'all':
+        logger.info(f"Download: {download_time:.2f} segundos")
+        logger.info(f"Processamento: {process_time:.2f} segundos")
+        logger.info(f"Criação do banco: {db_time:.2f} segundos")
+    
+    logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {total_time:.2f} segundos")
+    logger.info("=" * 50)
     logger.info("Execução concluída.")
     return
 

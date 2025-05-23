@@ -12,6 +12,7 @@ import re
 from typing import Tuple, List, Dict, Any, Optional
 import gc
 from multiprocessing import Pool
+import datetime
 
 from ..config import config
 from ..utils import file_delete, check_disk_space, verify_csv_integrity
@@ -26,188 +27,313 @@ def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str, u
     return process_estabelecimento_files(path_zip, path_unzip, path_parquet, uf_subset)
 
 
-def process_data_file_polars(data_path: str):
-    """
-    Processa um arquivo de dados usando Polars, seja ele CSV ou outro formato de texto.
+def detect_file_encoding(file_path: str) -> str:
+    """Detecta o encoding do arquivo tentando diferentes codificações."""
+    encodings_to_try = ['latin1', 'utf-8', 'cp1252', 'utf-16']
     
-    Args:
-        data_path: Caminho para o arquivo
-        
-    Returns:
-        DataFrame Polars ou None em caso de erro
-    """
+    # Ler uma amostra do arquivo
+    sample_size = 50000  # Aumentar tamanho da amostra para melhor detecção
+    with open(file_path, 'rb') as f:
+        raw_data = f.read(sample_size)
+    
+    # Tentar decodificar com cada encoding
+    for enc in encodings_to_try:
+        try:
+            raw_data.decode(enc)
+            logger.debug(f"Encoding detectado para {os.path.basename(file_path)}: {enc}")
+            return enc
+        except UnicodeDecodeError:
+            continue
+    
+    # Se nenhum encoding funcionar, retornar latin1 como fallback
+    logger.warning(f"Não foi possível detectar encoding para {os.path.basename(file_path)}. Usando latin1 como fallback.")
+    return 'latin1'
+
+def process_data_file(data_path: str, chunk_size: int = 1000000):
+    """Processa um arquivo de dados usando Polars com processamento em chunks para arquivos grandes."""
     logger = logging.getLogger(__name__)
-    
-    # Verificar se o arquivo é um arquivo de texto
-    try:
-        # Tentar ler as primeiras linhas para verificar se é um arquivo de texto
-        is_text_file = True
-        with open(data_path, 'rb') as f:
-            sample = f.read(4096)  # Ler os primeiros 4KB
-            # Verificar se há caracteres nulos ou muitos bytes não-ASCII
-            # o que pode indicar que é um arquivo binário
-            if b'\x00' in sample or len([b for b in sample if b > 127]) > len(sample) * 0.3:
-                logger.warning(f"Arquivo {os.path.basename(data_path)} parece ser binário, não texto.")
-                is_text_file = False
-        
-        if not is_text_file:
-            return None
-    except Exception as e:
-        logger.error(f"Erro ao verificar se {os.path.basename(data_path)} é um arquivo de texto: {str(e)}")
-        return None
 
-    # Usar colunas da config
-    original_column_names = config.estabelecimento_columns
-
-    # Primeiro, tentar com o separador padrão
-    try:
-        df = pl.read_csv(
-            data_path,
-            separator=config.file.separator,
-            encoding=config.file.encoding,
-            has_header=False,
-            new_columns=original_column_names,
-            infer_schema_length=0,  # Não inferir schema
-            dtypes={col: pl.Utf8 for col in original_column_names},  # Inicialmente lê tudo como string
-            ignore_errors=True  # Ignorar linhas com erros
-        )
-        if not df.is_empty():
-            logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando separador padrão")
-            return df
-    except Exception as e:
-        logger.warning(f"Erro ao processar {os.path.basename(data_path)} com separador padrão: {str(e)}")
+    # Verificar tamanho do arquivo para decidir estratégia
+    file_size = os.path.getsize(data_path)
+    file_size_mb = file_size / (1024 * 1024)
     
-    # Se falhar com o separador padrão, tentar detectar o separador
-    separators = [';', ',', '|', '\t']
-    for sep in separators:
-        if sep == config.file.separator:
-            continue  # Já tentamos esse
-        
+    # Se arquivo for menor que 500MB, processar normalmente
+    if file_size_mb < 500:
         try:
-            df = pl.read_csv(
-                data_path,
-                separator=sep,
-                encoding=config.file.encoding,
-                has_header=False,
-                new_columns=original_column_names,
-                infer_schema_length=0,
-                dtypes={col: pl.Utf8 for col in original_column_names},
-                ignore_errors=True
-            )
-            if not df.is_empty():
-                logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando separador '{sep}'")
-                return df
-        except Exception as e:
-            logger.debug(f"Erro ao processar {os.path.basename(data_path)} com separador '{sep}': {str(e)}")
-    
-    # Se ainda falhar, tentar com diferentes codificações
-    encodings = ['latin1', 'utf-8', 'utf-16', 'cp1252']
-    for enc in encodings:
-        if enc == config.file.encoding:
-            continue  # Já tentamos esse
-        
-        try:
-            df = pl.read_csv(
+            # Usar lazy evaluation para melhor performance
+            df_lazy = pl.scan_csv(
                 data_path,
                 separator=config.file.separator,
-                encoding=enc,
+                encoding='utf8-lossy',  # Encoding compatível com scan_csv que funciona com latin1
                 has_header=False,
-                new_columns=original_column_names,
-                infer_schema_length=0,
-                dtypes={col: pl.Utf8 for col in original_column_names},
-                ignore_errors=True
+                new_columns=config.estabelecimento_columns,
+                dtypes=config.estabelecimento_dtypes,
+                rechunk=True
             )
+            
+            # Coletar apenas quando necessário
+            df = df_lazy.collect()
+            
             if not df.is_empty():
-                logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando codificação '{enc}'")
+                logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso ({df.height} linhas, {file_size_mb:.1f}MB)")
                 return df
+            else:
+                logger.warning(f"Arquivo {os.path.basename(data_path)} está vazio")
+                return None
         except Exception as e:
-            logger.debug(f"Erro ao processar {os.path.basename(data_path)} com codificação '{enc}': {str(e)}")
-    
-    # Se chegamos até aqui, não conseguimos processar o arquivo
-    logger.error(f"Não foi possível processar o arquivo {os.path.basename(data_path)} com nenhuma combinação de separadores e codificações")
-    return None
+            logger.error("="*60)
+            logger.error(f"FALHA ao processar {os.path.basename(data_path)}")
+            logger.error(f"Erro detalhado: {str(e)}")
+            logger.error("="*60)
+            logger.error("Tentando leitura com ignore_errors=True...")
 
-
-def apply_estabelecimento_transformations_polars(df: pl.DataFrame) -> pl.DataFrame:
-    """Aplica transformações específicas para Estabelecimentos usando Polars."""
-    logger.info("Aplicando transformações em Estabelecimentos com Polars...")
-    
-    # Renomeação de colunas
-    rename_mapping = {
-        'cnpj_basico': 'cnpj_basico',
-        'identificador_matriz_filial': 'matriz_filial',
-        'nome_fantasia': 'nome_fantasia',
-        'situacao_cadastral': 'codigo_situacao_cadastral',
-        'data_situacao_cadastral': 'data_situacao_cadastral',
-        'motivo_situacao_cadastral': 'codigo_motivo_situacao_cadastral',
-        'data_inicio_atividade': 'data_inicio_atividades',
-        'cnae_fiscal_principal': 'codigo_cnae'
-    }
-    
-    for old_col, new_col in rename_mapping.items():
-        if old_col in df.columns and old_col != new_col:
-            df = df.rename({old_col: new_col})
-    
-    # Conversão de colunas numéricas
-    int_cols = ['matriz_filial', 'codigo_situacao_cadastral', 
-                'codigo_motivo_situacao_cadastral', 'codigo_cnae', 
-                'codigo_municipio']
-    
-    int_expressions = []
-    for col in int_cols:
-        if col in df.columns:
-            int_expressions.append(
-                pl.col(col).cast(pl.Int64, strict=False)
-            )
-    
-    if int_expressions:
-        df = df.with_columns(int_expressions)
-    
-    # Conversão de datas
-    date_cols = ['data_situacao_cadastral', 'data_inicio_atividades']
-    date_expressions = []
-    
-    for col in date_cols:
-        if col in df.columns:
-            date_expressions.append(
-                pl.when(
-                    pl.col(col).is_in(['0', '00000000', '']) | 
-                    pl.col(col).is_null()
+            try:
+                df = pl.read_csv(
+                    data_path,
+                    separator=config.file.separator,
+                    encoding='latin1',
+                    has_header=False,
+                    new_columns=config.estabelecimento_columns,
+                    dtypes=config.estabelecimento_dtypes,
+                    ignore_errors=True,
+                    rechunk=True
                 )
-                .then(None)
-                .otherwise(pl.col(col))
-                .str.strptime(pl.Date, format="%Y%m%d", strict=False)
-                .alias(col)
+                logger.warning(f"Arquivo {os.path.basename(data_path)} lido com ignore_errors=True ({df.height} linhas)")
+                return df
+            except Exception as e2:
+                logger.error("="*60)
+                logger.error(f"Falha também com ignore_errors=True em {os.path.basename(data_path)}: {str(e2)}")
+                logger.error("="*60)
+                return None
+    
+    # Para arquivos grandes (>500MB), processar em chunks
+    else:
+        logger.info(f"Arquivo grande detectado ({file_size_mb:.1f}MB). Processando em chunks de {chunk_size:,} linhas...")
+        
+        try:
+            chunks = []
+            chunk_count = 0
+            
+            # Usar scan_csv com streaming para arquivos grandes
+            df_lazy = pl.scan_csv(
+                data_path,
+                separator=config.file.separator,
+                encoding='utf8-lossy',
+                has_header=False,
+                new_columns=config.estabelecimento_columns,
+                dtypes=config.estabelecimento_dtypes
             )
-    
-    if date_expressions:
-        df = df.with_columns(date_expressions)
-    
-    # Criação do CNPJ completo
-    if all(col in df.columns for col in ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']):
-        df = df.with_columns([
-            (
-                pl.col('cnpj_basico').cast(pl.Utf8).str.pad_start(8, '0') + 
-                pl.col('cnpj_ordem').cast(pl.Utf8).str.pad_start(4, '0') + 
-                pl.col('cnpj_dv').cast(pl.Utf8).str.pad_start(2, '0')
-            ).alias('cnpj')
-        ])
-    
-    # Remoção de colunas
-    cols_to_drop = ['cnpj_ordem', 'cnpj_dv', 'tipo_logradouro', 'logradouro', 
-                    'numero', 'complemento', 'bairro', 'ddd1', 'telefone1', 
-                    'ddd2', 'telefone2', 'ddd_fax', 'fax', 'pais',
-                    'correio_eletronico', 'situacao_especial', 
-                    'data_situacao_especial', 'nome_cidade_exterior']
-    
-    cols_to_drop = [col for col in cols_to_drop if col in df.columns]
-    if cols_to_drop:
-        df = df.drop(cols_to_drop)
-    
-    return df
+            
+            # Processar em batches usando streaming
+            total_rows = 0
+            batch_size = chunk_size
+            offset = 0
+            
+            while True:
+                # Ler um chunk
+                chunk_lazy = df_lazy.slice(offset, batch_size)
+                chunk_df = chunk_lazy.collect()
+                
+                if chunk_df.is_empty():
+                    break
+                
+                chunks.append(chunk_df)
+                total_rows += chunk_df.height
+                chunk_count += 1
+                offset += batch_size
+                
+                logger.debug(f"Chunk {chunk_count} processado: {chunk_df.height} linhas (total: {total_rows:,})")
+                
+                # Liberar memória do chunk
+                del chunk_df
+                gc.collect()
+                
+                # Limite de segurança para evitar loops infinitos
+                if chunk_count > 100:
+                    logger.warning(f"Limite de chunks atingido (100). Parando processamento.")
+                    break
+            
+            if chunks:
+                # Concatenar todos os chunks
+                logger.info(f"Concatenando {len(chunks)} chunks com total de {total_rows:,} linhas...")
+                df_final = pl.concat(chunks, rechunk=False)
+                
+                # Liberar memória dos chunks
+                del chunks
+                gc.collect()
+                
+                logger.info(f"Arquivo {os.path.basename(data_path)} processado em chunks com sucesso ({df_final.height} linhas)")
+                return df_final
+            else:
+                logger.warning(f"Nenhum chunk válido encontrado em {os.path.basename(data_path)}")
+                return None
+                
+        except Exception as e:
+            logger.error("="*60)
+            logger.error(f"FALHA no processamento em chunks de {os.path.basename(data_path)}")
+            logger.error(f"Erro detalhado: {str(e)}")
+            logger.error("="*60)
+            
+            # Fallback para leitura normal com ignore_errors
+            try:
+                logger.error("Tentando fallback com leitura normal...")
+                df = pl.read_csv(
+                    data_path,
+                    separator=config.file.separator,
+                    encoding='latin1',
+                    has_header=False,
+                    new_columns=config.estabelecimento_columns,
+                    dtypes=config.estabelecimento_dtypes,
+                    ignore_errors=True,
+                    rechunk=True
+                )
+                logger.warning(f"Arquivo {os.path.basename(data_path)} lido com fallback ({df.height} linhas)")
+                return df
+            except Exception as e3:
+                logger.error(f"Fallback também falhou: {str(e3)}")
+                return None
 
 
-def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, zip_filename_prefix: str, partition_size: int = 500000) -> bool:
+def apply_estabelecimento_transformations(df: pl.DataFrame) -> pl.DataFrame:
+    """Aplica transformações específicas para Estabelecimentos usando Polars de forma otimizada com lazy evaluation."""
+    logger.info("Aplicando transformações em Estabelecimentos...")
+    
+    # STREAMING NO POLARS:
+    # O streaming permite processar datasets maiores que a RAM disponível
+    # dividindo automaticamente o processamento em chunks menores.
+    # 
+    # Benefícios do Streaming:
+    # 1. Processa arquivos maiores que a memória RAM
+    # 2. Reduz picos de uso de memória
+    # 3. Permite paralelização automática
+    # 4. Otimiza operações de I/O
+    #
+    # Como funciona:
+    # - O Polars divide o dataset em chunks menores
+    # - Processa cada chunk independentemente
+    # - Combina os resultados automaticamente
+    # - Usa lazy evaluation para otimizar o plano de execução
+    
+    # Configurar streaming chunk size para otimizar memória
+    # Chunks menores = menos memória, mas mais overhead
+    # Chunks maiores = mais memória, mas melhor performance
+    pl.Config.set_streaming_chunk_size(500000)  # 500k linhas por chunk
+    
+    # Definir colunas que devem ser removidas (não são necessárias)
+    columns_to_drop = [
+        'cnpj_ordem',           # Usado apenas para formar CNPJ completo
+        'cnpj_dv',              # Usado apenas para formar CNPJ completo
+        'tipo_logradouro',      # Detalhamento desnecessário
+        'logradouro',           # Detalhamento desnecessário
+        'numero',               # Detalhamento desnecessário
+        'complemento',          # Detalhamento desnecessário
+        'bairro',               # Detalhamento desnecessário
+        'ddd1',                 # Telefone 1 não é necessário
+        'telefone1',            # Telefone 1 não é necessário
+        'ddd2',                 # Telefone 2 não é necessário
+        'telefone2',            # Telefone 2 não é necessário
+        'ddd_fax',              # Fax não é necessário
+        'fax',                  # Fax não é necessário
+        'pais',                 # Informação desnecessária
+        'correio_eletronico',   # Será renomeado para email antes da remoção
+        'situacao_especial',    # Raramente usado
+        'data_situacao_especial', # Raramente usado
+        'nome_cidade_exterior'  # Raramente usado
+    ]
+    
+    try:
+        # Usar lazy evaluation para permitir streaming automático
+        df_lazy = df.lazy()
+        
+        # 1. CRIAR CNPJ COMPLETO antes de remover as partes
+        if all(col in df.columns for col in ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']):
+            df_lazy = df_lazy.with_columns([
+                (
+                    pl.col('cnpj_basico').cast(pl.Utf8).str.pad_start(8, '0') + 
+                    pl.col('cnpj_ordem').cast(pl.Utf8).str.pad_start(4, '0') + 
+                    pl.col('cnpj_dv').cast(pl.Utf8).str.pad_start(2, '0')
+                ).alias('cnpj')
+            ])
+        
+        # 2. APLICAR TRANSFORMAÇÕES DE DADOS
+        transformations = []
+        
+        # Conversões de tipos otimizadas (apenas para colunas que existem)
+        if "matriz_filial" in df.columns:
+            transformations.append(pl.col("matriz_filial").cast(pl.Int8, strict=False))
+        if "codigo_situacao_cadastral" in df.columns:
+            transformations.append(pl.col("codigo_situacao_cadastral").cast(pl.Int8, strict=False))
+        if "codigo_motivo_situacao_cadastral" in df.columns:
+            transformations.append(pl.col("codigo_motivo_situacao_cadastral").cast(pl.Int16, strict=False))
+        if "codigo_municipio" in df.columns:
+            transformations.append(pl.col("codigo_municipio").cast(pl.Int32, strict=False))
+        if "codigo_cnae" in df.columns:
+            transformations.append(pl.col("codigo_cnae").cast(pl.Int32, strict=False))
+        if "cep" in df.columns:
+            transformations.append(pl.col("cep").str.replace_all(r"[^\d]", "", literal=False))
+        
+        # Conversões de data otimizadas
+        date_columns = ["data_situacao_cadastral", "data_inicio_atividades"]
+        for date_col in date_columns:
+            if date_col in df.columns:
+                transformations.append(
+                    pl.when(
+                        pl.col(date_col).is_in(['0', '00000000', '']) | 
+                        pl.col(date_col).is_null()
+                    )
+                    .then(None)
+                    .otherwise(pl.col(date_col))
+                    .str.strptime(pl.Date, "%Y%m%d", strict=False)
+                    .alias(date_col)
+                )
+        
+        # Aplicar todas as transformações se houver alguma
+        if transformations:
+            df_lazy = df_lazy.with_columns(transformations)
+        
+        # 3. REMOVER COLUNAS DESNECESSÁRIAS
+        # Filtrar apenas colunas que realmente existem no DataFrame
+        cols_to_drop = [col for col in columns_to_drop if col in df.columns]
+        if cols_to_drop:
+            logger.info(f"Removendo {len(cols_to_drop)} colunas desnecessárias: {', '.join(cols_to_drop)}")
+            df_lazy = df_lazy.drop(cols_to_drop)
+        
+        # 4. COLETAR RESULTADO COM STREAMING
+        df_transformed = df_lazy.collect(streaming=True)
+        
+        logger.info(f"Transformações aplicadas com sucesso usando streaming ({df_transformed.height} linhas, {df_transformed.width} colunas)")
+        return df_transformed
+        
+    except Exception as e:
+        logger.error(f"Erro ao aplicar transformações com streaming: {str(e)}")
+        logger.warning("Tentando aplicar transformações sem streaming...")
+        
+        # Fallback sem streaming - versão simplificada
+        try:
+            # Criar CNPJ completo
+            if all(col in df.columns for col in ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']):
+                df = df.with_columns([
+                    (
+                        pl.col('cnpj_basico').cast(pl.Utf8).str.pad_start(8, '0') + 
+                        pl.col('cnpj_ordem').cast(pl.Utf8).str.pad_start(4, '0') + 
+                        pl.col('cnpj_dv').cast(pl.Utf8).str.pad_start(2, '0')
+                    ).alias('cnpj')
+                ])
+            
+            # Remover colunas desnecessárias
+            cols_to_drop = [col for col in columns_to_drop if col in df.columns]
+            if cols_to_drop:
+                df = df.drop(cols_to_drop)
+            
+            logger.info(f"Transformações aplicadas com fallback ({df.height} linhas, {df.width} colunas)")
+            return df
+            
+        except Exception as e2:
+            logger.error(f"Erro também no fallback: {str(e2)}")
+            return df
+
+
+def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str, zip_filename_prefix: str, partition_size: int = 2000000) -> bool:
     """
     Salva DataFrame Polars em arquivos Parquet particionados.
     
@@ -234,6 +360,7 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
         
         # Se não conseguimos extrair do caminho, tentar extrair do prefixo do arquivo ou path_parquet
         if not remote_folder:
+            # Tentar extrair de path_parquet
             match = re.search(r'(20\d{2}-\d{2})', path_parquet)
             if match:
                 remote_folder = match.group(1)
@@ -243,17 +370,25 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
                 if match:
                     remote_folder = match.group(1)
                 else:
-                    # Último recurso: usar um valor padrão
-                    remote_folder = os.path.basename(os.path.dirname(path_parquet)) or "dados"
+                    # Tentar extrair do diretório pai do path_parquet
+                    parent_dir = os.path.basename(os.path.dirname(path_parquet))
+                    if re.match(r'^\d{4}-\d{2}$', parent_dir):
+                        remote_folder = parent_dir
+                    else:
+                        # Último recurso: usar um valor padrão
+                        current_date = datetime.datetime.now()
+                        remote_folder = f"{current_date.year}-{current_date.month:02d}"
+                        logger.warning(f"Não foi possível extrair pasta remota do caminho. Usando data atual: {remote_folder}")
         
-        logger.info(f"Pasta remota identificada em create_parquet_polars: {remote_folder}")
+        logger.info(f"Pasta remota identificada: {remote_folder}")
         
+        # Forçar a utilização do remote_folder para garantir que não salve na raiz do parquet
         # Usando a função que garante a estrutura correta de pastas
         output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, table_name)
         
         total_rows = df.height
         if total_rows == 0:
-            logger.warning(f"DataFrame Polars '{table_name}' (Origem: {zip_filename_prefix}) está vazio. Nenhum Parquet será salvo.")
+            logger.warning(f"DataFrame '{table_name}' (Origem: {zip_filename_prefix}) está vazio. Nenhum Parquet será salvo.")
             return True
         
         num_partitions = (total_rows + partition_size - 1) // partition_size
@@ -267,11 +402,12 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
             partition = df.slice(start_idx, end_idx - start_idx)
             output_path = os.path.join(output_dir, f"{zip_filename_prefix}_part{i:03d}.parquet")
             
-            logger.info(f"Salvando partição {i+1}/{num_partitions} com {end_idx-start_idx} linhas para {output_path}")
+            # Log apenas para partições múltiplas ou em caso de erro
+            if num_partitions > 1:
+                logger.debug(f"Salvando partição {i+1}/{num_partitions} com {end_idx-start_idx} linhas")
             
             try:
-                partition.write_parquet(output_path, compression="snappy")
-                logger.info(f"Partição {i+1}/{num_partitions} salva com sucesso")
+                partition.write_parquet(output_path, compression="lz4")
             except Exception as e:
                 logger.error(f"Erro ao salvar partição {i+1}: {str(e)}")
                 raise
@@ -279,17 +415,18 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
             # Liberar memória
             del partition
             gc.collect()
-            
+        
+        logger.info(f"Parquet salvo com sucesso: {num_partitions} partições")
         return True
     except Exception as e:
-        logger.error(f"Erro ao criar arquivo Parquet com Polars: {str(e)}")
+        logger.error(f"Erro ao criar arquivo Parquet: {str(e)}")
         return False
 
 
-def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
-    """Processa um único arquivo ZIP usando Polars para eficiência."""
+def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
+    """Processa um único arquivo ZIP."""
     pid = os.getpid()
-    logger.info(f"[{pid}] Iniciando processamento Polars para: {zip_file}")
+    logger.info(f"[{pid}] Iniciando processamento para: {zip_file}")
     extract_dir = ""
     success = False
     zip_filename_prefix = os.path.splitext(zip_file)[0]
@@ -322,11 +459,11 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
         
         # Verificar se o arquivo ZIP existe e tem tamanho válido
         if not os.path.exists(zip_path):
-            logger.error(f"[{pid}] Polars: Arquivo ZIP {zip_path} não existe")
+            logger.error(f"[{pid}] Arquivo ZIP {zip_path} não existe")
             return False
             
         if os.path.getsize(zip_path) == 0:
-            logger.error(f"[{pid}] Polars: Arquivo ZIP {zip_path} está vazio (tamanho 0 bytes)")
+            logger.error(f"[{pid}] Arquivo ZIP {zip_path} está vazio (tamanho 0 bytes)")
             return False
             
         # Verificar se é um arquivo ZIP válido antes de tentar extrair
@@ -334,15 +471,15 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             with zipfile.ZipFile(zip_path, 'r') as test_zip:
                 file_list = test_zip.namelist()
                 if not file_list:
-                    logger.warning(f"[{pid}] Polars: Arquivo ZIP {zip_path} existe mas não contém arquivos")
+                    logger.warning(f"[{pid}] Arquivo ZIP {zip_path} existe mas não contém arquivos")
                     return False
                 else:
-                    logger.info(f"[{pid}] Polars: Arquivo ZIP {zip_path} é válido e contém {len(file_list)} arquivos")
+                    logger.info(f"[{pid}] Arquivo ZIP {zip_path} é válido e contém {len(file_list)} arquivos")
         except zipfile.BadZipFile:
-            logger.error(f"[{pid}] Polars: Arquivo {zip_path} não é um arquivo ZIP válido")
+            logger.error(f"[{pid}] Arquivo {zip_path} não é um arquivo ZIP válido")
             return False
         except Exception as e_test_zip:
-            logger.error(f"[{pid}] Polars: Erro ao verificar arquivo ZIP {zip_path}: {str(e_test_zip)}")
+            logger.error(f"[{pid}] Erro ao verificar arquivo ZIP {zip_path}: {str(e_test_zip)}")
             return False
         
         # Extrair arquivo ZIP
@@ -351,10 +488,10 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
         except zipfile.BadZipFile:
-            logger.error(f"[{pid}] Polars: Arquivo {zip_path} não é um arquivo ZIP válido")
+            logger.error(f"[{pid}] Arquivo {zip_path} não é um arquivo ZIP válido")
             return False
         except Exception as e_zip:
-            logger.error(f"[{pid}] Polars: Erro durante a extração do ZIP {zip_path}: {e_zip}")
+            logger.error(f"[{pid}] Erro durante a extração do ZIP {zip_path}: {e_zip}")
             return False
         
         # Limpar memória antes de começar processamento
@@ -395,18 +532,32 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             data_file = os.path.basename(data_path)
             logger.debug(f"[{pid}] Processando arquivo: {data_file}")
             
-            try:
-                df = process_data_file_polars(data_path)
-                if df is not None and not df.is_empty():
-                    logger.info(f"[{pid}] Arquivo {data_file} processado com sucesso: {df.height} linhas")
-                    dataframes.append(df)
-                elif df is not None and df.is_empty():
-                    logger.warning(f"[{pid}] DataFrame Polars vazio para arquivo: {data_file}")
-            except Exception as e:
-                logger.error(f"[{pid}] Erro ao processar o arquivo {data_file} com Polars: {str(e)}")
-        
+            # Processar arquivo de dados
+            logger.info(f"Processando arquivo: {data_file}")
+            
+            # Usar chunk_size configurável baseado no tamanho do arquivo
+            file_size_mb = os.path.getsize(data_path) / (1024 * 1024)
+            if file_size_mb > 1000:  # Arquivos >1GB
+                chunk_size = 500000   # Chunks menores para arquivos gigantes
+            elif file_size_mb > 500:  # Arquivos >500MB
+                chunk_size = 1000000  # Chunks médios
+            else:
+                chunk_size = 2000000  # Chunks maiores para arquivos menores
+            
+            logger.info(f"Arquivo {data_file}: {file_size_mb:.1f}MB - usando chunks de {chunk_size:,} linhas")
+            
+            df = process_data_file(data_path, chunk_size=chunk_size)
+            if df is None:
+                logger.error(f"[{pid}] Falha crítica ao processar {data_file}")
+                return False
+            elif df.is_empty():
+                logger.error(f"[{pid}] DataFrame vazio gerado para {data_file}")
+                return False
+            else:
+                dataframes.append(df)
+
         if not dataframes:
-            logger.warning(f"[{pid}] Nenhum DataFrame Polars válido gerado a partir do ZIP {zip_file}")
+            logger.error(f"[{pid}] Nenhum DataFrame válido gerado de {zip_file}")
             return False
         
         # Concatenar DataFrames
@@ -422,25 +573,25 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             gc.collect()
             
             if df_final.is_empty():
-                logger.warning(f"[{pid}] DataFrame Polars final vazio após concatenação para o ZIP {zip_file}")
+                logger.warning(f"[{pid}] DataFrame final vazio após concatenação para o ZIP {zip_file}")
                 del df_final
                 gc.collect()
                 return True
             
             logger.info(f"[{pid}] Aplicando transformações em {df_final.height} linhas para {zip_file}...")
-            df_transformed = apply_estabelecimento_transformations_polars(df_final)
+            df_transformed = apply_estabelecimento_transformations(df_final)
             
             # --- 3. Salvar Parquet (Principal) ---
             main_saved = False
             
             # Usar diretamente path_parquet sem adicionar a pasta remota
             # A função ensure_correct_folder_structure já adiciona a pasta remota se necessário
-            logger.info(f"[{pid}] Polars: Usando path_parquet direto: {path_parquet}")
+            logger.info(f"[{pid}] Usando path_parquet direto: {path_parquet}")
             
             try:
-                # Usamos diretamente path_parquet e a função ensure_correct_folder_structure dentro de create_parquet_polars
+                # Usamos diretamente path_parquet e a função ensure_correct_folder_structure dentro de create_parquet
                 # vai garantir a estrutura correta de pastas
-                main_saved = create_parquet_polars(df_transformed, 'estabelecimentos', path_parquet, zip_filename_prefix)
+                main_saved = create_parquet(df_transformed, 'estabelecimentos', path_parquet, zip_filename_prefix)
                 logger.info(f"[{pid}] Parquet principal salvo com sucesso para {zip_file}")
             except Exception as e_parq_main:
                 logger.error(f"[{pid}] Erro ao salvar Parquet principal para {zip_file}: {e_parq_main}")
@@ -457,7 +608,7 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
                 if not df_subset.is_empty():
                     try:
                         # Usamos diretamente path_parquet aqui também
-                        subset_saved = create_parquet_polars(df_subset, subset_table_name, path_parquet, zip_filename_prefix)
+                        subset_saved = create_parquet(df_subset, subset_table_name, path_parquet, zip_filename_prefix)
                         logger.info(f"[{pid}] Subset {subset_table_name} salvo com sucesso para {zip_file}")
                     except Exception as e_parq_subset:
                         logger.error(f"[{pid}] Falha ao salvar subset {subset_table_name} para {zip_file}: {e_parq_subset}")
@@ -480,11 +631,11 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
             return success
             
         except Exception as e_concat_transform:
-            logger.error(f"[{pid}] Erro durante concatenação ou transformação Polars para {zip_file}: {e_concat_transform}")
+            logger.error(f"[{pid}] Erro durante concatenação ou transformação para {zip_file}: {e_concat_transform}")
             return False
             
     except Exception as e:
-        logger.error(f"[{pid}] Erro processando {zip_file} com Polars: {str(e)}")
+        logger.error(f"[{pid}] Erro processando {zip_file}: {str(e)}")
         return False
     finally:
         # Limpar diretório de extração
@@ -502,20 +653,35 @@ def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, pat
 
 
 def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
-    """Processa os dados de estabelecimentos.
+    """Processa todos os arquivos de estabelecimentos de um diretório."""
+    logger.info("Iniciando processamento de arquivos de estabelecimentos...")
     
-    Args:
-        path_zip: Caminho para o diretório dos arquivos ZIP
-        path_unzip: Caminho para o diretório de extração
-        path_parquet: Caminho para o diretório dos arquivos parquet
-        uf_subset: Sigla da UF para criar um subset (opcional)
-        
-    Returns:
-        bool: True se o processamento foi bem-sucedido, False caso contrário
-    """
-    logger.info('=' * 50)
-    logger.info(f'Iniciando processamento de ESTABELECIMENTOS')
-    logger.info('=' * 50)
+    # ===== CONFIGURAÇÕES GLOBAIS DE STREAMING E PERFORMANCE =====
+    # Configurar Polars para uso otimizado de memória e streaming
+    
+    # 1. STREAMING: Permite processar datasets maiores que a RAM
+    pl.Config.set_streaming_chunk_size(500000)  # 500k linhas por chunk
+    
+    # 2. PARALELISMO: Usar 75% dos CPUs para permitir uso em paralelo
+    available_cpus = os.cpu_count() or 4
+    max_threads = max(1, int(available_cpus * 0.75))
+    # Nota: Polars gerencia threads automaticamente, não há set_thread_pool_size
+    
+    # 3. MEMÓRIA: Configurações para otimizar uso de memória
+    pl.Config.set_tbl_rows(20)  # Limitar linhas mostradas em prints
+    pl.Config.set_tbl_cols(10)  # Limitar colunas mostradas em prints
+    
+    # 4. CACHE: Configurar cache para operações repetitivas
+    pl.Config.set_auto_structify(True)  # Otimizar estruturas automaticamente
+    
+    logger.info(f"Configurações de streaming aplicadas:")
+    logger.info(f"  - Chunk size: 500.000 linhas")
+    logger.info(f"  - CPUs disponíveis: {available_cpus} (Polars gerencia threads automaticamente)")
+    logger.info(f"  - Streaming habilitado para arquivos grandes")
+    logger.info(f"  - Processamento em chunks para arquivos >500MB")
+    
+    # ===== INÍCIO DO PROCESSAMENTO =====
+    start_time = time.time()
     
     try:
         zip_files = [f for f in os.listdir(path_zip) 
@@ -568,46 +734,98 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
         # Forçar coleta de lixo antes de iniciar o processamento
         gc.collect()
         
-        # Processar com Polars em paralelo
-        max_workers = os.cpu_count() or 4  # Limitar ao número de CPUs
+        # Processar com Polars em paralelo - Otimizado
+        # Usar 75% dos CPUs disponíveis para permitir uso em paralelo
+        available_cpus = os.cpu_count() or 4
+        max_workers = max(1, int(available_cpus * 0.75))
+        
+        logger.info(f"Iniciando processamento paralelo com {max_workers} workers (75% dos {available_cpus} CPUs disponíveis)")
+        
+        # Timeout para cada tarefa (em segundos) - para evitar travamentos
+        timeout_per_task = 3600  # 1 hora por arquivo
+        
         success = False
         arquivos_com_falha = []
+        arquivos_com_timeout = []
+        total_files = len(zip_files)
+        completed_files = 0
         
         # Processar todos os arquivos ZIP em paralelo
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            # Mapear cada arquivo ZIP para ser processado com Polars
-            futures = {
-                executor.submit(
-                    process_single_zip_polars, 
+            logger.info(f"Processando {total_files} arquivos de estabelecimentos...")
+            
+            # Mapear cada arquivo ZIP para ser processado
+            futures = {}
+            for zip_file in zip_files:
+                future = executor.submit(
+                    process_single_zip, 
                     zip_file, 
                     path_zip, 
                     path_unzip, 
                     path_parquet,
                     uf_subset
-                ): zip_file for zip_file in zip_files
-            }
+                )
+                futures[future] = zip_file
             
             # Coletar resultados à medida que são concluídos
-            for future in concurrent.futures.as_completed(futures):
-                zip_file = futures[future]
-                try:
-                    result = future.result()
-                    if result:
-                        success = True
-                        logger.info(f"Arquivo {zip_file} processado com sucesso")
-                    else:
+            try:
+                for future in concurrent.futures.as_completed(futures, timeout=timeout_per_task):
+                    zip_file = futures[future]
+                    completed_files += 1
+                    elapsed_time = time.time() - start_time
+                    
+                    # Calcular métricas de progresso
+                    progress_pct = (completed_files / total_files) * 100
+                    avg_time_per_file = elapsed_time / completed_files if completed_files > 0 else 0
+                    estimated_remaining = avg_time_per_file * (total_files - completed_files)
+                    
+                    try:
+                        result = future.result()
+                        if result:
+                            success = True
+                            logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Arquivo {zip_file} processado com sucesso. "
+                                        f"Tempo médio: {avg_time_per_file:.1f}s/arquivo. "
+                                        f"Tempo estimado restante: {estimated_remaining:.1f}s")
+                        else:
+                            arquivos_com_falha.append(zip_file)
+                            logger.warning(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Falha no processamento do arquivo {zip_file}")
+                    except Exception as e:
                         arquivos_com_falha.append(zip_file)
-                        logger.warning(f"Falha no processamento do arquivo {zip_file}")
-                except Exception as e:
-                    arquivos_com_falha.append(zip_file)
-                    logger.error(f"Exceção no processamento do arquivo {zip_file}: {str(e)}")
+                        logger.error(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Exceção no processamento do arquivo {zip_file}: {str(e)}")
+            
+            except concurrent.futures.TimeoutError:
+                # Identificar quais tarefas não foram concluídas (timeout)
+                for future, zip_file in futures.items():
+                    if not future.done():
+                        arquivos_com_timeout.append(zip_file)
+                        logger.error(f"TIMEOUT: Arquivo {zip_file} excedeu o tempo limite de {timeout_per_task} segundos")
+                        # Cancelar a tarefa para liberar recursos
+                        future.cancel()
+        
+        # Calcular estatísticas finais
+        total_time = time.time() - start_time
         
         if not success:
             logger.warning('Nenhum arquivo ZIP de Estabelecimentos foi processado com sucesso.')
             
         if arquivos_com_falha:
             logger.warning(f'Os seguintes arquivos falharam no processamento: {", ".join(arquivos_com_falha)}')
+            
+        if arquivos_com_timeout:
+            logger.warning(f'Os seguintes arquivos excederam o tempo limite: {", ".join(arquivos_com_timeout)}')
         
+        # Logar resumo completo
+        logger.info("=" * 50)
+        logger.info("RESUMO DO PROCESSAMENTO DE ESTABELECIMENTOS:")
+        logger.info("=" * 50)
+        logger.info(f"Arquivos processados com sucesso: {completed_files - len(arquivos_com_falha) - len(arquivos_com_timeout)}/{total_files}")
+        logger.info(f"Arquivos com falha: {len(arquivos_com_falha)}/{total_files}")
+        logger.info(f"Arquivos com timeout: {len(arquivos_com_timeout)}/{total_files}")
+        logger.info(f"Tempo total de processamento: {total_time:.2f} segundos")
+        logger.info(f"Tempo médio por arquivo: {total_time/completed_files if completed_files > 0 else 0:.2f} segundos")
+        logger.info("=" * 50)
+        
+        # Verificar se pelo menos um arquivo foi processado com sucesso
         return success
     except Exception as e:
         logger.error(f'Erro no processamento principal de Estabelecimentos: {str(e)}')

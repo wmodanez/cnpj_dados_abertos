@@ -83,16 +83,35 @@ class DownloadCache:
             file_info = files[filename]
             # Verifica se o tamanho e a data de modificação são iguais
             if (file_info.get("size") == remote_size and
-                    file_info.get("modified") == remote_modified):
+                    file_info.get("modified") == remote_modified and
+                    file_info.get("status") == "success"):
                 logger.info(f"Arquivo {filename} encontrado no cache e está atualizado")
                 return True
             else:
-                logger.info(f"Arquivo {filename} encontrado no cache mas está desatualizado")
+                logger.info(f"Arquivo {filename} encontrado no cache mas está desatualizado ou possui erro")
                 return False
         logger.info(f"Arquivo {filename} não encontrado no cache")
         return False
 
-    def update_file_cache(self, filename: str, size: int, modified: int, status: str = "success") -> bool:
+    def has_file_error(self, filename: str) -> bool:
+        """
+        Verifica se um arquivo tem status de erro no cache.
+        
+        Args:
+            filename: Nome do arquivo
+            
+        Returns:
+            True se o arquivo tem erro, False caso contrário
+        """
+        files = self.cache_data.get("files", {})
+        if filename in files:
+            file_info = files[filename]
+            if file_info.get("status") == "error":
+                logger.info(f"Arquivo {filename} possui erro registrado no cache")
+                return True
+        return False
+
+    def update_file_cache(self, filename: str, size: int, modified: int, status: str = "success", error_msg: str = None) -> bool:
         """
         Atualiza as informações de um arquivo no cache.
         
@@ -100,7 +119,8 @@ class DownloadCache:
             filename: Nome do arquivo
             size: Tamanho do arquivo em bytes
             modified: Data de modificação do arquivo (timestamp)
-            status: Status do download (success, failed, etc)
+            status: Status do download ("success", "error", etc)
+            error_msg: Mensagem de erro (opcional, apenas se status for "error")
             
         Returns:
             True se o cache foi atualizado e salvo com sucesso, False caso contrário
@@ -108,14 +128,61 @@ class DownloadCache:
         if "files" not in self.cache_data:
             self.cache_data["files"] = {}
 
-        self.cache_data["files"][filename] = {
+        file_entry = {
             "size": size,
             "modified": modified,
             "last_download": datetime.datetime.now().isoformat(),
             "status": status
         }
+        
+        if status == "error" and error_msg:
+            file_entry["error_message"] = error_msg
+            
+        self.cache_data["files"][filename] = file_entry
 
         return self._save_cache()
+
+    def register_file_error(self, filename: str, error_msg: str) -> bool:
+        """
+        Registra um erro para um arquivo no cache.
+        
+        Args:
+            filename: Nome do arquivo
+            error_msg: Mensagem de erro
+            
+        Returns:
+            True se o erro foi registrado e o cache salvo com sucesso, False caso contrário
+        """
+        if "files" not in self.cache_data:
+            self.cache_data["files"] = {}
+            
+        if filename in self.cache_data["files"]:
+            # Mantém os metadados existentes, só atualiza o status e adiciona mensagem de erro
+            file_info = self.cache_data["files"][filename]
+            file_info["status"] = "error"
+            file_info["error_message"] = error_msg
+            file_info["error_timestamp"] = datetime.datetime.now().isoformat()
+            self.cache_data["files"][filename] = file_info
+        else:
+            # Se o arquivo não existe no cache, cria uma entrada básica
+            self.cache_data["files"][filename] = {
+                "status": "error",
+                "error_message": error_msg,
+                "error_timestamp": datetime.datetime.now().isoformat()
+            }
+            
+        logger.info(f"Erro registrado no cache para o arquivo {filename}: {error_msg}")
+        return self._save_cache()
+
+    def get_files_with_errors(self) -> List[str]:
+        """
+        Retorna a lista de arquivos com status de erro no cache.
+        
+        Returns:
+            Lista com os nomes dos arquivos com erro
+        """
+        files = self.cache_data.get("files", {})
+        return [filename for filename, info in files.items() if info.get("status") == "error"]
 
     def remove_file_from_cache(self, filename: str) -> bool:
         """

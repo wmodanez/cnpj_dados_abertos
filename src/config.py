@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from typing import Dict, List
+import polars as pl
 
 
 @dataclass
@@ -54,13 +55,13 @@ class Config:
     ])
 
     empresa_dtypes: Dict[str, str] = field(default_factory=lambda: {
-        'cnpj_basico': 'string',
-        'razao_social': 'string',
-        'natureza_juridica': 'string',
-        'qualificacao_responsavel': 'string',
-        'capital_social': 'string',
-        'porte_empresa': 'string',
-        'ente_federativo_responsavel': 'string'
+        'cnpj_basico': pl.Utf8,
+        'razao_social': pl.Utf8,
+        'natureza_juridica': pl.Utf8,
+        'qualificacao_responsavel': pl.Int64,
+        'capital_social': pl.Utf8,  # Pode ser float, mas geralmente vem como string
+        'porte_empresa': pl.Utf8,
+        'ente_federativo_responsavel': pl.Utf8
     })
 
     estabelecimento_columns: List[str] = field(default_factory=lambda: [
@@ -74,36 +75,36 @@ class Config:
     ])
 
     estabelecimento_dtypes: Dict[str, str] = field(default_factory=lambda: {
-        'cnpj_basico': 'string',
-        'cnpj_ordem': 'string',
-        'cnpj_dv': 'string',
-        'matriz_filial': 'string',
-        'nome_fantasia': 'string',
-        'codigo_situacao_cadastral': 'string',
-        'data_situacao_cadastral': 'string',
-        'codigo_motivo_situacao_cadastral': 'string',
-        'nome_cidade_exterior': 'string',
-        'pais': 'string',
-        'data_inicio_atividades': 'string',
-        'codigo_cnae': 'string',
-        'cnae_secundaria': 'string',
-        'tipo_logradouro': 'string',
-        'logradouro': 'string',
-        'numero': 'string',
-        'complemento': 'string',
-        'bairro': 'string',
-        'cep': 'string',
-        'uf': 'string',
-        'codigo_municipio': 'string',
-        'ddd1': 'string',
-        'telefone1': 'string',
-        'ddd2': 'string',
-        'telefone2': 'string',
-        'ddd_fax': 'string',
-        'fax': 'string',
-        'correio_eletronico': 'string',
-        'situacao_especial': 'string',
-        'data_situacao_especial': 'string'
+        'cnpj_basico': pl.Utf8,
+        'cnpj_ordem': pl.Utf8,
+        'cnpj_dv': pl.Utf8,
+        'matriz_filial': pl.Int64,
+        'nome_fantasia': pl.Utf8,
+        'codigo_situacao_cadastral': pl.Int64,
+        'data_situacao_cadastral': pl.Utf8,
+        'codigo_motivo_situacao_cadastral': pl.Int64,
+        'nome_cidade_exterior': pl.Utf8,
+        'pais': pl.Utf8,
+        'data_inicio_atividades': pl.Utf8,
+        'codigo_cnae': pl.Int64,
+        'cnae_secundaria': pl.Utf8,
+        'tipo_logradouro': pl.Utf8,
+        'logradouro': pl.Utf8,
+        'numero': pl.Utf8,
+        'complemento': pl.Utf8,
+        'bairro': pl.Utf8,
+        'cep': pl.Utf8,
+        'uf': pl.Utf8,
+        'codigo_municipio': pl.Int64,
+        'ddd1': pl.Utf8,
+        'telefone1': pl.Utf8,
+        'ddd2': pl.Utf8,
+        'telefone2': pl.Utf8,
+        'ddd_fax': pl.Utf8,
+        'fax': pl.Utf8,
+        'correio_eletronico': pl.Utf8,
+        'situacao_especial': pl.Utf8,
+        'data_situacao_especial': pl.Utf8
     })
 
     simples_columns: List[str] = field(default_factory=lambda: [
@@ -112,13 +113,13 @@ class Config:
     ])
 
     simples_dtypes: Dict[str, str] = field(default_factory=lambda: {
-        'cnpj_basico': 'string',
-        'opcao_simples': 'string',
-        'data_opcao_simples': 'string',
-        'data_exclusao_simples': 'string',
-        'opcao_mei': 'string',
-        'data_opcao_mei': 'string',
-        'data_exclusao_mei': 'string'
+        'cnpj_basico': pl.Utf8,
+        'opcao_simples': pl.Utf8,
+        'data_opcao_simples': pl.Utf8,
+        'data_exclusao_simples': pl.Utf8,
+        'opcao_mei': pl.Utf8,
+        'data_opcao_mei': pl.Utf8,
+        'data_exclusao_mei': pl.Utf8
     })
 
     socio_columns: List[str] = field(default_factory=lambda: [
@@ -128,17 +129,17 @@ class Config:
     ])
 
     socio_dtypes: Dict[str, str] = field(default_factory=lambda: {
-        'cnpj_basico': 'string',
-        'identificador_socio': 'string',
-        'nome_socio': 'string',
-        'cnpj_cpf_socio': 'string',
-        'qualificacao_socio': 'string',
-        'data_entrada_sociedade': 'string',
-        'pais': 'string',
-        'representante_legal': 'string',
-        'nome_representante': 'string',
-        'qualificacao_representante_legal': 'string',
-        'faixa_etaria': 'string'
+        'cnpj_basico': pl.Utf8,
+        'identificador_socio': pl.Int64,
+        'nome_socio': pl.Utf8,
+        'cnpj_cpf_socio': pl.Utf8,
+        'qualificacao_socio': pl.Int64,
+        'data_entrada_sociedade': pl.Utf8,
+        'pais': pl.Utf8,
+        'representante_legal': pl.Utf8,
+        'nome_representante': pl.Utf8,
+        'qualificacao_representante_legal': pl.Int64,
+        'faixa_etaria': pl.Utf8
     })
 
 

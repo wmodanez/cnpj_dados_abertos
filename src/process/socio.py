@@ -9,6 +9,8 @@ from multiprocessing import Pool
 import re
 import concurrent.futures
 import traceback
+import datetime
+import time
 
 from ..config import config
 from ..utils import file_delete, verify_csv_integrity
@@ -20,9 +22,9 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa os dados de sócios."""
     return process_socio_files(path_zip, path_unzip, path_parquet)
 
-def process_data_file_polars(data_path: str):
+def process_data_file(data_path: str):
     """
-    Processa um único arquivo de dados usando Polars, seja ele CSV ou outro formato de texto.
+    Processa um arquivo de dados usando Polars, seja ele CSV ou outro formato de texto.
     
     Args:
         data_path: Caminho para o arquivo
@@ -121,9 +123,9 @@ def process_data_file_polars(data_path: str):
     logger.error(f"Não foi possível processar o arquivo {os.path.basename(data_path)} com nenhuma combinação de separadores e codificações")
     return None
 
-def apply_socio_transformations_polars(df: pl.DataFrame) -> pl.DataFrame:
+def apply_socio_transformations(df: pl.DataFrame) -> pl.DataFrame:
     """Aplica transformações específicas para Sócios usando Polars."""
-    logger.info("Aplicando transformações em Sócios com Polars...")
+    logger.info("Aplicando transformações em Sócios...")
     
     # Renomeação de colunas se necessário
     rename_mapping = {
@@ -183,9 +185,7 @@ def apply_socio_transformations_polars(df: pl.DataFrame) -> pl.DataFrame:
     
     return df
 
-def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str, 
-                          zip_filename_prefix: str, remote_folder: str, 
-                          partition_size: int = 500000) -> bool:
+def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str, zip_filename_prefix: str, partition_size: int = 500000) -> bool:
     """
     Salva DataFrame Polars em arquivos Parquet particionados.
     
@@ -194,19 +194,53 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str,
         table_name: Nome da tabela (subpasta)
         path_parquet: Caminho base para os arquivos parquet
         zip_filename_prefix: Prefixo derivado do nome do arquivo ZIP original
-        remote_folder: Nome da pasta remota
         partition_size: Tamanho de cada partição (número de linhas)
         
     Returns:
         True se sucesso, False caso contrário
     """
     try:
+        # Extrair pasta remota do caminho ou do prefixo do arquivo
+        remote_folder = None
+        
+        # Verificar se podemos extrair uma data no formato YYYY-MM do caminho
+        parts = path_parquet.split(os.path.sep)
+        for part in parts:
+            if len(part) == 7 and part[4] == '-':  # Formato AAAA-MM
+                remote_folder = part
+                break
+        
+        # Se não conseguimos extrair do caminho, tentar extrair do prefixo do arquivo ou path_parquet
+        if not remote_folder:
+            # Tentar extrair de path_parquet
+            match = re.search(r'(20\d{2}-\d{2})', path_parquet)
+            if match:
+                remote_folder = match.group(1)
+            else:
+                # Tentar extrair do prefixo do arquivo
+                match = re.search(r'(20\d{2}-\d{2})', zip_filename_prefix)
+                if match:
+                    remote_folder = match.group(1)
+                else:
+                    # Tentar extrair do diretório pai do path_parquet
+                    parent_dir = os.path.basename(os.path.dirname(path_parquet))
+                    if re.match(r'^\d{4}-\d{2}$', parent_dir):
+                        remote_folder = parent_dir
+                    else:
+                        # Último recurso: usar um valor padrão
+                        current_date = datetime.datetime.now()
+                        remote_folder = f"{current_date.year}-{current_date.month:02d}"
+                        logger.warning(f"Não foi possível extrair pasta remota do caminho. Usando data atual: {remote_folder}")
+        
+        logger.info(f"Pasta remota identificada: {remote_folder}")
+        
+        # Forçar a utilização do remote_folder para garantir que não salve na raiz do parquet
         # Usando a função que garante a estrutura correta de pastas
         output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, table_name)
         
         total_rows = df.height
         if total_rows == 0:
-            logger.warning(f"DataFrame Polars '{table_name}' (Origem: {zip_filename_prefix}) está vazio. Nenhum Parquet será salvo.")
+            logger.warning(f"DataFrame '{table_name}' (Origem: {zip_filename_prefix}) está vazio. Nenhum Parquet será salvo.")
             return True
         
         num_partitions = (total_rows + partition_size - 1) // partition_size
@@ -235,210 +269,196 @@ def create_parquet_polars(df: pl.DataFrame, table_name: str, path_parquet: str,
             
         return True
     except Exception as e:
-        logger.error(f"Erro ao criar arquivo Parquet com Polars: {str(e)}")
+        logger.error(f"Erro ao criar arquivo Parquet: {str(e)}")
         return False
 
-def process_single_zip_polars(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, remote_folder: str = None) -> bool:
-    """Processa um único arquivo ZIP com dados de sócios.
-    
-    Esta função é chamada pelo download assíncrono para processar arquivos
-    imediatamente após o download.
-    
-    Args:
-        zip_file: Nome do arquivo ZIP a ser processado
-        path_zip: Caminho para o diretório contendo o arquivo ZIP
-        path_unzip: Caminho para o diretório temporário de extração
-        path_parquet: Caminho para o diretório onde os dados processados serão salvos
-        remote_folder: Nome da pasta remota (opcional, pode ser determinada automaticamente)
-        
-    Returns:
-        bool: True se o processamento foi bem-sucedido, False caso contrário
-    """
+def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, remote_folder: str = None) -> bool:
+    """Processa um único arquivo ZIP."""
     pid = os.getpid()
-    logger.info(f"[{pid}] Iniciando processamento de {zip_file}")
+    logger.info(f"[{pid}] Iniciando processamento para: {zip_file}")
     extract_dir = os.path.join(path_unzip, os.path.splitext(zip_file)[0])
-    zip_filename_prefix = os.path.splitext(zip_file)[0]
     success = False
-    
-    # Se remote_folder não foi passado, tentamos extrair do caminho
-    if not remote_folder:
-        # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
-        remote_folder = os.path.basename(os.path.normpath(path_zip))
-        # Verificar se o formato é AAAA-MM
-        if not re.match(r'^\d{4}-\d{2}$', remote_folder):
-            # Se não for uma pasta no formato esperado, tentar extrair do caminho
-            match = re.search(r'(20\d{2}-\d{2})', path_zip)
-            if match:
-                remote_folder = match.group(1)
-            else:
-                # Último recurso: usar um valor padrão
-                remote_folder = "dados"
-    
-    logger.info(f"[{pid}] Pasta remota identificada: {remote_folder}")
+    zip_filename_prefix = os.path.splitext(zip_file)[0]
     
     try:
-        # Verificar se o arquivo ZIP existe
-        zip_path = os.path.join(path_zip, zip_file)
-        if not os.path.exists(zip_path):
-            logger.error(f"[{pid}] Arquivo ZIP {zip_path} não existe")
-            return False
-            
-        if os.path.getsize(zip_path) == 0:
-            logger.error(f"[{pid}] Arquivo ZIP {zip_path} está vazio (tamanho 0 bytes)")
-            return False
+        # Se remote_folder não foi passado, tentamos extrair do caminho
+        if not remote_folder:
+            # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
+            remote_folder = os.path.basename(os.path.normpath(path_zip))
+            # Verificar se o formato é AAAA-MM
+            if not re.match(r'^\d{4}-\d{2}$', remote_folder):
+                # Se não for uma pasta no formato esperado, tentar extrair do caminho
+                match = re.search(r'(20\d{2}-\d{2})', path_zip)
+                if match:
+                    remote_folder = match.group(1)
+                else:
+                    # Último recurso: usar um valor padrão
+                    remote_folder = "dados"
         
-        # Limpar e criar diretório de extração
-        if os.path.exists(extract_dir):
-            try:
-                shutil.rmtree(extract_dir)
-            except Exception as e:
-                logger.warning(f"[{pid}] Não foi possível limpar o diretório {extract_dir}: {str(e)}")
+        logger.info(f"[{pid}] Pasta remota identificada: {remote_folder}")
         
-        os.makedirs(extract_dir, exist_ok=True)
-        
-        # Extrair o arquivo ZIP
         try:
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
-            logger.info(f"[{pid}] Arquivo {zip_file} extraído com sucesso")
-        except Exception as e:
-            logger.error(f"[{pid}] Erro ao extrair arquivo {zip_file}: {str(e)}")
-            return False
-        
-        # Buscar arquivos de dados no diretório extraído
-        data_files = []
-        for root, _, files in os.walk(extract_dir):
-            for file in files:
-                # Verificar extensão ou padrão do arquivo
-                file_path = os.path.join(root, file)
-                file_size = os.path.getsize(file_path)
-                
-                # Pular arquivos vazios
-                if file_size == 0:
-                    continue
-                
-                # Verificar extensões que claramente não são de dados
-                invalid_extensions = ['.exe', '.dll', '.zip', '.rar', '.gz', '.tar', '.bz2', '.7z', '.png', '.jpg', '.jpeg', '.gif', '.pdf']
-                file_ext = os.path.splitext(file.lower())[1]
-                if file_ext in invalid_extensions:
-                    continue
-                
-                # Adicionar à lista de arquivos para processar
-                data_files.append(file_path)
-        
-        if not data_files:
-            logger.warning(f"[{pid}] Nenhum arquivo de dados encontrado em {extract_dir}")
-            return False
-        
-        logger.info(f"[{pid}] Encontrados {len(data_files)} arquivos para processar")
-        
-        # Processar cada arquivo de dados
-        dataframes = []
-        for data_path in data_files:
-            data_file = os.path.basename(data_path)
-            logger.debug(f"[{pid}] Processando arquivo: {data_file}")
+            # Verificar se o arquivo ZIP existe
+            zip_path = os.path.join(path_zip, zip_file)
+            if not os.path.exists(zip_path):
+                logger.error(f"[{pid}] Arquivo ZIP {zip_path} não existe")
+                return False
             
+            if os.path.getsize(zip_path) == 0:
+                logger.error(f"[{pid}] Arquivo ZIP {zip_path} está vazio (tamanho 0 bytes)")
+                return False
+            
+            # Limpar e criar diretório de extração
+            if os.path.exists(extract_dir):
+                try:
+                    shutil.rmtree(extract_dir)
+                except Exception as e:
+                    logger.warning(f"[{pid}] Não foi possível limpar o diretório {extract_dir}: {str(e)}")
+            
+            os.makedirs(extract_dir, exist_ok=True)
+            
+            # Extrair o arquivo ZIP
             try:
-                df = process_data_file_polars(data_path)
-                if df is not None and not df.is_empty():
-                    logger.info(f"[{pid}] Arquivo {data_file} processado com sucesso: {df.height} linhas")
-                    dataframes.append(df)
-                elif df is not None and df.is_empty():
-                    logger.warning(f"[{pid}] DataFrame Polars vazio para arquivo: {data_file}")
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_dir)
+                logger.info(f"[{pid}] Arquivo {zip_file} extraído com sucesso")
             except Exception as e:
-                logger.error(f"[{pid}] Erro ao processar o arquivo {data_file} com Polars: {str(e)}")
-        
-        if not dataframes:
-            logger.warning(f"[{pid}] Nenhum DataFrame Polars válido gerado a partir do ZIP {zip_file}")
-            return False
-        
-        # Concatenar DataFrames
-        logger.info(f"[{pid}] Concatenando {len(dataframes)} DataFrames para {zip_file}...")
-        try:
-            if len(dataframes) > 1:
-                df_final = pl.concat(dataframes)
-            else:
-                df_final = dataframes[0]
+                logger.error(f"[{pid}] Erro ao extrair arquivo {zip_file}: {str(e)}")
+                return False
             
-            # Liberar memória dos DataFrames individuais
-            del dataframes
-            gc.collect()
+            # Buscar arquivos de dados no diretório extraído
+            data_files = []
+            for root, _, files in os.walk(extract_dir):
+                for file in files:
+                    # Verificar extensão ou padrão do arquivo
+                    file_path = os.path.join(root, file)
+                    file_size = os.path.getsize(file_path)
+                    
+                    # Pular arquivos vazios
+                    if file_size == 0:
+                        continue
+                    
+                    # Verificar extensões que claramente não são de dados
+                    invalid_extensions = ['.exe', '.dll', '.zip', '.rar', '.gz', '.tar', '.bz2', '.7z', '.png', '.jpg', '.jpeg', '.gif', '.pdf']
+                    file_ext = os.path.splitext(file.lower())[1]
+                    if file_ext in invalid_extensions:
+                        continue
+                    
+                    # Adicionar à lista de arquivos para processar
+                    data_files.append(file_path)
             
-            if df_final.is_empty():
-                logger.warning(f"[{pid}] DataFrame Polars final vazio após concatenação para o ZIP {zip_file}")
-                del df_final
+            if not data_files:
+                logger.warning(f"[{pid}] Nenhum arquivo de dados encontrado em {extract_dir}")
+                return False
+            
+            logger.info(f"[{pid}] Encontrados {len(data_files)} arquivos para processar")
+            
+            # Processar cada arquivo de dados
+            dataframes = []
+            for data_path in data_files:
+                data_file = os.path.basename(data_path)
+                logger.debug(f"[{pid}] Processando arquivo: {data_file}")
+                
+                try:
+                    df = process_data_file(data_path)
+                    if df is not None and not df.is_empty():
+                        logger.info(f"[{pid}] Arquivo {data_file} processado com sucesso: {df.height} linhas")
+                        dataframes.append(df)
+                    elif df is not None and df.is_empty():
+                        logger.warning(f"[{pid}] DataFrame Polars vazio para arquivo: {data_file}")
+                except Exception as e:
+                    logger.error(f"[{pid}] Erro ao processar o arquivo {data_file} com Polars: {str(e)}")
+            
+            if not dataframes:
+                logger.warning(f"[{pid}] Nenhum DataFrame Polars válido gerado a partir do ZIP {zip_file}")
+                return False
+            
+            # Concatenar DataFrames
+            logger.info(f"[{pid}] Concatenando {len(dataframes)} DataFrames para {zip_file}...")
+            try:
+                if len(dataframes) > 1:
+                    df_final = pl.concat(dataframes)
+                else:
+                    df_final = dataframes[0]
+                
+                # Liberar memória dos DataFrames individuais
+                del dataframes
                 gc.collect()
-                return True
-            
-            logger.info(f"[{pid}] Aplicando transformações em {df_final.height} linhas para {zip_file}...")
-            df_transformed = apply_socio_transformations_polars(df_final)
-            
-            # Salvar Parquet
-            main_saved = False
-            try:
-                main_saved = create_parquet_polars(
+                
+                if df_final.is_empty():
+                    logger.warning(f"[{pid}] DataFrame Polars final vazio após concatenação para o ZIP {zip_file}")
+                    del df_final
+                    gc.collect()
+                    return True
+                
+                logger.info(f"[{pid}] Aplicando transformações em {df_final.height} linhas para {zip_file}...")
+                df_transformed = apply_socio_transformations(df_final)
+                
+                # Salvar Parquet
+                main_saved = create_parquet(
                     df_transformed, 
                     'socios', 
                     path_parquet, 
-                    zip_filename_prefix, 
-                    remote_folder
+                    zip_filename_prefix
                 )
                 logger.info(f"[{pid}] Parquet salvo com sucesso para {zip_file}")
+                
+                # Liberar memória
+                del df_transformed
+                del df_final
+                gc.collect()
+                
+                success = main_saved
+                return success
+                
             except Exception as e:
-                logger.error(f"[{pid}] Erro ao salvar Parquet para {zip_file}: {e}")
-            
-            # Liberar memória
-            del df_transformed
-            del df_final
-            gc.collect()
-            
-            success = main_saved
-            return success
+                logger.error(f"[{pid}] Erro durante concatenação ou transformação Polars para {zip_file}: {e}")
+                return False
             
         except Exception as e:
-            logger.error(f"[{pid}] Erro durante concatenação ou transformação Polars para {zip_file}: {e}")
+            logger.error(f"[{pid}] Erro processando {zip_file} com Polars: {str(e)}")
             return False
+        finally:
+            # Limpar diretório de extração
+            if extract_dir and os.path.exists(extract_dir):
+                try:
+                    logger.debug(f"[{pid}] Limpando diretório de extração final: {extract_dir}")
+                    shutil.rmtree(extract_dir)
+                except Exception as e:
+                    logger.warning(f"[{pid}] Erro ao limpar diretório de extração: {e}")
             
+            # Forçar coleta de lixo novamente
+            gc.collect()
+        
+        return success
     except Exception as e:
         logger.error(f"[{pid}] Erro processando {zip_file} com Polars: {str(e)}")
         return False
-    finally:
-        # Limpar diretório de extração
-        if extract_dir and os.path.exists(extract_dir):
-            try:
-                logger.debug(f"[{pid}] Limpando diretório de extração final: {extract_dir}")
-                shutil.rmtree(extract_dir)
-            except Exception as e:
-                logger.warning(f"[{pid}] Erro ao limpar diretório de extração: {e}")
-        
-        # Forçar coleta de lixo novamente
-        gc.collect()
-    
-    return success
 
 def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
-    """
-    Processa os arquivos de sócios.
+    """Processa os dados de sócios.
     
     Args:
-        path_zip: Caminho para o diretório dos arquivos zip
+        path_zip: Caminho para o diretório dos arquivos ZIP
         path_unzip: Caminho para o diretório de extração
         path_parquet: Caminho para o diretório dos arquivos parquet
         
     Returns:
-        bool: True se sucesso, False caso contrário
+        bool: True se o processamento foi bem-sucedido, False caso contrário
     """
+    start_time = time.time()
+    
     logger.info('=' * 50)
-    logger.info('Iniciando processamento de SÓCIOS')
+    logger.info(f'Iniciando processamento de SÓCIOS')
     logger.info('=' * 50)
     
     try:
-        # Lista todos arquivos ZIP no diretório
-        zip_files = [f for f in os.listdir(path_zip) if f.endswith('.zip') and 'SOCIO' in f.upper()]
+        zip_files = [f for f in os.listdir(path_zip) 
+                    if f.startswith('Socio') and f.endswith('.zip')]
         
         if not zip_files:
-            logger.warning(f"Nenhum arquivo zip de sócios encontrado em {path_zip}")
-            return True  # Não é erro, apenas não há arquivos para processar
+            logger.warning('Nenhum arquivo ZIP de Sócios encontrado.')
+            return True
         
         # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
         remote_folder = os.path.basename(os.path.normpath(path_zip))
@@ -451,66 +471,118 @@ def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bo
             else:
                 # Último recurso: usar um valor padrão
                 remote_folder = "dados"
-        
+                
         logger.info(f"Pasta remota identificada: {remote_folder}")
         
-        # Usamos ensure_correct_folder_structure para garantir a estrutura correta de pastas
-        # Armazenamos o valor de retorno para criar efetivamente o diretório
+        # Usar ensure_correct_folder_structure para criar o caminho correto
         output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, 'socios')
-        logger.info(f"Diretório de saída para sócios: {output_dir}")
         
-        # Limpar diretório de saída antes do processamento
+        # LIMPEZA PRÉVIA do diretório de saída
         try:
             file_delete(output_dir)
             logger.info(f'Diretório {output_dir} limpo antes do processamento.')
         except Exception as e:
             logger.warning(f'Não foi possível limpar diretório de saída {output_dir}: {str(e)}')
         
+        # Criar diretório se não existir
+        os.makedirs(output_dir, exist_ok=True)
+        
         # Forçar coleta de lixo antes de iniciar o processamento
         gc.collect()
         
-        # Processar com Polars em paralelo
-        max_workers = os.cpu_count() or 4  # Limitar ao número de CPUs
+        # Processar com Polars em paralelo - Otimizado
+        # Usar 75% dos CPUs disponíveis para não sobrecarregar
+        available_cpus = os.cpu_count() or 4
+        max_workers = max(1, int(available_cpus * 0.75))
+        
+        logger.info(f"Iniciando processamento paralelo com {max_workers} workers (75% dos {available_cpus} CPUs disponíveis)")
+        
+        # Timeout para cada tarefa (em segundos) - para evitar travamentos
+        timeout_per_task = 3600  # 1 hora por arquivo
+        
         success = False
         arquivos_com_falha = []
+        arquivos_com_timeout = []
+        total_files = len(zip_files)
+        completed_files = 0
         
         # Processar todos os arquivos ZIP em paralelo
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            # Mapear cada arquivo ZIP para ser processado com Polars
-            futures = {
-                executor.submit(
-                    process_single_zip_polars, 
+            logger.info(f"Processando {total_files} arquivos de sócios...")
+            
+            # Mapear cada arquivo ZIP para ser processado
+            futures = {}
+            for zip_file in zip_files:
+                future = executor.submit(
+                    process_single_zip, 
                     zip_file, 
                     path_zip, 
                     path_unzip, 
-                    path_parquet,
-                    remote_folder
-                ): zip_file for zip_file in zip_files
-            }
+                    path_parquet
+                )
+                futures[future] = zip_file
             
             # Coletar resultados à medida que são concluídos
-            for future in concurrent.futures.as_completed(futures):
-                zip_file = futures[future]
-                try:
-                    result = future.result()
-                    if result:
-                        success = True
-                        logger.info(f"Arquivo {zip_file} processado com sucesso")
-                    else:
+            try:
+                for future in concurrent.futures.as_completed(futures, timeout=timeout_per_task):
+                    zip_file = futures[future]
+                    completed_files += 1
+                    elapsed_time = time.time() - start_time
+                    
+                    # Calcular métricas de progresso
+                    progress_pct = (completed_files / total_files) * 100
+                    avg_time_per_file = elapsed_time / completed_files if completed_files > 0 else 0
+                    estimated_remaining = avg_time_per_file * (total_files - completed_files)
+                    
+                    try:
+                        result = future.result()
+                        if result:
+                            success = True
+                            logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Arquivo {zip_file} processado com sucesso. "
+                                      f"Tempo médio: {avg_time_per_file:.1f}s/arquivo. "
+                                      f"Tempo estimado restante: {estimated_remaining:.1f}s")
+                        else:
+                            arquivos_com_falha.append(zip_file)
+                            logger.warning(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Falha no processamento do arquivo {zip_file}")
+                    except Exception as e:
                         arquivos_com_falha.append(zip_file)
-                        logger.warning(f"Falha no processamento do arquivo {zip_file}")
-                except Exception as e:
-                    arquivos_com_falha.append(zip_file)
-                    logger.error(f"Exceção no processamento do arquivo {zip_file}: {str(e)}")
+                        logger.error(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Exceção no processamento do arquivo {zip_file}: {str(e)}")
+            
+            except concurrent.futures.TimeoutError:
+                # Identificar quais tarefas não foram concluídas (timeout)
+                for future, zip_file in futures.items():
+                    if not future.done():
+                        arquivos_com_timeout.append(zip_file)
+                        logger.error(f"TIMEOUT: Arquivo {zip_file} excedeu o tempo limite de {timeout_per_task} segundos")
+                        # Cancelar a tarefa para liberar recursos
+                        future.cancel()
+        
+        # Calcular estatísticas finais
+        total_time = time.time() - start_time
         
         if not success:
-            logger.warning('Nenhum arquivo ZIP de sócios foi processado com sucesso.')
+            logger.warning('Nenhum arquivo ZIP de Sócios foi processado com sucesso.')
             
         if arquivos_com_falha:
             logger.warning(f'Os seguintes arquivos falharam no processamento: {", ".join(arquivos_com_falha)}')
+            
+        if arquivos_com_timeout:
+            logger.warning(f'Os seguintes arquivos excederam o tempo limite: {", ".join(arquivos_com_timeout)}')
         
+        # Logar resumo completo
+        logger.info("=" * 50)
+        logger.info("RESUMO DO PROCESSAMENTO DE SÓCIOS:")
+        logger.info("=" * 50)
+        logger.info(f"Arquivos processados com sucesso: {completed_files - len(arquivos_com_falha) - len(arquivos_com_timeout)}/{total_files}")
+        logger.info(f"Arquivos com falha: {len(arquivos_com_falha)}/{total_files}")
+        logger.info(f"Arquivos com timeout: {len(arquivos_com_timeout)}/{total_files}")
+        logger.info(f"Tempo total de processamento: {total_time:.2f} segundos")
+        logger.info(f"Tempo médio por arquivo: {total_time/completed_files if completed_files > 0 else 0:.2f} segundos")
+        logger.info("=" * 50)
+        
+        # Verificar se pelo menos um arquivo foi processado com sucesso
         return success
     except Exception as e:
-        logger.error(f'Erro no processamento principal de sócios: {str(e)}')
+        logger.error(f'Erro no processamento principal de Sócios: {str(e)}')
         traceback.print_exc()
         return False
