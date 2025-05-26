@@ -283,7 +283,8 @@ async def _process_download_response(response: aiohttp.ClientResponse, destinati
 
         if config.cache.enabled:
             if final_local_size == expected_size:
-                get_download_cache().update_file_cache(filename, expected_size, remote_last_modified)
+                # Atualiza o cache silenciosamente (sem log duplicado)
+                get_download_cache().update_file_cache(filename, expected_size, remote_last_modified, log_update=False)
                 logger.debug(f"Cache atualizado para {filename}")
             else:
                 error_msg = f"Tamanho final ({final_local_size}) difere do remoto esperado ({expected_size})"
@@ -554,6 +555,7 @@ async def process_downloaded_file(filename: str, file_path: str, path_unzip: str
 
         # Atualiza status para extraindo
         if config.cache.enabled:
+            cache = get_download_cache()
             cache.update_processing_status(filename, "extracting")
 
         # Extrai o arquivo
@@ -614,17 +616,37 @@ async def process_downloaded_file(filename: str, file_path: str, path_unzip: str
                     else:
                         kwargs["remote_folder"] = remote_folder  # Passa a pasta remota correta
                     
-                    # Executar o processamento em um thread separado para não bloquear o event loop
-                    loop = asyncio.get_event_loop()
-                    success = await loop.run_in_executor(None, lambda: processor_fn(**kwargs))
+                    # Executar a função de processamento correta
+                    logger.info(f"Chamando processador {processor_fn.__name__} para {filename}")
+                    processing_success = processor_fn(**kwargs)
                     
-                    if success:
-                        # Construir o caminho do arquivo parquet baseado no nome do arquivo zip e pasta remota
-                        parquet_file = os.path.join(path_parquet, remote_folder, os.path.splitext(filename)[0] + ".parquet")
+                    if processing_success:
+                        success = True
+                        # Construir o caminho esperado do parquet baseado no tipo
+                        zip_prefix = os.path.splitext(filename)[0]
+                        if tipo_prefixo == 'Empresas':
+                            parquet_dir = os.path.join(path_parquet, remote_folder, 'empresas')
+                        elif tipo_prefixo == 'Estabelecimentos':
+                            parquet_dir = os.path.join(path_parquet, remote_folder, 'estabelecimentos')
+                        elif tipo_prefixo == 'Simples':
+                            parquet_dir = os.path.join(path_parquet, remote_folder, 'simples')
+                        elif tipo_prefixo == 'Socios':
+                            parquet_dir = os.path.join(path_parquet, remote_folder, 'socios')
+                        else:
+                            parquet_dir = os.path.join(path_parquet, remote_folder, tipo_prefixo.lower())
+                        
+                        # O arquivo parquet pode ter múltiplas partições, então vamos usar o diretório
+                        parquet_file = parquet_dir
+                        logger.info(f"Processamento de {filename} concluído com sucesso. Parquet salvo em: {parquet_file}")
                         break
+                    else:
+                        logger.warning(f"Processador {processor_fn.__name__} retornou False para {filename}")
+                        
                 except Exception as e:
                     logger.error(f"Erro ao processar {filename} como {tipo_prefixo}: {e}")
                     raise
+                    
+                break  # Sai do loop após encontrar o tipo correto
 
         if success and parquet_file:
             logger.info(f"Arquivo {filename} processado com sucesso. Parquet: {parquet_file}")
@@ -633,9 +655,10 @@ async def process_downloaded_file(filename: str, file_path: str, path_unzip: str
                 cache.update_processing_status(filename, "completed", parquet_file)
             return parquet_file, None
         else:
-            error_msg = f"Falha ao processar {filename}"
+            error_msg = f"Falha ao processar {filename} - nenhum processador adequado encontrado ou processamento falhou"
             logger.error(error_msg)
             if config.cache.enabled:
+                cache = get_download_cache()
                 cache.register_file_error(filename, error_msg)
             return file_path, ValueError(error_msg)
 
@@ -643,6 +666,7 @@ async def process_downloaded_file(filename: str, file_path: str, path_unzip: str
         error_msg = f"Erro ao processar {filename}: {e}"
         logger.error(error_msg)
         if config.cache.enabled:
+            cache = get_download_cache()
             cache.register_file_error(filename, error_msg)
         return file_path, e
 
@@ -684,9 +708,10 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
 
     semaphore = asyncio.Semaphore(max_concurrent)
     download_tasks = []
+    processing_tasks = []
     downloaded_files = []
     failed_downloads = []
-    skipped_files = []  # Lista para guardar arquivos pulados e motivo
+    skipped_files = []
     processed_files = []
     failed_processing = []
     
@@ -722,6 +747,117 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
         "•",
         TimeRemainingColumn(),
     ]
+
+    # Função que processa os arquivos da fila em paralelo
+    async def process_files_from_queue():
+        """Consome a fila de processamento e processa os arquivos em tempo real."""
+        processor_id = id(asyncio.current_task())
+        logger.info(f"Iniciando processador {processor_id}")
+        
+        while True:
+            try:
+                logger.debug(f"Processador {processor_id} aguardando arquivo...")
+                file_path = await processing_queue.get()
+                
+                # Verifica se recebemos o sinal de encerramento (None)
+                if file_path is None:
+                    logger.debug(f"Processador {processor_id} recebeu sinal de encerramento")
+                    processing_queue.task_done()
+                    break
+                
+                filename = os.path.basename(file_path)
+                logger.info(f"Processador {processor_id} iniciando processamento de {filename}")
+                
+                # Verificar se arquivo tem erros no cache
+                if config.cache.enabled:
+                    cache = get_download_cache()
+                    if cache.has_file_error(filename):
+                        logger.warning(f"Processador {processor_id}: Arquivo {filename} tem erros registrados no cache. Pulando processamento.")
+                        processing_queue.task_done()
+                        continue
+                
+                try:
+                    # Usar o semáforo para limitar processamento paralelo
+                    logger.debug(f"Processador {processor_id} aguardando semáforo para {filename}")
+                    async with process_semaphore:
+                        logger.info(f"Processador {processor_id} obteve semáforo para {filename}")
+                        # Executar o processamento diretamente (função já é assíncrona)
+                        result, error = await process_downloaded_file(filename, file_path, path_unzip, path_parquet)
+                        
+                        if error is None:
+                            processed_files.append(result)
+                            logger.info(f"Processador {processor_id} concluiu processamento de {filename} com sucesso")
+                            # Atualiza o cache para indicar processamento bem-sucedido
+                            if config.cache.enabled:
+                                cache = get_download_cache()
+                                # Obtém informações atuais do arquivo
+                                file_info = cache.get_file_info(filename)
+                                if file_info:
+                                    cache.update_file_cache(
+                                        filename, 
+                                        file_info.get("size", 0), 
+                                        file_info.get("modified", 0),
+                                        status="success",
+                                        log_update=False
+                                    )
+                                    logger.info(f"Processador {processor_id}: Cache atualizado para {filename}")
+                        else:
+                            failed_processing.append((result, error))
+                            logger.warning(f"Processador {processor_id}: Falha ao processar {filename}: {error}")
+                            # Registra o erro de processamento no cache
+                            if config.cache.enabled:
+                                cache = get_download_cache()
+                                error_msg = f"Erro de processamento: {str(error)}"
+                                cache.register_file_error(filename, error_msg)
+                except Exception as e:
+                    logger.error(f"Processador {processor_id}: Erro ao processar {filename}: {e}")
+                    failed_processing.append((filename, e))
+                    # Registra o erro no cache
+                    if config.cache.enabled:
+                        cache = get_download_cache()
+                        error_msg = f"Erro não tratado: {str(e)}"
+                        cache.register_file_error(filename, error_msg)
+                
+                logger.debug(f"Processador {processor_id} finalizando tarefa para {filename}")
+                processing_queue.task_done()
+            except Exception as e:
+                logger.error(f"Processador {processor_id}: Erro no processamento da fila: {e}")
+                processing_queue.task_done()
+        
+        logger.info(f"Processador {processor_id} encerrado")
+
+    # Criar múltiplos processadores para trabalhar em paralelo
+    num_processors = min(3, os.cpu_count() or 1)  # Limitar a 3 processadores ou número de CPUs
+    logger.info(f"Iniciando {num_processors} processadores paralelos")
+    processor_tasks = [
+        asyncio.create_task(process_files_from_queue())
+        for _ in range(num_processors)
+    ]
+
+    # Verificar arquivos já existentes e adicioná-los à fila de processamento
+    if path_unzip and path_parquet:
+        logger.info("Verificando arquivos já baixados para processamento...")
+        for url in urls:
+            filename = os.path.basename(url)
+            file_path = os.path.join(destination_folder, filename)
+            
+            # Se o arquivo já existe e não tem erros no cache
+            if os.path.exists(file_path):
+                should_process = True
+                
+                # Verificar se tem erros no cache
+                if config.cache.enabled:
+                    cache = get_download_cache()
+                    if cache.has_file_error(filename):
+                        logger.debug(f"Arquivo {filename} tem erros no cache, será baixado novamente")
+                        should_process = False
+                    elif cache.is_file_processed(filename):
+                        logger.debug(f"Arquivo {filename} já foi processado anteriormente")
+                        should_process = False
+                
+                if should_process:
+                    logger.info(f"Adicionando arquivo já existente {filename} à fila de processamento")
+                    await processing_queue.put(file_path)
 
     # Criar sessão compartilhada para todos os downloads
     async with aiohttp.ClientSession() as session:
@@ -760,18 +896,29 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
                     if error is None:
                         if skip_reason:
                             skipped_files.append((path, skip_reason))
+                            logger.info(f"Arquivo {os.path.basename(path)} pulado: {skip_reason}")
                         else:
                             downloaded_files.append(path)
+                            logger.info(f"Adicionando {os.path.basename(path)} à fila de processamento")
                             # Adicionar à fila de processamento
                             await processing_queue.put(path)
                     else:
                         failed_downloads.append((path, error))
+                        logger.error(f"Download falhou para {os.path.basename(path)}: {error}")
                 else:
                     # Se não é uma tupla, é uma exceção não tratada
                     failed_downloads.append((None, result))
+                    logger.error(f"Erro não tratado durante download: {result}")
 
-            # Sinalizar fim do processamento
-            await processing_queue.put(None)
+            # Sinalizar fim do processamento para todos os processadores
+            logger.info("Todos os downloads concluídos. Sinalizando encerramento para os processadores...")
+            for _ in range(num_processors):
+                await processing_queue.put(None)
+
+            # Aguardar todos os processadores terminarem
+            logger.info("Aguardando conclusão de todos os processadores...")
+            await asyncio.gather(*processor_tasks)
+            logger.info("Todos os processadores concluídos")
 
     # Resumo final
     logger.info("=" * 50)

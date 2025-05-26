@@ -89,7 +89,7 @@ class DownloadCache:
         return (file_info.get("size") == remote_size and 
                 file_info.get("modified") == remote_last_modified)
 
-    def update_file_cache(self, filename: str, size: int, modified: int, status: str = "success"):
+    def update_file_cache(self, filename: str, size: int, modified: int, status: str = "success", log_update: bool = True):
         """
         Atualiza o cache com informações de um arquivo.
         
@@ -98,6 +98,7 @@ class DownloadCache:
             size: Tamanho do arquivo
             modified: Timestamp da última modificação
             status: Status do arquivo (success, error, etc)
+            log_update: Se True, loga a atualização do cache
         """
         try:
             if "files" not in self.cache_data:
@@ -119,7 +120,8 @@ class DownloadCache:
                     del self.cache_data["processing"][filename]
                 
             self._save_cache()
-            logger.debug(f"Cache atualizado para {filename}")
+            if log_update:
+                logger.debug(f"Cache atualizado para {filename}")
         except Exception as e:
             logger.error(f"Erro ao atualizar cache para {filename}: {e}")
 
