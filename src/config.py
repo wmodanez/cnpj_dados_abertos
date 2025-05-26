@@ -23,19 +23,37 @@ class CacheConfig:
     cache_file: str = 'download_cache.json'
     # Flag para habilitar ou desabilitar o cache
     enabled: bool = True
-    # Diretório onde será armazenado o arquivo de cache.
+    # Diretório base onde serão armazenados os arquivos de cache.
     # Usa PATH_ZIP do .env, com fallback para 'data' na raiz.
-    # Cria um subdiretório 'cache' dentro do diretório base.
-    cache_dir: str = field(default_factory=lambda: os.path.join(os.getenv('PATH_ZIP', 'data'), 'cache'))
+    base_cache_dir: str = field(default_factory=lambda: os.getenv('PATH_ZIP', 'data'))
     # Caminho completo do arquivo de cache (calculado após init)
     cache_path: str = field(init=False)
+    # Pasta remota atual (AAAA-MM)
+    current_remote_folder: str = field(default="")
 
     def __post_init__(self):
         """Inicializa campos que dependem de outros campos."""
-        # Garante que cache_dir existe antes de formar o path completo
-        # Nota: A classe DownloadCache também cria o diretório ao salvar.
+        self._update_cache_path()
+
+    def _update_cache_path(self):
+        """Atualiza o caminho do cache baseado na pasta remota atual."""
+        if self.current_remote_folder:
+            # Usar a pasta remota como diretório base
+            self.cache_dir = os.path.join(self.base_cache_dir, self.current_remote_folder)
+        else:
+            # Usar diretório base se não houver pasta remota
+            self.cache_dir = self.base_cache_dir
+
+        # Garante que o diretório existe
         os.makedirs(self.cache_dir, exist_ok=True)
+        
+        # Atualiza o caminho completo do arquivo de cache
         self.cache_path = os.path.join(self.cache_dir, self.cache_file)
+
+    def set_remote_folder(self, remote_folder: str):
+        """Define a pasta remota atual e atualiza o caminho do cache."""
+        self.current_remote_folder = remote_folder
+        self._update_cache_path()
 
 
 @dataclass
@@ -47,6 +65,12 @@ class Config:
     file: FileConfig = field(default_factory=FileConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
+
+    # Lista de arquivos a serem ignorados no download
+    ignored_files: List[str] = field(default_factory=lambda: [
+        'CNAE', 'PAIS', 'MUNIC', 'NATJU', 'MOTI', 'QUAL', 'PORTE', 'MUNICIPIO',
+        'CNAE', 'PAISES', 'MUNICIPIOS', 'NATUREZAS', 'MOTIVOS', 'QUALIFICACOES', 'PORTES'
+    ])
 
     # Configurações de colunas e tipos de dados
     empresa_columns: List[str] = field(default_factory=lambda: [

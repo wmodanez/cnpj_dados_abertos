@@ -74,7 +74,6 @@ def ensure_correct_folder_structure(path_parquet: str, remote_folder: str, table
     # Caso onde remote_folder está no final do caminho
     elif parts and parts[-1] == remote_folder:
         output_dir = os.path.join(path_parquet, table_name)
-        logger.info(f"ensure_correct_folder_structure: remote_folder '{remote_folder}' já é o último componente do caminho. Output: {output_dir}")
     # Caso onde remote_folder está presente em alguma parte do caminho, mas não duplicado
     elif remote_folder in parts:
         # Verificar se remote_folder é seguido pelo table_name (para não adicionar table_name duas vezes)

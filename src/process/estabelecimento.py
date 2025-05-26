@@ -13,6 +13,10 @@ from typing import Tuple, List, Dict, Any, Optional
 import gc
 from multiprocessing import Pool
 import datetime
+import psutil
+import threading
+from queue import Queue
+import tempfile
 
 from ..config import config
 from ..utils import file_delete, check_disk_space, verify_csv_integrity
@@ -49,44 +53,74 @@ def detect_file_encoding(file_path: str) -> str:
     logger.warning(f"Não foi possível detectar encoding para {os.path.basename(file_path)}. Usando latin1 como fallback.")
     return 'latin1'
 
-def process_data_file(data_path: str, chunk_size: int = 1000000):
-    """Processa um arquivo de dados usando Polars com processamento em chunks para arquivos grandes."""
+def process_data_file(data_path: str, chunk_size: int = 1000000, output_dir: str = None, zip_filename_prefix: str = None):
+    """Processa um arquivo de dados usando Polars com processamento em chunks para arquivos grandes. Salva cada chunk individualmente como Parquet."""
     logger = logging.getLogger(__name__)
 
-    # Verificar tamanho do arquivo para decidir estratégia
     file_size = os.path.getsize(data_path)
     file_size_mb = file_size / (1024 * 1024)
+    
+    # Calcular RAM disponível (em MB)
+    available_ram_mb = psutil.virtual_memory().available / (1024 * 1024)
+    logger.info(f"RAM disponível: {available_ram_mb:.1f}MB")
+    
+    # Calcular chunk_size baseado no tamanho do arquivo e RAM disponível
+    # Usar no máximo 25% da RAM disponível para cada chunk
+    max_chunk_mb = available_ram_mb * 0.25
+    
+    # Estimar tamanho médio de cada linha (em bytes)
+    # Assumir que cada linha tem em média 200 bytes (ajuste conforme necessário)
+    avg_line_size = 200
+    
+    # Calcular número máximo de linhas por chunk baseado na RAM
+    max_lines_per_chunk = int((max_chunk_mb * 1024 * 1024) / avg_line_size)
+    
+    # Ajustar chunk_size baseado no tamanho do arquivo
+    if file_size_mb > 2000:  # Arquivos >2GB
+        chunk_size = min(2000000, max_lines_per_chunk)  # Máximo 2M linhas ou 25% da RAM
+    elif file_size_mb > 1000:  # Arquivos >1GB
+        chunk_size = min(3000000, max_lines_per_chunk)  # Máximo 3M linhas ou 25% da RAM
+    elif file_size_mb > 500:  # Arquivos >500MB
+        chunk_size = min(4000000, max_lines_per_chunk)  # Máximo 4M linhas ou 25% da RAM
+    else:  # Arquivos menores
+        chunk_size = min(5000000, max_lines_per_chunk)  # Máximo 5M linhas ou 25% da RAM
+    
+    logger.info(f"Arquivo: {os.path.basename(data_path)}")
+    logger.info(f"Tamanho do arquivo: {file_size_mb:.1f}MB")
+    logger.info(f"RAM disponível: {available_ram_mb:.1f}MB")
+    logger.info(f"Chunk size calculado: {chunk_size:,} linhas")
     
     # Se arquivo for menor que 500MB, processar normalmente
     if file_size_mb < 500:
         try:
-            # Usar lazy evaluation para melhor performance
             df_lazy = pl.scan_csv(
                 data_path,
                 separator=config.file.separator,
-                encoding='utf8-lossy',  # Encoding compatível com scan_csv que funciona com latin1
+                encoding='utf8-lossy',
                 has_header=False,
                 new_columns=config.estabelecimento_columns,
                 dtypes=config.estabelecimento_dtypes,
                 rechunk=True
             )
-            
-            # Coletar apenas quando necessário
             df = df_lazy.collect()
-            
             if not df.is_empty():
                 logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso ({df.height} linhas, {file_size_mb:.1f}MB)")
                 return df
             else:
                 logger.warning(f"Arquivo {os.path.basename(data_path)} está vazio")
                 return None
+        except MemoryError as me:
+            logger.error("="*60)
+            logger.error(f"ERRO DE MEMÓRIA ao processar {os.path.basename(data_path)}: {me}")
+            logger.error("Tente reduzir o chunk_size ou aumente a RAM disponível.")
+            logger.error("="*60)
+            return None
         except Exception as e:
             logger.error("="*60)
             logger.error(f"FALHA ao processar {os.path.basename(data_path)}")
-            logger.error(f"Erro detalhado: {str(e)}")
+            logger.error(f"Erro detalhado: {str(e)}", exc_info=True)
             logger.error("="*60)
             logger.error("Tentando leitura com ignore_errors=True...")
-
             try:
                 df = pl.read_csv(
                     data_path,
@@ -102,19 +136,12 @@ def process_data_file(data_path: str, chunk_size: int = 1000000):
                 return df
             except Exception as e2:
                 logger.error("="*60)
-                logger.error(f"Falha também com ignore_errors=True em {os.path.basename(data_path)}: {str(e2)}")
+                logger.error(f"Falha também com ignore_errors=True em {os.path.basename(data_path)}: {str(e2)}", exc_info=True)
                 logger.error("="*60)
                 return None
-    
-    # Para arquivos grandes (>500MB), processar em chunks
     else:
         logger.info(f"Arquivo grande detectado ({file_size_mb:.1f}MB). Processando em chunks de {chunk_size:,} linhas...")
-        
         try:
-            chunks = []
-            chunk_count = 0
-            
-            # Usar scan_csv com streaming para arquivos grandes
             df_lazy = pl.scan_csv(
                 data_path,
                 separator=config.file.separator,
@@ -123,75 +150,71 @@ def process_data_file(data_path: str, chunk_size: int = 1000000):
                 new_columns=config.estabelecimento_columns,
                 dtypes=config.estabelecimento_dtypes
             )
-            
-            # Processar em batches usando streaming
             total_rows = 0
             batch_size = chunk_size
             offset = 0
-            
+            chunk_count = 0
+            saved_chunks = 0
+            failed_chunks = 0
             while True:
-                # Ler um chunk
                 chunk_lazy = df_lazy.slice(offset, batch_size)
-                chunk_df = chunk_lazy.collect()
-                
+                try:
+                    chunk_df = chunk_lazy.collect()
+                except MemoryError as me:
+                    logger.error("="*60)
+                    logger.error(f"ERRO DE MEMÓRIA ao coletar chunk {chunk_count+1} de {os.path.basename(data_path)}: {me}")
+                    logger.error(f"Chunk atual: offset={offset}, batch_size={batch_size}")
+                    logger.error("Tente reduzir o chunk_size ou aumente a RAM disponível.")
+                    logger.error("="*60)
+                    failed_chunks += 1
+                    break
+                except Exception as e:
+                    logger.error("="*60)
+                    logger.error(f"Erro ao coletar chunk {chunk_count+1} de {os.path.basename(data_path)}: {e}", exc_info=True)
+                    logger.error(f"Chunk atual: offset={offset}, batch_size={batch_size}")
+                    logger.error("="*60)
+                    failed_chunks += 1
+                    break
                 if chunk_df.is_empty():
                     break
-                
-                chunks.append(chunk_df)
                 total_rows += chunk_df.height
                 chunk_count += 1
-                offset += batch_size
-                
-                logger.debug(f"Chunk {chunk_count} processado: {chunk_df.height} linhas (total: {total_rows:,})")
-                
-                # Liberar memória do chunk
+                logger.info(f"Chunk {chunk_count} processado: {chunk_df.height} linhas (total: {total_rows:,})")
+                if output_dir and zip_filename_prefix:
+                    output_path = os.path.join(output_dir, f"{zip_filename_prefix}_chunk{chunk_count:03d}.parquet")
+                    try:
+                        chunk_df.write_parquet(output_path, compression="lz4")
+                        logger.info(f"Chunk {chunk_count} salvo em {output_path}")
+                        saved_chunks += 1
+                    except Exception as e:
+                        logger.error(f"Erro ao salvar chunk {chunk_count} em {output_path}: {e}", exc_info=True)
+                        failed_chunks += 1
                 del chunk_df
                 gc.collect()
-                
-                # Limite de segurança para evitar loops infinitos
+                offset += batch_size
                 if chunk_count > 100:
                     logger.warning(f"Limite de chunks atingido (100). Parando processamento.")
                     break
-            
-            if chunks:
-                # Concatenar todos os chunks
-                logger.info(f"Concatenando {len(chunks)} chunks com total de {total_rows:,} linhas...")
-                df_final = pl.concat(chunks, rechunk=False)
-                
-                # Liberar memória dos chunks
-                del chunks
-                gc.collect()
-                
-                logger.info(f"Arquivo {os.path.basename(data_path)} processado em chunks com sucesso ({df_final.height} linhas)")
-                return df_final
+            if saved_chunks > 0 and failed_chunks == 0:
+                logger.info(f"Processamento em chunks concluído: {saved_chunks} chunks salvos para {os.path.basename(data_path)}")
+                return True  # Sucesso total
+            elif saved_chunks == 0:
+                logger.warning(f"Nenhum chunk válido salvo para {os.path.basename(data_path)}")
+                return False
             else:
-                logger.warning(f"Nenhum chunk válido encontrado em {os.path.basename(data_path)}")
-                return None
-                
+                logger.error(f"{failed_chunks} chunks falharam ao serem salvos para {os.path.basename(data_path)}")
+                return False
+        except MemoryError as me:
+            logger.error("="*60)
+            logger.error(f"ERRO DE MEMÓRIA no processamento em chunks de {os.path.basename(data_path)}: {me}")
+            logger.error("Tente reduzir o chunk_size ou aumente a RAM disponível.")
+            logger.error("="*60)
+            return False
         except Exception as e:
             logger.error("="*60)
-            logger.error(f"FALHA no processamento em chunks de {os.path.basename(data_path)}")
-            logger.error(f"Erro detalhado: {str(e)}")
+            logger.error(f"FALHA no processamento em chunks de {os.path.basename(data_path)}: {e}", exc_info=True)
             logger.error("="*60)
-            
-            # Fallback para leitura normal com ignore_errors
-            try:
-                logger.error("Tentando fallback com leitura normal...")
-                df = pl.read_csv(
-                    data_path,
-                    separator=config.file.separator,
-                    encoding='latin1',
-                    has_header=False,
-                    new_columns=config.estabelecimento_columns,
-                    dtypes=config.estabelecimento_dtypes,
-                    ignore_errors=True,
-                    rechunk=True
-                )
-                logger.warning(f"Arquivo {os.path.basename(data_path)} lido com fallback ({df.height} linhas)")
-                return df
-            except Exception as e3:
-                logger.error(f"Fallback também falhou: {str(e3)}")
-                return None
+            return False
 
 
 def apply_estabelecimento_transformations(df: pl.DataFrame) -> pl.DataFrame:
@@ -423,6 +446,124 @@ def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str, zip_fil
         return False
 
 
+def extract_file_parallel(zip_path: str, extract_dir: str, num_threads: int = 4) -> bool:
+    """
+    Extrai arquivo ZIP em paralelo usando múltiplas threads.
+    """
+    try:
+        start_time = time.time()
+        # Criar diretório temporário para extração
+        temp_dir = tempfile.mkdtemp()
+        
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            # Listar todos os arquivos
+            file_list = z.namelist()
+            total_files = len(file_list)
+            
+            logger.info(f"Iniciando extração paralela de {total_files} arquivos do ZIP {os.path.basename(zip_path)}")
+            
+            # Criar fila de trabalho
+            work_queue = Queue()
+            for file in file_list:
+                work_queue.put(file)
+            
+            # Função para thread worker
+            def worker():
+                while not work_queue.empty():
+                    try:
+                        file = work_queue.get_nowait()
+                        z.extract(file, temp_dir)
+                        work_queue.task_done()
+                    except Exception as e:
+                        logger.error(f"Erro na thread de extração: {str(e)}")
+                        return False
+                return True
+            
+            # Criar e iniciar threads
+            threads = []
+            for _ in range(num_threads):
+                t = threading.Thread(target=worker)
+                t.start()
+                threads.append(t)
+            
+            # Aguardar todas as threads terminarem
+            for t in threads:
+                t.join()
+        
+        # Mover arquivos do diretório temporário para o diretório final
+        move_start = time.time()
+        for item in os.listdir(temp_dir):
+            s = os.path.join(temp_dir, item)
+            d = os.path.join(extract_dir, item)
+            if os.path.isdir(s):
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            else:
+                shutil.copy2(s, d)
+        
+        # Limpar diretório temporário
+        shutil.rmtree(temp_dir)
+        
+        # Registrar tempos
+        move_time = time.time() - move_start
+        total_time = time.time() - start_time
+        logger.info(f"Extração paralela concluída: {total_files} arquivos extraídos em {total_time:.2f} segundos")
+        logger.info(f"Tempo de extração: {total_time - move_time:.2f} segundos")
+        logger.info(f"Tempo de movimentação: {move_time:.2f} segundos")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Erro na extração paralela: {str(e)}")
+        return False
+
+
+def extract_large_zip(zip_path: str, extract_dir: str, chunk_size: int = 1000000) -> bool:
+    """
+    Extrai arquivo ZIP grande em chunks para economizar memória.
+    """
+    try:
+        start_time = time.time()
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            # Listar todos os arquivos
+            file_list = z.namelist()
+            total_files = len(file_list)
+            
+            if total_files == 0:
+                logger.error(f"Arquivo ZIP {zip_path} está vazio")
+                return False
+                
+            logger.info(f"Iniciando extração de {total_files} arquivos do ZIP {os.path.basename(zip_path)}")
+            
+            # Processar em chunks
+            for i in range(0, total_files, chunk_size):
+                chunk_start = time.time()
+                chunk_files = file_list[i:i + chunk_size]
+                logger.info(f"Extraindo chunk {i//chunk_size + 1} ({len(chunk_files)} arquivos)")
+                
+                # Extrair chunk atual
+                for file in chunk_files:
+                    try:
+                        z.extract(file, extract_dir)
+                    except Exception as e:
+                        logger.error(f"Erro ao extrair arquivo {file}: {str(e)}")
+                        return False
+                
+                # Forçar coleta de lixo após cada chunk
+                gc.collect()
+                
+                # Registrar tempo do chunk
+                chunk_time = time.time() - chunk_start
+                logger.info(f"Chunk {i//chunk_size + 1} extraído em {chunk_time:.2f} segundos")
+                
+            # Registrar tempo total
+            total_time = time.time() - start_time
+            logger.info(f"Extração concluída: {total_files} arquivos extraídos em {total_time:.2f} segundos")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Erro na extração do ZIP: {str(e)}")
+        return False
+
+
 def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
     """Processa um único arquivo ZIP."""
     pid = os.getpid()
@@ -462,7 +603,8 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
             logger.error(f"[{pid}] Arquivo ZIP {zip_path} não existe")
             return False
             
-        if os.path.getsize(zip_path) == 0:
+        file_size = os.path.getsize(zip_path)
+        if file_size == 0:
             logger.error(f"[{pid}] Arquivo ZIP {zip_path} está vazio (tamanho 0 bytes)")
             return False
             
@@ -482,16 +624,40 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
             logger.error(f"[{pid}] Erro ao verificar arquivo ZIP {zip_path}: {str(e_test_zip)}")
             return False
         
-        # Extrair arquivo ZIP
+        # Extrair arquivo usando método apropriado baseado no tamanho
         logger.info(f"[{pid}] Extraindo {zip_file} para {extract_dir}")
         try:
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
-        except zipfile.BadZipFile:
-            logger.error(f"[{pid}] Arquivo {zip_path} não é um arquivo ZIP válido")
-            return False
+            file_size_mb = file_size / (1024 * 1024)
+            extract_start = time.time()
+            
+            if file_size_mb > 1000:  # Arquivos >1GB
+                # Usar extração em chunks para arquivos grandes
+                chunk_size = 1000  # Processar 1000 arquivos por vez
+                if not extract_large_zip(zip_path, extract_dir, chunk_size):
+                    logger.error(f"[{pid}] Falha na extração em chunks de {zip_path}")
+                    return False
+            else:
+                # Usar extração paralela para arquivos menores
+                num_threads = max(1, int((os.cpu_count() or 4) * 0.75))
+                if not extract_file_parallel(zip_path, extract_dir, num_threads):
+                    logger.error(f"[{pid}] Falha na extração paralela de {zip_path}")
+                    return False
+                
+            # Registrar tempo total de extração
+            extract_time = time.time() - extract_start
+            logger.info(f"[{pid}] Tempo total de extração: {extract_time:.2f} segundos para arquivo de {file_size_mb:.1f}MB")
+                
+            # Verificar se os arquivos foram extraídos
+            extracted_files = os.listdir(extract_dir)
+            if not extracted_files:
+                logger.error(f"[{pid}] Nenhum arquivo foi extraído para {extract_dir}")
+                return False
+            logger.info(f"[{pid}] Arquivos extraídos: {extracted_files}")
+                
         except Exception as e_zip:
-            logger.error(f"[{pid}] Erro durante a extração do ZIP {zip_path}: {e_zip}")
+            logger.error(f"[{pid}] Erro durante a extração do ZIP {zip_path}: {str(e_zip)}")
+            logger.error(f"[{pid}] Tipo do erro: {type(e_zip).__name__}")
+            logger.error(f"[{pid}] Detalhes do erro: {traceback.format_exc()}")
             return False
         
         # Limpar memória antes de começar processamento
@@ -528,6 +694,7 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
         
         # Processar cada arquivo de dados
         dataframes = []
+        chunks_saved = False
         for data_path in data_files:
             data_file = os.path.basename(data_path)
             logger.debug(f"[{pid}] Processando arquivo: {data_file}")
@@ -546,19 +713,37 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
             
             logger.info(f"Arquivo {data_file}: {file_size_mb:.1f}MB - usando chunks de {chunk_size:,} linhas")
             
-            df = process_data_file(data_path, chunk_size=chunk_size)
-            if df is None:
-                logger.error(f"[{pid}] Falha crítica ao processar {data_file}")
+            # Passar output_dir e zip_filename_prefix para salvar chunks individualmente
+            df = process_data_file(
+                data_path,
+                chunk_size=chunk_size,
+                output_dir=ensure_correct_folder_structure(path_parquet, remote_folder, 'estabelecimentos'),
+                zip_filename_prefix=zip_filename_prefix
+            )
+            # Se df é True, significa que os chunks foram salvos com sucesso
+            if df is True:
+                logger.info(f"[{pid}] Chunks salvos individualmente para {data_file}, não será necessário salvar Parquet novamente.")
+                chunks_saved = True
+                continue
+            # Se df é False, significa que houve erro no processamento dos chunks
+            elif df is False:
+                logger.error(f"[{pid}] Erro ao processar chunks para {data_file}")
                 return False
-            elif df.is_empty():
-                logger.error(f"[{pid}] DataFrame vazio gerado para {data_file}")
-                return False
-            else:
+            # Se df é um DataFrame, verificar se está vazio
+            elif df is not None and not df.is_empty():
                 dataframes.append(df)
+            else:
+                logger.error(f"[{pid}] DataFrame vazio ou None gerado para {data_file}")
+                return False
 
-        if not dataframes:
-            logger.error(f"[{pid}] Nenhum DataFrame válido gerado de {zip_file}")
+        if not dataframes and not chunks_saved:
+            logger.error(f"[{pid}] Nenhum DataFrame válido gerado e nenhum chunk salvo de {zip_file}")
             return False
+        
+        # Se temos chunks salvos mas não temos DataFrames, consideramos sucesso
+        if chunks_saved and not dataframes:
+            logger.info(f"[{pid}] Processamento concluído com sucesso via chunks para {zip_file}")
+            return True
         
         # Concatenar DataFrames
         logger.info(f"[{pid}] Concatenando {len(dataframes)} DataFrames para {zip_file}...")
@@ -660,12 +845,12 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
     # Configurar Polars para uso otimizado de memória e streaming
     
     # 1. STREAMING: Permite processar datasets maiores que a RAM
-    pl.Config.set_streaming_chunk_size(500000)  # 500k linhas por chunk
+    # Aumentar chunk size para melhor performance com arquivos grandes
+    pl.Config.set_streaming_chunk_size(1000000)  # 1M linhas por chunk
     
-    # 2. PARALELISMO: Usar 75% dos CPUs para permitir uso em paralelo
+    # 2. PARALELISMO: Usar 80% dos CPUs para permitir uso em paralelo
     available_cpus = os.cpu_count() or 4
-    max_threads = max(1, int(available_cpus * 0.75))
-    # Nota: Polars gerencia threads automaticamente, não há set_thread_pool_size
+    max_threads = max(1, int(available_cpus * 0.80))
     
     # 3. MEMÓRIA: Configurações para otimizar uso de memória
     pl.Config.set_tbl_rows(20)  # Limitar linhas mostradas em prints
@@ -674,11 +859,15 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
     # 4. CACHE: Configurar cache para operações repetitivas
     pl.Config.set_auto_structify(True)  # Otimizar estruturas automaticamente
     
+    # 5. PERFORMANCE: Configurações adicionais para melhor performance
+    pl.Config.set_fmt_str_lengths(100)  # Limitar tamanho de strings em logs
+    pl.Config.set_fmt_float("full")     # Formato completo para números
+    
     logger.info(f"Configurações de streaming aplicadas:")
-    logger.info(f"  - Chunk size: 500.000 linhas")
-    logger.info(f"  - CPUs disponíveis: {available_cpus} (Polars gerencia threads automaticamente)")
+    logger.info(f"  - Chunk size: 1.000.000 linhas")
+    logger.info(f"  - CPUs disponíveis: {available_cpus} (usando {max_threads} threads)")
     logger.info(f"  - Streaming habilitado para arquivos grandes")
-    logger.info(f"  - Processamento em chunks para arquivos >500MB")
+    logger.info(f"  - Processamento em chunks otimizado para RAM disponível")
     
     # ===== INÍCIO DO PROCESSAMENTO =====
     start_time = time.time()
@@ -734,73 +923,37 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
         # Forçar coleta de lixo antes de iniciar o processamento
         gc.collect()
         
-        # Processar com Polars em paralelo - Otimizado
-        # Usar 75% dos CPUs disponíveis para permitir uso em paralelo
-        available_cpus = os.cpu_count() or 4
-        max_workers = max(1, int(available_cpus * 0.75))
-        
-        logger.info(f"Iniciando processamento paralelo com {max_workers} workers (75% dos {available_cpus} CPUs disponíveis)")
-        
-        # Timeout para cada tarefa (em segundos) - para evitar travamentos
-        timeout_per_task = 3600  # 1 hora por arquivo
-        
+        # Processar arquivos sequencialmente para evitar problemas de memória
         success = False
         arquivos_com_falha = []
-        arquivos_com_timeout = []
         total_files = len(zip_files)
         completed_files = 0
         
-        # Processar todos os arquivos ZIP em paralelo
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            logger.info(f"Processando {total_files} arquivos de estabelecimentos...")
+        logger.info(f"Processando {total_files} arquivos de estabelecimentos sequencialmente...")
+        
+        for zip_file in zip_files:
+            completed_files += 1
+            elapsed_time = time.time() - start_time
             
-            # Mapear cada arquivo ZIP para ser processado
-            futures = {}
-            for zip_file in zip_files:
-                future = executor.submit(
-                    process_single_zip, 
-                    zip_file, 
-                    path_zip, 
-                    path_unzip, 
-                    path_parquet,
-                    uf_subset
-                )
-                futures[future] = zip_file
+            # Calcular métricas de progresso
+            progress_pct = (completed_files / total_files) * 100
+            avg_time_per_file = elapsed_time / completed_files if completed_files > 0 else 0
+            estimated_remaining = avg_time_per_file * (total_files - completed_files)
             
-            # Coletar resultados à medida que são concluídos
             try:
-                for future in concurrent.futures.as_completed(futures, timeout=timeout_per_task):
-                    zip_file = futures[future]
-                    completed_files += 1
-                    elapsed_time = time.time() - start_time
-                    
-                    # Calcular métricas de progresso
-                    progress_pct = (completed_files / total_files) * 100
-                    avg_time_per_file = elapsed_time / completed_files if completed_files > 0 else 0
-                    estimated_remaining = avg_time_per_file * (total_files - completed_files)
-                    
-                    try:
-                        result = future.result()
-                        if result:
-                            success = True
-                            logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Arquivo {zip_file} processado com sucesso. "
-                                        f"Tempo médio: {avg_time_per_file:.1f}s/arquivo. "
-                                        f"Tempo estimado restante: {estimated_remaining:.1f}s")
-                        else:
-                            arquivos_com_falha.append(zip_file)
-                            logger.warning(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Falha no processamento do arquivo {zip_file}")
-                    except Exception as e:
-                        arquivos_com_falha.append(zip_file)
-                        logger.error(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Exceção no processamento do arquivo {zip_file}: {str(e)}")
-            
-            except concurrent.futures.TimeoutError:
-                # Identificar quais tarefas não foram concluídas (timeout)
-                for future, zip_file in futures.items():
-                    if not future.done():
-                        arquivos_com_timeout.append(zip_file)
-                        logger.error(f"TIMEOUT: Arquivo {zip_file} excedeu o tempo limite de {timeout_per_task} segundos")
-                        # Cancelar a tarefa para liberar recursos
-                        future.cancel()
+                result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, uf_subset)
+                if result:
+                    success = True
+                    logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Arquivo {zip_file} processado com sucesso. "
+                                f"Tempo médio: {avg_time_per_file:.1f}s/arquivo. "
+                                f"Tempo estimado restante: {estimated_remaining:.1f}s")
+                else:
+                    arquivos_com_falha.append(zip_file)
+                    logger.warning(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Falha no processamento do arquivo {zip_file}")
+            except Exception as e:
+                arquivos_com_falha.append(zip_file)
+                logger.error(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Exceção no processamento do arquivo {zip_file}: {str(e)}")
+                logger.error(traceback.format_exc())
         
         # Calcular estatísticas finais
         total_time = time.time() - start_time
@@ -810,17 +963,13 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
             
         if arquivos_com_falha:
             logger.warning(f'Os seguintes arquivos falharam no processamento: {", ".join(arquivos_com_falha)}')
-            
-        if arquivos_com_timeout:
-            logger.warning(f'Os seguintes arquivos excederam o tempo limite: {", ".join(arquivos_com_timeout)}')
         
         # Logar resumo completo
         logger.info("=" * 50)
         logger.info("RESUMO DO PROCESSAMENTO DE ESTABELECIMENTOS:")
         logger.info("=" * 50)
-        logger.info(f"Arquivos processados com sucesso: {completed_files - len(arquivos_com_falha) - len(arquivos_com_timeout)}/{total_files}")
+        logger.info(f"Arquivos processados com sucesso: {completed_files - len(arquivos_com_falha)}/{total_files}")
         logger.info(f"Arquivos com falha: {len(arquivos_com_falha)}/{total_files}")
-        logger.info(f"Arquivos com timeout: {len(arquivos_com_timeout)}/{total_files}")
         logger.info(f"Tempo total de processamento: {total_time:.2f} segundos")
         logger.info(f"Tempo médio por arquivo: {total_time/completed_files if completed_files > 0 else 0:.2f} segundos")
         logger.info("=" * 50)

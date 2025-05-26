@@ -10,10 +10,14 @@ import logging.handlers
 import sys
 import time
 from rich.progress import track
-from multiprocessing import Pool
+from multiprocessing import Pool, Lock, Value
 import re
 import datetime
 import concurrent.futures
+import tempfile
+import threading
+from queue import Queue, PriorityQueue
+import psutil
 
 from ..config import config
 from ..utils import (
@@ -28,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 # Flag global para garantir que o logger do worker seja configurado apenas uma vez por processo
 _worker_logger_configured = False
+
+# Variáveis globais para controle de recursos
+_processing_lock = Lock()
+_active_processes = Value('i', 0)
+_max_concurrent_processes = Value('i', 2)  # Máximo de 2 processamentos simultâneos
+_process_queue = PriorityQueue()
 
 def configure_worker_logging(log_file):
     """Configura o logging para o processo worker."""
@@ -349,6 +359,124 @@ def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str,
         return False
 
 
+def extract_file_parallel(zip_path: str, extract_dir: str, num_threads: int = 4) -> bool:
+    """
+    Extrai arquivo ZIP em paralelo usando múltiplas threads.
+    """
+    try:
+        start_time = time.time()
+        # Criar diretório temporário para extração
+        temp_dir = tempfile.mkdtemp()
+        
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            # Listar todos os arquivos
+            file_list = z.namelist()
+            total_files = len(file_list)
+            
+            logger.info(f"Iniciando extração paralela de {total_files} arquivos do ZIP {os.path.basename(zip_path)}")
+            
+            # Criar fila de trabalho
+            work_queue = Queue()
+            for file in file_list:
+                work_queue.put(file)
+            
+            # Função para thread worker
+            def worker():
+                while not work_queue.empty():
+                    try:
+                        file = work_queue.get_nowait()
+                        z.extract(file, temp_dir)
+                        work_queue.task_done()
+                    except Exception as e:
+                        logger.error(f"Erro na thread de extração: {str(e)}")
+                        return False
+                return True
+            
+            # Criar e iniciar threads
+            threads = []
+            for _ in range(num_threads):
+                t = threading.Thread(target=worker)
+                t.start()
+                threads.append(t)
+            
+            # Aguardar todas as threads terminarem
+            for t in threads:
+                t.join()
+        
+        # Mover arquivos do diretório temporário para o diretório final
+        move_start = time.time()
+        for item in os.listdir(temp_dir):
+            s = os.path.join(temp_dir, item)
+            d = os.path.join(extract_dir, item)
+            if os.path.isdir(s):
+                shutil.copytree(s, d, dirs_exist_ok=True)
+            else:
+                shutil.copy2(s, d)
+        
+        # Limpar diretório temporário
+        shutil.rmtree(temp_dir)
+        
+        # Registrar tempos
+        move_time = time.time() - move_start
+        total_time = time.time() - start_time
+        logger.info(f"Extração paralela concluída: {total_files} arquivos extraídos em {total_time:.2f} segundos")
+        logger.info(f"Tempo de extração: {total_time - move_time:.2f} segundos")
+        logger.info(f"Tempo de movimentação: {move_time:.2f} segundos")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Erro na extração paralela: {str(e)}")
+        return False
+
+
+def extract_large_zip(zip_path: str, extract_dir: str, chunk_size: int = 1000000) -> bool:
+    """
+    Extrai arquivo ZIP grande em chunks para economizar memória.
+    """
+    try:
+        start_time = time.time()
+        with zipfile.ZipFile(zip_path, 'r') as z:
+            # Listar todos os arquivos
+            file_list = z.namelist()
+            total_files = len(file_list)
+            
+            if total_files == 0:
+                logger.error(f"Arquivo ZIP {zip_path} está vazio")
+                return False
+                
+            logger.info(f"Iniciando extração de {total_files} arquivos do ZIP {os.path.basename(zip_path)}")
+            
+            # Processar em chunks
+            for i in range(0, total_files, chunk_size):
+                chunk_start = time.time()
+                chunk_files = file_list[i:i + chunk_size]
+                logger.info(f"Extraindo chunk {i//chunk_size + 1} ({len(chunk_files)} arquivos)")
+                
+                # Extrair chunk atual
+                for file in chunk_files:
+                    try:
+                        z.extract(file, extract_dir)
+                    except Exception as e:
+                        logger.error(f"Erro ao extrair arquivo {file}: {str(e)}")
+                        return False
+                
+                # Forçar coleta de lixo após cada chunk
+                gc.collect()
+                
+                # Registrar tempo do chunk
+                chunk_time = time.time() - chunk_start
+                logger.info(f"Chunk {i//chunk_size + 1} extraído em {chunk_time:.2f} segundos")
+                
+            # Registrar tempo total
+            total_time = time.time() - start_time
+            logger.info(f"Extração concluída: {total_files} arquivos extraídos em {total_time:.2f} segundos")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Erro na extração do ZIP: {str(e)}")
+        return False
+
+
 def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, create_private: bool) -> bool:
     """Processa um único arquivo ZIP."""
     logger = logging.getLogger()
@@ -393,15 +521,43 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
         
         os.makedirs(path_extracao, exist_ok=True)
         
-        # Extrair arquivo ZIP
-        logger.info(f"[{pid}] Polars: Extraindo {zip_file} para {path_extracao}")
+        # Extrair arquivo ZIP usando método apropriado baseado no tamanho
+        logger.info(f"[{pid}] Extraindo {zip_file} para {path_extracao}")
         try:
-            with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
-                zip_ref.extractall(path_extracao)
-        except Exception as e_extract:
-            logger.error(f"[{pid}] Polars: Erro ao extrair arquivo ZIP {zip_file}: {e_extract}")
-            return False
+            file_size = os.path.getsize(zip_file_path)
+            file_size_mb = file_size / (1024 * 1024)
+            extract_start = time.time()
             
+            if file_size_mb > 1000:  # Arquivos >1GB
+                # Usar extração em chunks para arquivos grandes
+                chunk_size = 1000  # Processar 1000 arquivos por vez
+                if not extract_large_zip(zip_file_path, path_extracao, chunk_size):
+                    logger.error(f"[{pid}] Falha na extração em chunks de {zip_file_path}")
+                    return False
+            else:
+                # Usar extração paralela para arquivos menores
+                num_threads = max(1, int((os.cpu_count() or 4) * 0.75))
+                if not extract_file_parallel(zip_file_path, path_extracao, num_threads):
+                    logger.error(f"[{pid}] Falha na extração paralela de {zip_file_path}")
+                    return False
+                
+            # Registrar tempo total de extração
+            extract_time = time.time() - extract_start
+            logger.info(f"[{pid}] Tempo total de extração: {extract_time:.2f} segundos para arquivo de {file_size_mb:.1f}MB")
+                
+            # Verificar se os arquivos foram extraídos
+            extracted_files = os.listdir(path_extracao)
+            if not extracted_files:
+                logger.error(f"[{pid}] Nenhum arquivo foi extraído para {path_extracao}")
+                return False
+            logger.info(f"[{pid}] Arquivos extraídos: {extracted_files}")
+                
+        except Exception as e_zip:
+            logger.error(f"[{pid}] Erro durante a extração do ZIP {zip_file_path}: {str(e_zip)}")
+            logger.error(f"[{pid}] Tipo do erro: {type(e_zip).__name__}")
+            logger.error(f"[{pid}] Detalhes do erro: {traceback.format_exc()}")
+            return False
+
         # --- 2. Leitura e Processamento --- 
         logger.info(f"[{pid}] Polars Fase 2: Iniciando leitura e processamento de arquivos de dados..." )
         
@@ -622,19 +778,77 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
     return success
 
 
-def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
-    """Processa os dados de empresas.
+def get_system_resources():
+    """Retorna informações sobre os recursos do sistema."""
+    cpu_percent = psutil.cpu_percent(interval=1)
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
     
-    Args:
-        path_zip: Caminho para o diretório dos arquivos ZIP
-        path_unzip: Caminho para o diretório de extração
-        path_parquet: Caminho para o diretório dos arquivos parquet
-        create_private: Flag para criar subset de empresas privadas
+    return {
+        'cpu_percent': cpu_percent,
+        'memory_percent': memory.percent,
+        'disk_percent': disk.percent
+    }
+
+def can_start_processing():
+    """Verifica se é possível iniciar um novo processamento."""
+    with _processing_lock:
+        resources = get_system_resources()
         
-    Returns:
-        bool: True se o processamento foi bem-sucedido, False caso contrário
-    """
-    import time
+        # Verificar recursos do sistema
+        if (resources['cpu_percent'] > 80 or 
+            resources['memory_percent'] > 80 or 
+            resources['disk_percent'] > 90):
+            return False
+            
+        # Verificar número de processos ativos
+        if _active_processes.value >= _max_concurrent_processes.value:
+            return False
+            
+        return True
+
+def add_to_process_queue(zip_file: str, priority: int = 1):
+    """Adiciona um arquivo à fila de processamento."""
+    _process_queue.put((priority, time.time(), zip_file))
+    logger.info(f"Arquivo {zip_file} adicionado à fila de processamento")
+
+def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str):
+    """Worker que processa a fila de arquivos."""
+    while True:
+        try:
+            if _process_queue.empty():
+                time.sleep(5)  # Espera 5 segundos se a fila estiver vazia
+                continue
+                
+            if not can_start_processing():
+                time.sleep(10)  # Espera 10 segundos se não puder processar
+                continue
+                
+            # Pega o próximo arquivo da fila
+            priority, timestamp, zip_file = _process_queue.get()
+            
+            with _processing_lock:
+                _active_processes.value += 1
+                
+            try:
+                # Processa o arquivo
+                process_single_zip(zip_file, path_zip, path_unzip, path_parquet)
+            finally:
+                with _processing_lock:
+                    _active_processes.value -= 1
+                    
+        except Exception as e:
+            logger.error(f"Erro no worker da fila: {str(e)}")
+            time.sleep(5)
+
+def start_queue_worker(path_zip: str, path_unzip: str, path_parquet: str):
+    """Inicia o worker da fila em uma thread separada."""
+    worker_thread = threading.Thread(target=process_queue_worker, args=(path_zip, path_unzip, path_parquet), daemon=True)
+    worker_thread.start()
+    return worker_thread
+
+def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
+    """Processa os dados de empresas."""
     start_time = time.time()
     
     logger.info('=' * 50)
@@ -648,142 +862,29 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
         if not zip_files:
             logger.warning('Nenhum arquivo ZIP de Empresas encontrado.')
             return True
-        
-        # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
-        remote_folder = os.path.basename(os.path.normpath(path_zip))
-        # Verificar se o formato é AAAA-MM
-        if not re.match(r'^\d{4}-\d{2}$', remote_folder):
-            # Se não for uma pasta no formato esperado, tentar extrair do caminho
-            match = re.search(r'(20\d{2}-\d{2})', path_zip)
-            if match:
-                remote_folder = match.group(1)
-            else:
-                # Último recurso: usar um valor padrão
-                remote_folder = "dados"
-        
-        logger.info(f"Pasta remota identificada: {remote_folder}")
-        
-        # Garantir estrutura correta para o diretório principal de empresas
-        output_dir_main = ensure_correct_folder_structure(path_parquet, remote_folder, 'empresas')
-        
-        # LIMPEZA PRÉVIA do diretório de saída principal
-        try:
-            file_delete(output_dir_main)
-            logger.info(f'Diretório {output_dir_main} limpo antes do processamento.')
-        except Exception as e:
-            logger.warning(f'Não foi possível limpar diretório de saída {output_dir_main}: {str(e)}')
-        
-        # Criar também a estrutura para o diretório de empresas privadas se necessário
-        if create_private:
-            output_dir_private = ensure_correct_folder_structure(path_parquet, remote_folder, 'empresa_privada')
-            try:
-                file_delete(output_dir_private)
-                logger.info(f'Diretório {output_dir_private} limpo antes do processamento.')
-            except Exception as e:
-                logger.warning(f'Não foi possível limpar diretório de saída {output_dir_private}: {str(e)}')
             
-            # Garantir que o diretório existe
-            os.makedirs(output_dir_private, exist_ok=True)
+        # Iniciar worker da fila
+        worker_thread = start_queue_worker(path_zip, path_unzip, path_parquet)
         
-        # Garantir que o diretório principal existe
-        os.makedirs(output_dir_main, exist_ok=True)
-        
-        # Forçar coleta de lixo antes de iniciar o processamento
-        gc.collect()
-        
-        # Processar com Polars em paralelo - Otimizado
-        # Usar 75% dos CPUs disponíveis para não sobrecarregar
-        available_cpus = os.cpu_count() or 4
-        max_workers = max(1, int(available_cpus * 0.75))
-        
-        logger.info(f"Iniciando processamento paralelo com {max_workers} workers (75% dos {available_cpus} CPUs disponíveis)")
-        
-        # Timeout para cada tarefa (em segundos) - para evitar travamentos
-        timeout_per_task = 3600  # 1 hora por arquivo
-        
-        success = False
-        arquivos_com_falha = []
-        arquivos_com_timeout = []
-        total_files = len(zip_files)
-        completed_files = 0
-        
-        # Processar todos os arquivos ZIP em paralelo
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            logger.info(f"Processando {total_files} arquivos de empresas...")
+        # Adicionar arquivos à fila
+        for zip_file in zip_files:
+            add_to_process_queue(zip_file)
             
-            # Mapear cada arquivo ZIP para ser processado
-            futures = {}
-            for zip_file in zip_files:
-                future = executor.submit(
-                    process_single_zip, 
-                    zip_file, 
-                    path_zip, 
-                    path_unzip, 
-                    path_parquet,
-                    create_private
-                )
-                futures[future] = zip_file
+        # Aguardar processamento da fila
+        while not _process_queue.empty() or _active_processes.value > 0:
+            time.sleep(5)
             
-            # Coletar resultados à medida que são concluídos
-            try:
-                for future in concurrent.futures.as_completed(futures, timeout=timeout_per_task):
-                    zip_file = futures[future]
-                    completed_files += 1
-                    elapsed_time = time.time() - start_time
-                    
-                    # Calcular métricas de progresso
-                    progress_pct = (completed_files / total_files) * 100
-                    avg_time_per_file = elapsed_time / completed_files if completed_files > 0 else 0
-                    estimated_remaining = avg_time_per_file * (total_files - completed_files)
-                    
-                    try:
-                        result = future.result()
-                        if result:
-                            success = True
-                            logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Arquivo {zip_file} processado com sucesso. "
-                                       f"Tempo médio: {avg_time_per_file:.1f}s/arquivo. "
-                                       f"Tempo estimado restante: {estimated_remaining:.1f}s")
-                        else:
-                            arquivos_com_falha.append(zip_file)
-                            logger.warning(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Falha no processamento do arquivo {zip_file}")
-                    except Exception as e:
-                        arquivos_com_falha.append(zip_file)
-                        logger.error(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Exceção no processamento do arquivo {zip_file}: {str(e)}")
-            
-            except concurrent.futures.TimeoutError:
-                # Identificar quais tarefas não foram concluídas (timeout)
-                for future, zip_file in futures.items():
-                    if not future.done():
-                        arquivos_com_timeout.append(zip_file)
-                        logger.error(f"TIMEOUT: Arquivo {zip_file} excedeu o tempo limite de {timeout_per_task} segundos")
-                        # Cancelar a tarefa para liberar recursos
-                        future.cancel()
-        
         # Calcular estatísticas finais
         total_time = time.time() - start_time
         
-        if not success:
-            logger.warning('Nenhum arquivo ZIP de Empresas foi processado com sucesso.')
-            
-        if arquivos_com_falha:
-            logger.warning(f'Os seguintes arquivos falharam no processamento: {", ".join(arquivos_com_falha)}')
-            
-        if arquivos_com_timeout:
-            logger.warning(f'Os seguintes arquivos excederam o tempo limite: {", ".join(arquivos_com_timeout)}')
-        
-        # Logar resumo completo
         logger.info("=" * 50)
         logger.info("RESUMO DO PROCESSAMENTO DE EMPRESAS:")
         logger.info("=" * 50)
-        logger.info(f"Arquivos processados com sucesso: {completed_files - len(arquivos_com_falha) - len(arquivos_com_timeout)}/{total_files}")
-        logger.info(f"Arquivos com falha: {len(arquivos_com_falha)}/{total_files}")
-        logger.info(f"Arquivos com timeout: {len(arquivos_com_timeout)}/{total_files}")
         logger.info(f"Tempo total de processamento: {total_time:.2f} segundos")
-        logger.info(f"Tempo médio por arquivo: {total_time/completed_files if completed_files > 0 else 0:.2f} segundos")
         logger.info("=" * 50)
         
-        # Verificar se pelo menos um arquivo foi processado com sucesso
-        return success
+        return True
+        
     except Exception as e:
         logger.error(f'Erro no processamento principal de Empresas: {str(e)}')
         traceback.print_exc()

@@ -64,12 +64,20 @@ import os
 from multiprocessing import freeze_support
 import re
 import time
+import socket
+import requests
 
 import aiohttp
 from dotenv import load_dotenv
 from rich.logging import RichHandler
 
-from src.async_downloader import get_latest_month_zip_urls, download_multiple_files, _filter_urls_by_type
+from src.async_downloader import (
+    download_multiple_files, 
+    get_latest_month_zip_urls, 
+    get_remote_folders, 
+    get_latest_remote_folder,
+    _filter_urls_by_type
+)
 from src.config import config
 from src.database import create_duckdb_file
 from src.process.empresa import process_empresa_files
@@ -78,6 +86,60 @@ from src.process.simples import process_simples_files
 from src.process.socio import process_socio_files
 from src.utils import check_basic_folders
 
+# Configurar logger global
+logger = logging.getLogger(__name__)
+
+def check_internet_connection() -> bool:
+    """
+    Verifica se há conexão com a internet.
+    
+    Returns:
+        bool: True se houver conexão, False caso contrário
+    """
+    try:
+        # Tenta fazer uma requisição para um servidor confiável
+        requests.get("http://www.google.com", timeout=5)
+        return True
+    except requests.RequestException:
+        try:
+            # Tenta resolver um domínio conhecido
+            socket.create_connection(("8.8.8.8", 53), timeout=5)
+            return True
+        except OSError:
+            return False
+
+def check_disk_space() -> bool:
+    """
+    Verifica se há espaço suficiente em disco.
+    
+    Returns:
+        bool: True se houver espaço suficiente, False caso contrário
+    """
+    try:
+        # Obtém o diretório de destino
+        path_zip = os.getenv('PATH_ZIP')
+        if not path_zip:
+            logger.error("PATH_ZIP não definido no arquivo .env")
+            return False
+            
+        # Obtém o espaço livre em bytes usando ctypes para Windows
+        import ctypes
+        free_bytes = ctypes.c_ulonglong(0)
+        ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+            ctypes.c_wchar_p(path_zip), None, None, ctypes.pointer(free_bytes)
+        )
+        
+        # Define um limite mínimo de 10GB
+        min_space = 10 * 1024 * 1024 * 1024  # 10GB em bytes
+        
+        if free_bytes.value < min_space:
+            logger.warning(f"Espaço livre insuficiente: {free_bytes.value / (1024*1024*1024):.2f}GB")
+            return False
+            
+        return True
+    except Exception as e:
+        logger.error(f"Erro ao verificar espaço em disco: {e}")
+        return False
 
 def setup_logging(log_level_str: str):
     """Configura o sistema de logging com base no nível fornecido."""
@@ -146,220 +208,221 @@ def print_error(text: str):
 
 async def run_download_process(tipos_desejados: list[str] | None = None, remote_folder: str | None = None, all_folders: bool = False):
     """Executa todo o processo de download de forma assíncrona.
-
+    
     Args:
-        tipos_desejados: Lista de tipos de arquivos a serem baixados. Se None, baixa todos.
-        remote_folder: Pasta remota específica a ser baixada no formato AAAA-MM. Se None, usa a mais recente.
-        all_folders: Se True, baixa arquivos de todos os diretórios remotos disponíveis.
-
-    Returns:
-        tuple[bool, str]: (sucesso do download, pasta mais recente)
-            - Se sucesso for False, a pasta mais recente será uma string vazia
-            - Se all_folders=True, a segunda posição conterá "all_folders"
+        tipos_desejados: Lista de tipos de arquivos para baixar (ex: ['Empresas', 'Estabelecimentos'])
+        remote_folder: Nome da pasta remota específica para baixar (ex: '2024-01')
+        all_folders: Se True, baixa de todas as pastas remotas disponíveis
     """
-    logger = logging.getLogger(__name__)
-    start_time = time.time()
-    logger.info("Iniciando processo de download centralizado...")
-
     try:
-        base_url = os.getenv('URL_ORIGIN')
-        download_folder = os.getenv('PATH_ZIP')
+        # Se nenhum tipo foi especificado, usar a lista padrão
+        if tipos_desejados is None:
+            tipos_desejados = ['Empresas', 'Estabelecimentos', 'Simples', 'Socios']
+            logger.info("Nenhum tipo especificado. Usando tipos padrão: Empresas, Estabelecimentos, Simples, Socios")
 
-        if not base_url or not download_folder:
-            logger.error("Variáveis de ambiente URL_ORIGIN ou PATH_ZIP não definidas.")
+        # Obter variáveis de ambiente
+        PATH_ZIP = os.getenv('PATH_ZIP')
+        PATH_UNZIP = os.getenv('PATH_UNZIP')
+        PATH_PARQUET = os.getenv('PATH_PARQUET')
+
+        if not all([PATH_ZIP, PATH_UNZIP, PATH_PARQUET]):
+            logger.error("Variáveis de ambiente PATH_ZIP, PATH_UNZIP ou PATH_PARQUET não definidas")
             return False, ""
 
+        # Verificar conexão com internet
+        if not check_internet_connection():
+            logger.error("Sem conexão com a internet. Verifique sua conexão e tente novamente.")
+            return False, ""
+
+        # Verificar espaço em disco
+        if not check_disk_space():
+            logger.error("Espaço em disco insuficiente. Libere espaço e tente novamente.")
+            return False, ""
+
+        # Criar diretórios básicos
+        check_basic_folders([PATH_ZIP, PATH_UNZIP, PATH_PARQUET])
+
+        # Obter URLs base
+        base_url = os.getenv('BASE_URL')
+        if not base_url:
+            logger.error("BASE_URL não definida no arquivo .env")
+            return False, ""
+
+        # Obter pasta de download
+        download_folder = os.getenv('PATH_ZIP')
+        if not download_folder:
+            logger.error("PATH_ZIP não definido no arquivo .env")
+            return False, ""
+
+        # Lista para armazenar resultados
+        downloaded_files_count = 0
+        failed_downloads_count = 0
+        all_successful = True
+
         if all_folders:
-            # Modo especial: baixar de todos os diretórios disponíveis
-            logger.info("Modo ALL_FOLDERS ativado: baixando arquivos de todos os diretórios disponíveis.")
+            # Modo: Baixar de todas as pastas
+            logger.info("Modo: Baixar de todas as pastas disponíveis")
             
-            # 1. Primeiro, obtemos a lista de todos os diretórios disponíveis
-            try:
-                # Vamos reutilizar parte da função get_latest_month_zip_urls para obter os diretórios
-                from src.async_downloader import _fetch_and_parse, _find_links
+            # Obter lista de pastas remotas
+            remote_folders = await get_remote_folders(base_url)
+            if not remote_folders:
+                logger.error("Não foi possível obter a lista de pastas remotas")
+                return False, ""
+
+            logger.info(f"Encontradas {len(remote_folders)} pastas remotas")
+            
+            # Processar cada pasta remota
+            for folder_name in remote_folders:
+                logger.info(f"Processando pasta remota: {folder_name}")
                 
-                base_soup = _fetch_and_parse(base_url)
-                if not base_soup:
-                    logger.error("Falha ao buscar diretórios remotos.")
-                    return False, ""
+                # Atualizar pasta remota no cache
+                if config.cache.enabled:
+                    config.cache.set_remote_folder(folder_name)
+                    logger.info(f"Cache configurado para pasta remota: {folder_name}")
                 
-                directory_links = _find_links(base_soup, base_url, ends_with=None)
+                # Criar subdiretório para esta pasta remota
+                folder_download_path = os.path.join(download_folder, folder_name)
+                os.makedirs(folder_download_path, exist_ok=True)
+                logger.info(f"Criando subdiretório para a pasta remota: {folder_download_path}")
                 
-                year_month_folders = []
-                for dir_url in directory_links:
-                    folder_name = dir_url.strip('/').split('/')[-1]
-                    match = re.fullmatch(r'(\d{4})-(\d{2})', folder_name)
-                    if match:
-                        year_month_folders.append((folder_name, dir_url))
-                        logger.debug(f"Encontrado diretório AAAA-MM: {folder_name} -> {dir_url}")
+                # Obter URLs dos arquivos
+                zip_urls, folder_name = get_latest_month_zip_urls(base_url, folder_name)
+                if not zip_urls:
+                    logger.warning(f"Nenhuma URL relevante para download encontrada em {folder_name}.")
+                    continue
                 
-                if not year_month_folders:
-                    logger.warning(f"Nenhum diretório no formato AAAA-MM encontrado em {base_url}")
-                    return False, ""
-                
-                # Ordenamos os diretórios do mais recente para o mais antigo
-                year_month_folders.sort(key=lambda x: x[0], reverse=True)
-                
-                logger.info(f"Encontrados {len(year_month_folders)} diretórios remotos para download.")
-                
-                # 2. Agora, vamos baixar de cada diretório
-                all_successful = True
-                downloaded_files_count = 0
-                failed_downloads_count = 0
-                
-                for folder_name, folder_url in year_month_folders:
-                    logger.info(f"Processando diretório: {folder_name}")
-                    
-                    # Criar subdiretório para esta pasta se não existir
-                    folder_download_path = os.path.join(download_folder, folder_name)
-                    os.makedirs(folder_download_path, exist_ok=True)
-                    
-                    # Obter URLs dos arquivos .zip neste diretório
-                    folder_soup = _fetch_and_parse(folder_url)
-                    if not folder_soup:
-                        logger.warning(f"Falha ao buscar arquivos em {folder_url}. Pulando.")
-                        all_successful = False
-                        continue
-                    
-                    zip_urls = _find_links(folder_soup, folder_url, ends_with='.zip')
-                    
-                    if not zip_urls:
-                        logger.warning(f"Nenhum arquivo .zip encontrado em {folder_url}")
-                        continue
-                    
-                    # Filtrar por tipos desejados
-                    if tipos_desejados is not None:
-                        try:
-                            filtered_urls, ignored_count = _filter_urls_by_type(zip_urls, tipos_desejados)
-                            logger.info(f"{ignored_count} arquivos ignorados com base nos tipos não desejados em {folder_name}.")
-                            zip_urls = filtered_urls
-                        except Exception as e:
-                            logger.error(f"Erro ao filtrar URLs em {folder_name}: {e}")
-                            all_successful = False
-                            continue
-                    
+                # Filtrar URLs por tipos desejados
+                if tipos_desejados:
+                    zip_urls, ignored = _filter_urls_by_type(zip_urls, tuple(tipos_desejados))
                     if not zip_urls:
                         logger.warning(f"Nenhuma URL relevante para download encontrada após filtrar por tipos em {folder_name}.")
                         continue
+                    logger.info(f"Filtrados {ignored} URLs não desejadas. Restaram {len(zip_urls)} URLs para download.")
+                
+                # Log adicional para verificação de cache
+                logger.info(f"Iniciando download para {folder_name} - Sistema de cache está {'ativado' if config.cache.enabled else 'desativado'}")
+                
+                # Verificar se o diretório do cache existe
+                if config.cache.enabled and not os.path.exists(config.cache.cache_dir):
+                    os.makedirs(config.cache.cache_dir, exist_ok=True)
+                    logger.info(f"Diretório de cache criado: {config.cache.cache_dir}")
+                
+                # Baixar os arquivos deste diretório
+                try:
+                    max_concurrent_downloads = config.n_workers
+                    downloaded, failed = await download_multiple_files(
+                        zip_urls,
+                        folder_download_path,
+                        max_concurrent=max_concurrent_downloads
+                    )
                     
-                    # Log adicional para verificação de cache
-                    logger.info(f"Iniciando download para {folder_name} - Sistema de cache está {'ativado' if config.cache.enabled else 'desativado'}")
+                    downloaded_files_count += len(downloaded)
+                    failed_downloads_count += len(failed)
                     
-                    # Verificar se o diretório do cache existe
-                    if config.cache.enabled and not os.path.exists(config.cache.cache_dir):
-                        os.makedirs(config.cache.cache_dir, exist_ok=True)
-                        logger.info(f"Diretório de cache criado: {config.cache.cache_dir}")
-                    
-                    # Baixar os arquivos deste diretório
-                    try:
-                        max_concurrent_downloads = config.n_workers
-                        downloaded, failed = await download_multiple_files(
-                            zip_urls,
-                            folder_download_path,
-                            max_concurrent=max_concurrent_downloads
-                        )
-                        
-                        downloaded_files_count += len(downloaded)
-                        failed_downloads_count += len(failed)
-                        
-                        if failed:
-                            logger.warning(f"{len(failed)} downloads falharam em {folder_name}.")
-                            all_successful = False
-                    except Exception as e:
-                        logger.error(f"Erro durante downloads em {folder_name}: {e}")
+                    if failed:
+                        logger.warning(f"{len(failed)} downloads falharam em {folder_name}.")
                         all_successful = False
+                except Exception as e:
+                    logger.error(f"Erro durante downloads em {folder_name}: {e}")
+                    all_successful = False
+            
+            # Resumo final
+            logger.info(f"Download de múltiplos diretórios concluído.")
+            
+        else:
+            # Modo: Baixar de uma pasta específica ou a mais recente
+            if remote_folder:
+                # Usar pasta remota especificada
+                latest_folder = remote_folder
+                logger.info(f"Usando pasta remota especificada: {latest_folder}")
+            else:
+                # Obter pasta mais recente
+                latest_folder = await get_latest_remote_folder(base_url)
+                if not latest_folder:
+                    logger.error("Não foi possível determinar a pasta remota mais recente")
+                    return False, ""
+                logger.info(f"Pasta remota mais recente: {latest_folder}")
+
+            # Atualizar pasta remota no cache
+            if config.cache.enabled:
+                config.cache.set_remote_folder(latest_folder)
+                logger.info(f"Cache configurado para pasta remota: {latest_folder}")
+
+            # Criar subdiretório para esta pasta remota
+            folder_download_path = os.path.join(download_folder, latest_folder)
+            os.makedirs(folder_download_path, exist_ok=True)
+            logger.info(f"Criando subdiretório para a pasta remota: {folder_download_path}")
+            
+            # Obter URLs dos arquivos
+            zip_urls, folder_name = get_latest_month_zip_urls(base_url, latest_folder)
+            if not zip_urls:
+                logger.warning(f"Nenhuma URL relevante para download encontrada em {latest_folder}.")
+                return False, ""
+            
+            # Filtrar URLs por tipos desejados
+            if tipos_desejados:
+                zip_urls, ignored = _filter_urls_by_type(zip_urls, tuple(tipos_desejados))
+                if not zip_urls:
+                    logger.warning(f"Nenhuma URL relevante para download encontrada após filtrar por tipos em {latest_folder}.")
+                    return False, ""
+                logger.info(f"Filtrados {ignored} URLs não desejadas. Restaram {len(zip_urls)} URLs para download.")
+            
+            # Log para depuração
+            logger.info(f"Iniciando download de {len(zip_urls)} arquivos relevantes para {folder_download_path}...")
+            logger.info(f"Sistema de cache está {'ativado' if config.cache.enabled else 'desativado'}")
+            
+            # Verificar se o diretório do cache existe
+            if config.cache.enabled and not os.path.exists(config.cache.cache_dir):
+                os.makedirs(config.cache.cache_dir, exist_ok=True)
+                logger.info(f"Diretório de cache criado: {config.cache.cache_dir}")
+
+            # Baixar os arquivos
+            try:
+                max_concurrent_downloads = config.n_workers
+                downloaded, failed = await download_multiple_files(
+                    zip_urls,
+                    folder_download_path,
+                    max_concurrent=max_concurrent_downloads
+                )
                 
-                # Resumo final
-                logger.info(f"Download de múltiplos diretórios concluído.")
-                logger.info(f"Total de arquivos baixados: {downloaded_files_count}")
-                if failed_downloads_count > 0:
-                    logger.warning(f"Total de downloads falhos: {failed_downloads_count}")
+                downloaded_files_count = len(downloaded)
+                failed_downloads_count = len(failed)
                 
-                return downloaded_files_count > 0, "all_folders"
-                
+                if failed:
+                    logger.warning(f"{len(failed)} downloads falharam.")
+                    all_successful = False
+                    
+            except aiohttp.ClientError as e:
+                logger.error(f"Erro de conexão durante downloads: {e}")
+                return False, ""
+            except asyncio.TimeoutError as e:
+                logger.error(f"Timeout durante downloads: {e}")
+                return False, ""
             except Exception as e:
-                logger.exception(f"Erro no modo ALL_FOLDERS: {e}")
+                logger.error(f"Erro inesperado durante downloads: {e}")
                 return False, ""
-        
-        # Modo normal: baixar de uma pasta específica ou a mais recente
-        # 1. Buscar URLs mais recentes ou da pasta específica
-        try:
-            all_zip_urls, latest_folder = get_latest_month_zip_urls(base_url, remote_folder)
-            if not all_zip_urls:
-                if remote_folder:
-                    logger.warning(f"Nenhuma URL .zip encontrada na pasta remota especificada: {remote_folder}.")
-                else:
-                    logger.warning("Nenhuma URL .zip encontrada na origem.")
-                return False, ""
-        except aiohttp.ClientError as e:
-            logger.error(f"Erro de conexão ao buscar URLs: {e}")
-            return False, ""
-        except Exception as e:
-            logger.error(f"Erro inesperado ao buscar URLs: {e}")
-            return False, ""
 
-        # 2. Filtrar URLs desejadas
-        if tipos_desejados is None:
-            tipos_desejados = ("Empresas", "Estabelecimentos", "Simples", "Socios")
-        try:
-            zip_urls_to_download, ignored_count = _filter_urls_by_type(all_zip_urls, tipos_desejados)
-            logger.info(f"{ignored_count} arquivos ignorados com base nos tipos não desejados.")
-        except Exception as e:
-            logger.error(f"Erro ao filtrar URLs: {e}")
-            return False, ""
+            logger.info("Processo de download concluído.")
 
-        if not zip_urls_to_download:
-            logger.warning(f"Nenhuma URL relevante para download encontrada após filtrar por tipos.")
-            return False, ""
+            if failed:
+                logger.error(f"{len(failed)} downloads falharam. Verifique os logs acima.")
+                if not downloaded:  # Se nenhum arquivo foi baixado com sucesso
+                    return False, ""
+                logger.warning("Continuando processamento com os arquivos baixados com sucesso.")
 
-        # Criar subdiretório para esta pasta remota (igual ao modo --all-folders)
-        folder_download_path = os.path.join(download_folder, latest_folder)
-        os.makedirs(folder_download_path, exist_ok=True)
-        logger.info(f"Criando subdiretório para a pasta remota: {folder_download_path}")
-        
-        # Log para depuração
-        logger.info(f"Iniciando download de {len(zip_urls_to_download)} arquivos relevantes para {folder_download_path}...")
-        logger.info(f"Sistema de cache está {'ativado' if config.cache.enabled else 'desativado'}")
-        
-        # Verificar se o diretório do cache existe
-        if config.cache.enabled and not os.path.exists(config.cache.cache_dir):
-            os.makedirs(config.cache.cache_dir, exist_ok=True)
-            logger.info(f"Diretório de cache criado: {config.cache.cache_dir}")
+        # Resumo final
+        logger.info("=" * 50)
+        logger.info("RESUMO DO PROCESSO DE DOWNLOAD:")
+        logger.info("=" * 50)
+        logger.info(f"Total de arquivos baixados com sucesso: {downloaded_files_count}")
+        logger.info(f"Total de downloads com falha: {failed_downloads_count}")
+        logger.info(f"Processo {'completo' if all_successful else 'com falhas'}")
+        logger.info("=" * 50)
 
-        # 3. Baixar os arquivos
-        try:
-            max_concurrent_downloads = config.n_workers
-            downloaded, failed = await download_multiple_files(
-                zip_urls_to_download,
-                folder_download_path,
-                max_concurrent=max_concurrent_downloads
-            )
-        except aiohttp.ClientError as e:
-            logger.error(f"Erro de conexão durante downloads: {e}")
-            return False, ""
-        except asyncio.TimeoutError as e:
-            logger.error(f"Timeout durante downloads: {e}")
-            return False, ""
-        except Exception as e:
-            logger.error(f"Erro inesperado durante downloads: {e}")
-            return False, ""
-
-        logger.info("Processo de download concluído.")
-
-        if failed:
-            logger.error(f"{len(failed)} downloads falharam. Verifique os logs acima.")
-            if not downloaded:  # Se nenhum arquivo foi baixado com sucesso
-                return False, ""
-            logger.warning("Continuando processamento com os arquivos baixados com sucesso.")
-
-        # Adicionar medição de tempo no final
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        logger.info(f"Tempo total de download: {elapsed_time:.2f} segundos")
-        return True, latest_folder
+        return all_successful, latest_folder if not all_folders else ""
 
     except Exception as e:
-        logger.exception(f"Erro crítico no processo de download: {e}")
+        logger.error(f"Erro durante o processo de download: {str(e)}")
         return False, ""
 
 

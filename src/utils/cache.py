@@ -16,211 +16,164 @@ class DownloadCache:
     Mantém um registro de arquivos já baixados para evitar downloads repetidos.
     """
 
-    def __init__(self, cache_file: str):
+    def __init__(self, cache_path: str):
         """
         Inicializa o cache de downloads.
         
         Args:
-            cache_file: Caminho para o arquivo de cache
+            cache_path: Caminho completo para o arquivo de cache
         """
-        self.cache_file = cache_file
+        self.cache_path = cache_path
+        self.cache_dir = os.path.dirname(cache_path)
         self.cache_data = self._load_cache()
-
-    def _load_cache(self) -> Dict[str, Any]:
-        """
-        Carrega os dados do cache do arquivo.
         
-        Returns:
-            Dicionário com os dados do cache
-        """
-        if os.path.exists(self.cache_file):
-            try:
-                with open(self.cache_file, 'r') as f:
-                    cache_data = json.load(f)
-                    logger.info(f"Cache carregado com {len(cache_data.get('files', []))} arquivos")
-                    return cache_data
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning(f"Erro ao carregar arquivo de cache: {str(e)}. Criando novo cache.")
-                return {"files": {}, "last_update": datetime.datetime.now().isoformat()}
-        return {"files": {}, "last_update": datetime.datetime.now().isoformat()}
-
-    def _save_cache(self) -> bool:
-        """
-        Salva os dados do cache no arquivo.
+        # Garante que o diretório do cache existe
+        os.makedirs(self.cache_dir, exist_ok=True)
         
+        logger.debug(f"Cache inicializado em: {cache_path}")
+        logger.debug(f"Total de arquivos em cache: {len(self.cache_data.get('files', {}))}")
+        logger.debug(f"Total de erros registrados: {len(self.cache_data.get('errors', {}))}")
+
+    def _load_cache(self) -> Dict:
+        """Carrega o cache do arquivo JSON."""
+        try:
+            if os.path.exists(self.cache_path):
+                with open(self.cache_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {"files": {}, "errors": {}}
+        except Exception as e:
+            logger.error(f"Erro ao carregar cache: {e}")
+            return {"files": {}, "errors": {}}
+
+    def _save_cache(self):
+        """Salva o cache no arquivo JSON."""
+        try:
+            # Garante que o diretório existe
+            os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
+            
+            with open(self.cache_path, 'w', encoding='utf-8') as f:
+                json.dump(self.cache_data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Erro ao salvar cache: {e}")
+
+    def is_file_cached(self, filename: str, remote_size: int, remote_last_modified: int) -> bool:
+        """
+        Verifica se um arquivo está em cache e se está atualizado.
+        
+        Args:
+            filename: Nome do arquivo
+            remote_size: Tamanho do arquivo remoto
+            remote_last_modified: Timestamp da última modificação do arquivo remoto
+            
         Returns:
-            True se o cache foi salvo com sucesso, False caso contrário
+            bool: True se o arquivo está em cache e atualizado, False caso contrário
+        """
+        file_info = self.cache_data.get("files", {}).get(filename)
+        if not file_info:
+            return False
+            
+        # Verifica se o arquivo tem erros registrados
+        if filename in self.cache_data.get("errors", {}):
+            logger.debug(f"Arquivo {filename} tem erros registrados no cache")
+            return False
+            
+        # Verifica se o tamanho e data de modificação correspondem
+        return (file_info.get("size") == remote_size and 
+                file_info.get("modified") == remote_last_modified)
+
+    def update_file_cache(self, filename: str, size: int, modified: int, status: str = "success"):
+        """
+        Atualiza o cache com informações de um arquivo.
+        
+        Args:
+            filename: Nome do arquivo
+            size: Tamanho do arquivo
+            modified: Timestamp da última modificação
+            status: Status do arquivo (success, error, etc)
         """
         try:
-            # Cria o diretório do cache se não existir
-            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+            if "files" not in self.cache_data:
+                self.cache_data["files"] = {}
+                
+            self.cache_data["files"][filename] = {
+                "size": size,
+                "modified": modified,
+                "status": status,
+                "last_updated": datetime.datetime.now().isoformat()
+            }
+            
+            # Se o arquivo foi atualizado com sucesso, remove qualquer erro registrado
+            if status == "success" and filename in self.cache_data.get("errors", {}):
+                del self.cache_data["errors"][filename]
+                
+            self._save_cache()
+            logger.debug(f"Cache atualizado para {filename}")
+        except Exception as e:
+            logger.error(f"Erro ao atualizar cache para {filename}: {e}")
 
-            # Atualiza a data da última atualização
-            self.cache_data["last_update"] = datetime.datetime.now().isoformat()
-
-            with open(self.cache_file, 'w') as f:
-                json.dump(self.cache_data, f, indent=2)
-            logger.info(f"Cache salvo com {len(self.cache_data.get('files', []))} arquivos")
-            return True
-        except IOError as e:
-            logger.error(f"Erro ao salvar arquivo de cache: {str(e)}")
-            return False
-
-    def is_file_cached(self, filename: str, remote_size: int, remote_modified: int) -> bool:
+    def remove_file_from_cache(self, filename: str):
         """
-        Verifica se um arquivo está no cache e é atual.
+        Remove um arquivo do cache.
         
         Args:
             filename: Nome do arquivo
-            remote_size: Tamanho do arquivo remoto em bytes
-            remote_modified: Data de modificação do arquivo remoto (timestamp)
-            
-        Returns:
-            True se o arquivo está em cache e é atual, False caso contrário
         """
-        files = self.cache_data.get("files", {})
-        if filename in files:
-            file_info = files[filename]
-            # Verifica se o tamanho e a data de modificação são iguais
-            if (file_info.get("size") == remote_size and
-                    file_info.get("modified") == remote_modified and
-                    file_info.get("status") == "success"):
-                logger.info(f"Arquivo {filename} encontrado no cache e está atualizado")
-                return True
-            else:
-                logger.info(f"Arquivo {filename} encontrado no cache mas está desatualizado ou possui erro")
-                return False
-        logger.info(f"Arquivo {filename} não encontrado no cache")
-        return False
+        try:
+            if filename in self.cache_data.get("files", {}):
+                del self.cache_data["files"][filename]
+                self._save_cache()
+                logger.debug(f"Arquivo {filename} removido do cache")
+        except Exception as e:
+            logger.error(f"Erro ao remover {filename} do cache: {e}")
 
-    def has_file_error(self, filename: str) -> bool:
-        """
-        Verifica se um arquivo tem status de erro no cache.
-        
-        Args:
-            filename: Nome do arquivo
-            
-        Returns:
-            True se o arquivo tem erro, False caso contrário
-        """
-        files = self.cache_data.get("files", {})
-        if filename in files:
-            file_info = files[filename]
-            if file_info.get("status") == "error":
-                logger.info(f"Arquivo {filename} possui erro registrado no cache")
-                return True
-        return False
-
-    def update_file_cache(self, filename: str, size: int, modified: int, status: str = "success", error_msg: str = None) -> bool:
-        """
-        Atualiza as informações de um arquivo no cache.
-        
-        Args:
-            filename: Nome do arquivo
-            size: Tamanho do arquivo em bytes
-            modified: Data de modificação do arquivo (timestamp)
-            status: Status do download ("success", "error", etc)
-            error_msg: Mensagem de erro (opcional, apenas se status for "error")
-            
-        Returns:
-            True se o cache foi atualizado e salvo com sucesso, False caso contrário
-        """
-        if "files" not in self.cache_data:
-            self.cache_data["files"] = {}
-
-        file_entry = {
-            "size": size,
-            "modified": modified,
-            "last_download": datetime.datetime.now().isoformat(),
-            "status": status
-        }
-        
-        if status == "error" and error_msg:
-            file_entry["error_message"] = error_msg
-            
-        self.cache_data["files"][filename] = file_entry
-
-        return self._save_cache()
-
-    def register_file_error(self, filename: str, error_msg: str) -> bool:
+    def register_file_error(self, filename: str, error_msg: str):
         """
         Registra um erro para um arquivo no cache.
         
         Args:
             filename: Nome do arquivo
             error_msg: Mensagem de erro
-            
-        Returns:
-            True se o erro foi registrado e o cache salvo com sucesso, False caso contrário
         """
-        if "files" not in self.cache_data:
-            self.cache_data["files"] = {}
-            
-        if filename in self.cache_data["files"]:
-            # Mantém os metadados existentes, só atualiza o status e adiciona mensagem de erro
-            file_info = self.cache_data["files"][filename]
-            file_info["status"] = "error"
-            file_info["error_message"] = error_msg
-            file_info["error_timestamp"] = datetime.datetime.now().isoformat()
-            self.cache_data["files"][filename] = file_info
-        else:
-            # Se o arquivo não existe no cache, cria uma entrada básica
-            self.cache_data["files"][filename] = {
-                "status": "error",
-                "error_message": error_msg,
-                "error_timestamp": datetime.datetime.now().isoformat()
+        try:
+            if "errors" not in self.cache_data:
+                self.cache_data["errors"] = {}
+                
+            self.cache_data["errors"][filename] = {
+                "message": error_msg,
+                "timestamp": datetime.datetime.now().isoformat()
             }
             
-        logger.info(f"Erro registrado no cache para o arquivo {filename}: {error_msg}")
-        return self._save_cache()
+            # Atualiza o status do arquivo para error
+            if filename in self.cache_data.get("files", {}):
+                self.cache_data["files"][filename]["status"] = "error"
+                
+            self._save_cache()
+            logger.debug(f"Erro registrado para {filename}: {error_msg}")
+        except Exception as e:
+            logger.error(f"Erro ao registrar erro para {filename}: {e}")
+
+    def has_file_error(self, filename: str) -> bool:
+        """
+        Verifica se um arquivo tem erros registrados no cache.
+        
+        Args:
+            filename: Nome do arquivo
+            
+        Returns:
+            bool: True se o arquivo tem erros, False caso contrário
+        """
+        return filename in self.cache_data.get("errors", {})
 
     def get_files_with_errors(self) -> List[str]:
         """
-        Retorna a lista de arquivos com status de erro no cache.
+        Retorna a lista de arquivos com erros registrados no cache.
         
         Returns:
-            Lista com os nomes dos arquivos com erro
+            List[str]: Lista de nomes de arquivos com erros
         """
-        files = self.cache_data.get("files", {})
-        return [filename for filename, info in files.items() if info.get("status") == "error"]
+        return list(self.cache_data.get("errors", {}).keys())
 
-    def remove_file_from_cache(self, filename: str) -> bool:
-        """
-        Remove um arquivo do cache.
-        
-        Args:
-            filename: Nome do arquivo a ser removido
-            
-        Returns:
-            True se o arquivo foi removido e o cache salvo com sucesso, False caso contrário
-        """
-        if "files" in self.cache_data and filename in self.cache_data["files"]:
-            del self.cache_data["files"][filename]
-            logger.info(f"Arquivo {filename} removido do cache")
-            return self._save_cache()
-        return False
-
-    def clear_cache(self) -> bool:
-        """
-        Limpa todo o cache.
-        
-        Returns:
-            True se o cache foi limpo e salvo com sucesso, False caso contrário
-        """
-        self.cache_data = {"files": {}, "last_update": datetime.datetime.now().isoformat()}
-        logger.info("Cache limpo completamente")
-        return self._save_cache()
-
-    def get_cached_files(self) -> List[str]:
-        """
-        Retorna a lista de arquivos no cache.
-        
-        Returns:
-            Lista com os nomes dos arquivos no cache
-        """
-        return list(self.cache_data.get("files", {}).keys())
-
-    def get_file_info(self, filename: str) -> Optional[Dict[str, Any]]:
+    def get_file_info(self, filename: str) -> Optional[Dict]:
         """
         Retorna as informações de um arquivo no cache.
         
@@ -228,7 +181,29 @@ class DownloadCache:
             filename: Nome do arquivo
             
         Returns:
-            Dicionário com as informações do arquivo ou None se não estiver no cache
+            Optional[Dict]: Informações do arquivo ou None se não encontrado
         """
-        files = self.cache_data.get("files", {})
-        return files.get(filename)
+        return self.cache_data.get("files", {}).get(filename)
+
+    def clear_cache(self):
+        """Limpa todo o cache."""
+        try:
+            self.cache_data = {"files": {}, "errors": {}}
+            self._save_cache()
+            logger.info("Cache limpo com sucesso")
+        except Exception as e:
+            logger.error(f"Erro ao limpar cache: {e}")
+
+    def get_cache_stats(self) -> Dict:
+        """
+        Retorna estatísticas do cache.
+        
+        Returns:
+            Dict: Estatísticas do cache
+        """
+        return {
+            "total_files": len(self.cache_data.get("files", {})),
+            "total_errors": len(self.cache_data.get("errors", {})),
+            "cache_path": self.cache_path,
+            "last_updated": datetime.datetime.now().isoformat()
+        }
