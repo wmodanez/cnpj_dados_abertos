@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import time
+import zipfile
 from typing import List, Tuple, Callable, Dict, Any
 from urllib.parse import urljoin
 
@@ -26,10 +27,11 @@ from rich.progress import (
 # Importações locais do projeto
 from .config import config
 from .utils import DownloadCache
-from .process.empresa import process_single_zip as process_empresa_zip
+from .process.empresa import process_single_zip as process_empresa_zip, extract_file_parallel
 from .process.estabelecimento import process_single_zip as process_estabelecimento_zip
 from .process.simples import process_single_zip as process_simples_zip
 from .process.socio import process_single_zip as process_socio_zip
+from .utils.time_utils import format_elapsed_time
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -317,205 +319,169 @@ async def download_file(session: aiohttp.ClientSession | None, url: str, destina
         Tuple[str, Exception | None, str | None]: (Path/URL, Error or None, Skip Reason or None)
     """
     filename = os.path.basename(destination_path)
-    skip_reason: str | None = None  # Variável para armazenar o motivo do skip
+    skip_reason: str | None = None
     created_session = False
-    async with semaphore:
-        file_mode = 'wb'
-        resume_header = {}
-        initial_size = 0
-        skip_download = False
-        force_download = False
+    max_retries = 3
+    retry_count = 0
+    last_error = None
 
+    while retry_count < max_retries:
         try:
-            # Criar sessão se não for fornecida
-            if session is None:
-                session = aiohttp.ClientSession()
-                created_session = True
-
-            # Verificar se o arquivo tem erros registrados no cache
-            if config.cache.enabled and get_download_cache().has_file_error(filename):
-                logger.warning(f"Arquivo {filename} tem erros registrados no cache. Forçando download completo.")
-                force_download = True
-                # Atualiza barra Rich (laranja para forçar download)
-                progress.update(task_id, description=f"[orange]{filename[:30]} (forçando download)[/orange]",
-                               style="yellow")
+            async with semaphore:
                 file_mode = 'wb'
+                resume_header = {}
                 initial_size = 0
+                skip_download = False
+                force_download = False
 
-            # 1. Obter metadados remotos - Atualiza descrição na barra Rich
-            progress.update(task_id, description=f"[cyan]{filename[:30]} (verificando...)[/cyan]")
-            remote_size, remote_last_modified = await get_remote_file_metadata(session, url)
+                # Criar sessão se não for fornecida
+                if session is None:
+                    session = aiohttp.ClientSession()
+                    created_session = True
 
-            if remote_size is None:
-                raise ValueError(f"Não foi possível obter metadados remotos para {url}")
+                # Verificar se o arquivo tem erros registrados no cache
+                if config.cache.enabled and get_download_cache().has_file_error(filename):
+                    logger.warning(f"Arquivo {filename} tem erros registrados no cache. Forçando download completo.")
+                    force_download = True
+                    progress.update(task_id, description=f"[orange]{filename[:30]} (forçando download)[/orange]",
+                                   style="yellow")
+                    file_mode = 'wb'
+                    initial_size = 0
 
-            # Atualiza o total da barra assim que conhecido
-            progress.update(task_id, total=remote_size)
+                # 1. Obter metadados remotos
+                progress.update(task_id, description=f"[cyan]{filename[:30]} (verificando...)[/cyan]")
+                remote_size, remote_last_modified = await get_remote_file_metadata(session, url)
 
-            # 2. Verificar cache e arquivo local
-            file_exists = os.path.exists(destination_path)
-            local_size = os.path.getsize(destination_path) if file_exists else 0
-            attempt_resume = False
+                if remote_size is None:
+                    raise ValueError(f"Não foi possível obter metadados remotos para {url}")
 
-            if file_exists and not force_download:
-                # Checa cache primeiro (se habilitado)
-                if config.cache.enabled and get_download_cache().is_file_cached(filename, remote_size, remote_last_modified):
-                    if local_size == remote_size:
-                        progress.update(task_id, description=f"[green]{filename[:30]} (cache)[/green]",
-                                        completed=remote_size, style="green")
-                        skip_download = True
-                        skip_reason = "cache"
-                    else:
-                        # Cache diz que está ok, mas tamanho local difere -> Baixar completo
-                        logger.warning(f"Arquivo {filename} em cache, mas tamanho local difere. Baixando completo.")
-                        # Atualiza barra Rich (amarelo para cache inválido)
-                        progress.update(task_id, description=f"[yellow]{filename[:30]} (cache inválido)[/yellow]",
-                                        style="yellow")
-                        file_mode = 'wb'
-                        initial_size = 0
-                # Sem cache ou cache desatualizado, verifica tamanho e data local
-                elif local_size < remote_size:
-                    # Arquivo parcial. Verifica data se possível
-                    if remote_last_modified is not None:
-                        local_last_modified = int(os.path.getmtime(destination_path))
-                        if local_last_modified >= remote_last_modified:
-                            # Parcial, mas local é mais novo ou igual? Estranho. Baixar completo.
-                            logger.warning(
-                                f"Arquivo local parcial {filename} é mais recente que o remoto? Baixando completo.")
+                # Atualiza o total da barra assim que conhecido
+                progress.update(task_id, total=remote_size)
+
+                # 2. Verificar cache e arquivo local
+                file_exists = os.path.exists(destination_path)
+                local_size = os.path.getsize(destination_path) if file_exists else 0
+                attempt_resume = False
+
+                if file_exists and not force_download:
+                    # Checa cache primeiro (se habilitado)
+                    if config.cache.enabled and get_download_cache().is_file_cached(filename, remote_size, remote_last_modified):
+                        if local_size == remote_size:
+                            progress.update(task_id, description=f"[green]{filename[:30]} (cache)[/green]",
+                                            completed=remote_size, style="green")
+                            skip_download = True
+                            skip_reason = "cache"
+                        else:
+                            logger.warning(f"Arquivo {filename} em cache, mas tamanho local difere. Baixando completo.")
+                            progress.update(task_id, description=f"[yellow]{filename[:30]} (cache inválido)[/yellow]",
+                                            style="yellow")
                             file_mode = 'wb'
                             initial_size = 0
+                    elif local_size < remote_size:
+                        if remote_last_modified is not None:
+                            local_last_modified = int(os.path.getmtime(destination_path))
+                            if local_last_modified >= remote_last_modified:
+                                logger.warning(
+                                    f"Arquivo local parcial {filename} é mais recente que o remoto? Baixando completo.")
+                                file_mode = 'wb'
+                                initial_size = 0
+                            else:
+                                logger.info(f"Arquivo local parcial {filename} encontrado. Tentando retomar download.")
+                                progress.update(task_id, description=f"[cyan]{filename[:30]} (retomando?)[/cyan]",
+                                                style="cyan")
+                                attempt_resume = True
+                                file_mode = 'ab'
+                                initial_size = local_size
+                                resume_header = {'Range': f'bytes={local_size}-'}
                         else:
-                            # Parcial e mais antigo que remoto -> Tentar retomar
-                            logger.info(f"Arquivo local parcial {filename} encontrado. Tentando retomar download.")
-                            # Atualiza barra Rich (ciano para retomar)
+                            logger.info(f"Arquivo local parcial {filename} encontrado (sem data remota). Tentando retomar.")
                             progress.update(task_id, description=f"[cyan]{filename[:30]} (retomando?)[/cyan]",
                                             style="cyan")
                             attempt_resume = True
                             file_mode = 'ab'
                             initial_size = local_size
                             resume_header = {'Range': f'bytes={local_size}-'}
-                    else:
-                        # Parcial, mas sem data remota para comparar -> Tentar retomar (otimista)
-                        logger.info(f"Arquivo local parcial {filename} encontrado (sem data remota). Tentando retomar.")
-                        attempt_resume = True
-                        file_mode = 'ab'
-                        initial_size = local_size
-                        resume_header = {'Range': f'bytes={local_size}-'}
+                    elif local_size > remote_size:
+                        logger.warning(
+                            f"Arquivo local {filename} maior que remoto? Local: {local_size}, Remoto: {remote_size}")
+                        file_mode = 'wb'
+                        initial_size = 0
+                    elif local_size == remote_size:
+                        if remote_last_modified is not None:
+                            local_last_modified = int(os.path.getmtime(destination_path))
+                            if local_last_modified >= remote_last_modified:
+                                progress.update(task_id, description=f"[green]{filename[:30]} (atualizado)[/green]",
+                                                completed=remote_size, style="green")
+                                skip_download = True
+                                skip_reason = "up-to-date"
+                            else:
+                                logger.info(f"Arquivo {filename} desatualizado. Baixando novamente.")
+                                file_mode = 'wb'
+                                initial_size = 0
 
-                elif local_size == remote_size:
-                    if remote_last_modified is not None:
-                        local_last_modified = int(os.path.getmtime(destination_path))
-                        if local_last_modified >= remote_last_modified:
-                            progress.update(task_id, description=f"[green]{filename[:30]} (local)[/green]",
-                                            completed=remote_size, style="green")
-                            skip_download = True
-                            skip_reason = "local"
-                        else:
-                            logger.info(f"Arquivo local {filename} completo mas desatualizado. Baixando completo.")
-                            # Atualiza barra Rich (amarelo para desatualizado)
-                            progress.update(task_id, description=f"[yellow]{filename[:30]} (desatualizado)[/yellow]",
-                                            style="yellow")
+                if not skip_download:
+                    # 3. Baixar arquivo
+                    if attempt_resume:
+                        try:
+                            async with session.get(url, headers=resume_header) as response:
+                                if response.status == 206:  # Partial Content
+                                    logger.info(f"Retomando download de {filename} a partir do byte {initial_size}")
+                                    result, error = await _process_download_response(
+                                        response, destination_path, file_mode, progress, task_id,
+                                        remote_size, initial_size, filename, remote_last_modified)
+                                    if error is None:
+                                        return result, None, skip_reason
+                                else:
+                                    logger.warning(f"Servidor não suporta retomada para {filename}. Baixando completo.")
+                                    file_mode = 'wb'
+                                    initial_size = 0
+                        except Exception as e_resume:
+                            logger.warning(f"Erro ao tentar retomar {filename}: {e_resume}. Baixando completo.")
                             file_mode = 'wb'
                             initial_size = 0
-                    else:
-                        progress.update(task_id, description=f"[green]{filename[:30]} (local s/ data)[/green]",
-                                        completed=remote_size, style="green")
-                        skip_download = True
-                        skip_reason = "local (sem data)"
-                else:  # local_size > remote_size
-                    logger.warning(
-                        f"Arquivo local {filename} maior que o remoto ({local_size} > {remote_size}). Baixando completo.")
-                    # Atualiza barra Rich (amarelo para tamanho inválido)
-                    progress.update(task_id, description=f"[yellow]{filename[:30]} (tamanho inválido)[/yellow]",
-                                    style="yellow")
-                    file_mode = 'wb'
-                    initial_size = 0
-            else:
-                # Arquivo não existe localmente ou foi forçado o download -> Baixar completo
-                if force_download:
-                    logger.info(f"Download forçado para {filename} devido a erros anteriores.")
+
+                    # Download completo (seja porque resume falhou ou não era necessário)
+                    if file_mode == 'wb':
+                        progress.update(task_id, description=f"[cyan]{filename[:30]} (baixando...)[/cyan]")
+                        async with session.get(url) as response:
+                            if response.status == 200:
+                                result, error = await _process_download_response(
+                                    response, destination_path, file_mode, progress, task_id,
+                                    remote_size, initial_size, filename, remote_last_modified)
+                                if error is None:
+                                    return result, None, skip_reason
+                            else:
+                                raise aiohttp.ClientError(
+                                    f"Status inesperado ao baixar {filename}: {response.status}")
                 else:
-                    logger.info(f"Arquivo {filename} não encontrado localmente. Baixando completo.")
-                # Atualiza barra Rich (cinza para novo download)
-                progress.update(task_id, description=f"[grey]{filename[:30]} (novo download)[/grey]",
-                                style="white")  # Usando branco como cor padrão
-                file_mode = 'wb'
-                initial_size = 0
+                    return destination_path, None, skip_reason
 
-            if skip_download and not force_download:
-                progress.update(task_id, completed=remote_size)
-                if config.cache.enabled and not get_download_cache().is_file_cached(filename, remote_size,
-                                                                              remote_last_modified):
-                    get_download_cache().update_file_cache(filename, remote_size, remote_last_modified)
-                # Retorna com o motivo do skip
-                return destination_path, None, skip_reason
-
-            # 3. Executar Download
-            # Reinicia o progresso (completed=initial_size) e define a descrição/estilo
-            progress.update(task_id,
-                            description=f"[cyan]{filename[:30]} ({'retomando' if attempt_resume else 'baixando'}...)[/cyan]",
-                            completed=initial_size,  # Define o ponto de partida
-                            style="cyan" if attempt_resume else "white")  # Ciano para retomada, branco para normal
-
-            async with session.get(url, headers=resume_header,
-                                   timeout=aiohttp.ClientTimeout(total=None, sock_connect=30,
-                                                                 sock_read=3600)) as response:
-                if attempt_resume:
-                    if response.status == 206:
-                        logger.info(f"Servidor aceitou retomar download para {filename}.")
-                        # Descrição e estilo já definidos acima
-                    elif response.status == 200:
-                        logger.warning(f"Servidor ignorou Range para {filename}. Baixando arquivo completo novamente.")
-                        file_mode = 'wb'
-                        initial_size = 0
-                        # Reinicia progresso e atualiza descrição/estilo (amarelo)
-                        progress.update(task_id, completed=0,
-                                        description=f"[yellow]{filename[:30]} (baixando completo*)[/yellow]",
-                                        style="yellow")
-                    else:
-                        logger.error(
-                            f"Falha ao tentar retomar {filename} (Status: {response.status}). Baixando arquivo completo como fallback.")
-                        file_mode = 'wb'
-                        initial_size = 0
-                        # Reinicia progresso e atualiza descrição/estilo (vermelho)
-                        progress.update(task_id, completed=0,
-                                        description=f"[red]{filename[:30]} (fallback download)[/red]", style="red")
-                        response.release()
-                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=None, sock_connect=30,
-                                                                                  sock_read=3600)) as response_fallback:
-                            response_fallback.raise_for_status()
-                            return await _process_download_response(response_fallback, destination_path, file_mode,
-                                                                    progress, task_id, remote_size, initial_size,
-                                                                    filename, remote_last_modified)
-
-                response.raise_for_status()
-                # Download ocorreu, retorna sem motivo de skip
-                dest_path, error = await _process_download_response(response, destination_path, file_mode, progress,
-                                                                    task_id, remote_size, initial_size, filename,
-                                                                    remote_last_modified)
-                return dest_path, error, None  # Adiciona None para skip_reason
-
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
-            logger.error(f"Erro ao processar {filename} ({url}): {e}")
-            # Atualiza barra Rich (vermelho para erro)
-            progress.update(task_id, description=f"[red]{filename[:30]} (ERRO)[/red]", style="red")
-            # Remove do cache em caso de erro
-            if config.cache.enabled:
-                get_download_cache().remove_file_from_cache(filename)
-            # Retorna erro, sem motivo de skip
-            return url, e, None  # Adiciona None para skip_reason
+        except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionResetError) as e:
+            last_error = e
+            retry_count += 1
+            if retry_count < max_retries:
+                wait_time = 2 ** retry_count  # Backoff exponencial: 2, 4, 8 segundos
+                logger.warning(f"Tentativa {retry_count} de {max_retries} para {filename} falhou. "
+                             f"Aguardando {wait_time} segundos antes de tentar novamente. Erro: {e}")
+                progress.update(task_id, description=f"[yellow]{filename[:30]} (tentativa {retry_count})[/yellow]")
+                await asyncio.sleep(wait_time)
+            continue
         except Exception as e:
-            logger.error(f"Erro inesperado ao processar {filename} ({url}): {e}")
-            # Atualiza barra Rich (vermelho para erro inesperado)
-            progress.update(task_id, description=f"[red]{filename[:30]} (ERRO Inesp.)[/red]", style="red")
-            if config.cache.enabled:
-                get_download_cache().remove_file_from_cache(filename)
-            # Retorna erro, sem motivo de skip
-            return url, e, None  # Adiciona None para skip_reason
+            last_error = e
+            break
         finally:
-            # Fechar a sessão se foi criada por nós
-            if created_session and session:
+            if created_session:
                 await session.close()
+
+    # Se chegou aqui, todas as tentativas falharam
+    error_msg = f"Todas as tentativas falharam para {filename}. Último erro: {last_error}"
+    logger.error(error_msg)
+    progress.update(task_id, description=f"[red]{filename[:30]} (ERRO final)[/red]", style="red")
+    
+    if config.cache.enabled:
+        get_download_cache().register_file_error(filename, str(error_msg))
+    
+    return filename, last_error, None
 
 
 async def get_remote_file_metadata(session: aiohttp.ClientSession, url: str) -> Tuple[int | None, int | None]:
@@ -548,78 +514,161 @@ async def get_remote_file_metadata(session: aiohttp.ClientSession, url: str) -> 
         return None, None
 
 
-async def process_downloaded_file(filename: str, destination_path: str, path_unzip: str, path_parquet: str) -> Tuple[str, Exception | None]:
+async def process_downloaded_file(filename: str, file_path: str, path_unzip: str, path_parquet: str) -> Tuple[str, Exception | None]:
     """
-    Processa um arquivo ZIP baixado de forma assíncrona.
-    Descompacta e converte para parquet usando Polars.
+    Processa um arquivo baixado, extraindo e convertendo para parquet.
     
     Args:
-        filename: Nome do arquivo baixado
-        destination_path: Caminho completo do arquivo ZIP
-        path_unzip: Diretório para descompactar
-        path_parquet: Diretório onde salvar os arquivos parquet
+        filename: Nome do arquivo
+        file_path: Caminho do arquivo zip
+        path_unzip: Diretório onde extrair o arquivo
+        path_parquet: Diretório onde salvar o arquivo parquet
         
     Returns:
-        Tuple[str, Exception | None]: Nome do arquivo e erro (se ocorrer)
+        Tuple[str, Exception | None]: (Caminho do arquivo, Erro se houver)
     """
     try:
-        logger.info(f"Iniciando processamento paralelo de: {filename}")
-        async with process_semaphore:
-            # Determinar qual processador usar com base no nome do arquivo
-            processo_encontrado = False
-            for tipo_prefixo, processor_fn in PROCESSOR_MAP.items():
-                if filename.lower().startswith(tipo_prefixo.lower()):
-                    logger.info(f"Processando {filename} como {tipo_prefixo}")
+        # Extrair pasta remota do caminho zip (geralmente algo como 2025-03)
+        remote_folder = os.path.basename(os.path.dirname(file_path))
+        # Verificar se o formato é AAAA-MM
+        if not re.match(r'^\d{4}-\d{2}$', remote_folder):
+            # Se não for uma pasta no formato esperado, tentar extrair do caminho
+            match = re.search(r'(20\d{2}-\d{2})', file_path)
+            if match:
+                remote_folder = match.group(1)
+            else:
+                # Último recurso: usar um valor padrão
+                remote_folder = datetime.datetime.now().strftime("%Y-%m")
+        
+        logger.info(f"Pasta remota identificada para processamento: {remote_folder}")
+
+        # Verifica se o arquivo já foi processado com sucesso
+        if config.cache.enabled:
+            cache = get_download_cache()
+            if cache.is_file_processed(filename):
+                processing_info = cache.get_processing_status(filename)
+                parquet_path = processing_info.get("parquet_path")
+                if parquet_path and os.path.exists(parquet_path):
+                    logger.info(f"Arquivo {filename} já foi processado anteriormente. Pulando processamento.")
+                    return parquet_path, None
+
+        # Atualiza status para extraindo
+        if config.cache.enabled:
+            cache.update_processing_status(filename, "extracting")
+
+        # Extrai o arquivo
+        logger.info(f"Extraindo {filename}...")
+        extract_dir = os.path.join(path_unzip, os.path.splitext(filename)[0])
+        os.makedirs(extract_dir, exist_ok=True)
+
+        # Tenta extração paralela primeiro
+        extraction_success = False
+        try:
+            # Usar extração paralela para arquivos menores
+            num_threads = max(1, int((os.cpu_count() or 4) * 0.75))
+            if extract_file_parallel(file_path, extract_dir, num_threads):
+                extraction_success = True
+                logger.info(f"Extração paralela concluída para {filename}")
+            else:
+                logger.warning(f"Extração paralela falhou para {filename}, tentando método tradicional")
+        except Exception as e:
+            logger.warning(f"Erro na extração paralela: {e}")
+
+        # Se a extração paralela falhou, tenta o método tradicional
+        if not extraction_success:
+            try:
+                with zipfile.ZipFile(file_path) as zip_ref:
+                    zip_ref.extractall(extract_dir)
+                extraction_success = True
+                logger.info(f"Extração tradicional concluída para {filename}")
+            except Exception as e:
+                logger.error(f"Erro na extração tradicional: {e}")
+                raise
+
+        # Atualiza status para processando
+        if config.cache.enabled:
+            cache.update_processing_status(filename, "processing")
+
+        # Processa o arquivo baseado no tipo
+        parquet_file = None
+        success = False
+        
+        # Determina o tipo de arquivo e usa a função de processamento apropriada
+        for tipo_prefixo, processor_fn in PROCESSOR_MAP.items():
+            if filename.lower().startswith(tipo_prefixo.lower()):
+                logger.info(f"Processando {filename} como {tipo_prefixo}")
+                try:
+                    # Criar argumentos específicos para cada tipo de processador
+                    kwargs = {
+                        "zip_file": filename,
+                        "path_zip": os.path.dirname(file_path),
+                        "path_unzip": path_unzip,
+                        "path_parquet": path_parquet,
+                    }
                     
-                    # Chamada do processador apropriado
-                    try:
-                        # Criar argumentos específicos para cada tipo de processador
-                        kwargs = {}
-                        if tipo_prefixo == "Empresas":
-                            kwargs = {
-                                "zip_file": filename,
-                                "path_zip": os.path.dirname(destination_path),
-                                "path_unzip": path_unzip,
-                                "path_parquet": path_parquet,
-                                "create_private": False  # Configuração padrão
-                            }
-                        else:
-                            # Para os outros tipos, os parâmetros são os mesmos
-                            kwargs = {
-                                "zip_file": filename,
-                                "path_zip": os.path.dirname(destination_path),
-                                "path_unzip": path_unzip,
-                                "path_parquet": path_parquet
-                            }
-                            
-                        # Executar o processamento em um thread separado para não bloquear o event loop
-                        loop = asyncio.get_event_loop()
-                        
-                        # Todas as funções agora são do tipo polars e retornam bool
-                        result = await loop.run_in_executor(
-                            None,
-                            lambda: processor_fn(**kwargs)
-                        )
-                        
-                        # Verificar o resultado (agora é sempre um bool)
-                        if result is True:
-                            logger.info(f"Processamento de {filename} concluído com sucesso")
-                        else:
-                            logger.warning(f"Processamento de {filename} falhou")
-                    except Exception as e:
-                        logger.error(f"Erro durante o processamento de {filename}: {str(e)}")
-                        return filename, e
+                    # Adicionar parâmetros específicos baseado no tipo
+                    if tipo_prefixo == 'Empresas':
+                        kwargs["create_private"] = False  # Configuração padrão para empresas
+                    elif tipo_prefixo == 'Estabelecimentos':
+                        kwargs["uf_subset"] = None  # Configuração padrão para estabelecimentos
+                    else:
+                        kwargs["remote_folder"] = remote_folder  # Passa a pasta remota correta
                     
-                    processo_encontrado = True
-                    break
-            
-            if not processo_encontrado:
-                logger.warning(f"Não foi possível determinar o tipo de processamento para {filename}")
-                
-        return filename, None
+                    # Executar o processamento em um thread separado para não bloquear o event loop
+                    loop = asyncio.get_event_loop()
+                    success = await loop.run_in_executor(None, lambda: processor_fn(**kwargs))
+                    
+                    if success:
+                        # Construir o caminho do arquivo parquet baseado no nome do arquivo zip e pasta remota
+                        parquet_file = os.path.join(path_parquet, remote_folder, os.path.splitext(filename)[0] + ".parquet")
+                        break
+                except Exception as e:
+                    logger.error(f"Erro ao processar {filename} como {tipo_prefixo}: {e}")
+                    raise
+
+        if success and parquet_file:
+            logger.info(f"Arquivo {filename} processado com sucesso. Parquet: {parquet_file}")
+            # Atualiza cache com sucesso
+            if config.cache.enabled:
+                cache.update_processing_status(filename, "completed", parquet_file)
+            return parquet_file, None
+        else:
+            error_msg = f"Falha ao processar {filename}"
+            logger.error(error_msg)
+            if config.cache.enabled:
+                cache.register_file_error(filename, error_msg)
+            return file_path, ValueError(error_msg)
+
     except Exception as e:
-        logger.error(f"Erro geral durante o processamento de {filename}: {str(e)}")
-        return filename, e
+        error_msg = f"Erro ao processar {filename}: {e}"
+        logger.error(error_msg)
+        if config.cache.enabled:
+            cache.register_file_error(filename, error_msg)
+        return file_path, e
+
+
+def format_elapsed_time(seconds: float) -> str:
+    """
+    Formata o tempo decorrido em horas, minutos e segundos.
+    
+    Args:
+        seconds: Tempo em segundos
+        
+    Returns:
+        str: Tempo formatado (ex: "2h 15min 30s" ou "15min 30s" ou "30s")
+    """
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0 or hours > 0:  # Mostra minutos se tiver horas
+        parts.append(f"{minutes}min")
+    parts.append(f"{secs}s")
+    
+    return " ".join(parts)
 
 
 async def download_multiple_files(urls: List[str], destination_folder: str, max_concurrent: int = 5):
@@ -627,13 +676,14 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
     Downloads multiple files asynchronously with progress bars using Rich.
     Also processes each file immediately after download is completed or identified as already existing.
     """
+    start_time = time.time()
+    
     if not os.path.exists(destination_folder):
         os.makedirs(destination_folder)
         logger.info(f"Diretório criado: {destination_folder}")
 
     semaphore = asyncio.Semaphore(max_concurrent)
     download_tasks = []
-    processing_tasks = []
     downloaded_files = []
     failed_downloads = []
     skipped_files = []  # Lista para guardar arquivos pulados e motivo
@@ -659,127 +709,69 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
     
     if not path_unzip or not path_parquet:
         logger.error("PATH_UNZIP ou PATH_PARQUET não definidos, o processamento paralelo será desabilitado.")
-        # Continua com os downloads, mas não vai processar
 
     # Configurar colunas do Rich Progress
     progress_columns = [
         TextColumn("[progress.description]{task.description}", justify="left"),
         BarColumn(bar_width=None),
         "[progress.percentage]{task.percentage:>3.1f}%",
-        "•",  # Readicionar separador
+        "•",
         DownloadColumn(),
-        "•",  # Readicionar separador
+        "•",
         TransferSpeedColumn(),
-        "•",  # Readicionar separador
+        "•",
         TimeRemainingColumn(),
     ]
-    
-    # Função que processa os arquivos da fila
-    async def process_files_from_queue():
-        """Consome a fila de processamento e processa os arquivos em tempo real."""
-        while True:
-            try:
-                file_path = await processing_queue.get()
-                
-                # Verifica se recebemos o sinal de encerramento (None)
-                if file_path is None:
-                    logger.debug("Sinal de encerramento recebido pelo consumidor da fila de processamento")
-                    processing_queue.task_done()
-                    break
-                
-                filename = os.path.basename(file_path)
-                logger.info(f"Iniciando processamento paralelo para {filename}")
-                
-                # Verificar se arquivo tem erros no cache
-                if config.cache.enabled:
-                    cache = get_download_cache()
-                    if cache.has_file_error(filename):
-                        logger.warning(f"Arquivo {filename} tem erros registrados no cache. Pulando processamento.")
-                        processing_queue.task_done()
-                        continue
-                
-                try:
-                    result, error = await process_downloaded_file(filename, file_path, path_unzip, path_parquet)
-                    if error is None:
-                        processed_files.append(result)
-                        # Atualiza o cache para indicar processamento bem-sucedido
-                        if config.cache.enabled:
-                            cache = get_download_cache()
-                            # Obtém informações atuais do arquivo
-                            file_info = cache.get_file_info(filename)
-                            if file_info:
-                                cache.update_file_cache(
-                                    filename, 
-                                    file_info.get("size", 0), 
-                                    file_info.get("modified", 0),
-                                    status="success"
-                                )
-                    else:
-                        failed_processing.append((result, error))
-                        logger.warning(f"Falha ao processar {filename}: {error}")
-                        # Registra o erro de processamento no cache
-                        if config.cache.enabled:
-                            cache = get_download_cache()
-                            error_msg = f"Erro de processamento: {str(error)}"
-                            cache.register_file_error(filename, error_msg)
-                except Exception as e:
-                    logger.error(f"Erro ao processar {filename}: {e}")
-                    failed_processing.append((filename, e))
-                    # Registra o erro no cache
-                    if config.cache.enabled:
-                        cache = get_download_cache()
-                        error_msg = f"Erro não tratado: {str(e)}"
-                        cache.register_file_error(filename, error_msg)
-                
-                processing_queue.task_done()
-            except Exception as e:
-                logger.error(f"Erro no processamento da fila: {e}")
-                processing_queue.task_done()
 
-    # Iniciar o processador de fila
-    processor_task = asyncio.create_task(process_files_from_queue())
+    # Criar sessão compartilhada para todos os downloads
+    async with aiohttp.ClientSession() as session:
+        # Configurar barra de progresso
+        with Progress(*progress_columns, expand=True) as progress:
+            # Criar tarefas de download
+            tasks_info = []
+            for url in urls:
+                filename = os.path.basename(url)
+                destination_path = os.path.join(destination_folder, filename)
+                task_id = progress.add_task(f"[cyan]{filename[:30]}...", total=None)
+                tasks_info.append((url, destination_path, task_id))
 
-    # Configurar barra de progresso
-    with Progress(*progress_columns, expand=True) as progress:
-        # Criar tarefas de download
-        for url in urls:
-            filename = os.path.basename(url)
-            destination_path = os.path.join(destination_folder, filename)
-            
-            # Criar tarefa de download
-            task_id = progress.add_task(f"[cyan]{filename[:30]}...", total=None)
-            download_task = asyncio.create_task(
-                download_file(
-                    None,  # session será criado dentro da função
-                    url,
-                    destination_path,
-                    semaphore,
-                    progress,
-                    task_id
+            # Criar e iniciar todas as tarefas de download simultaneamente
+            download_tasks = [
+                asyncio.create_task(
+                    download_file(
+                        session,  # Usar a mesma sessão para todos os downloads
+                        url,
+                        destination_path,
+                        semaphore,
+                        progress,
+                        task_id
+                    )
                 )
-            )
-            download_tasks.append(download_task)
+                for url, destination_path, task_id in tasks_info
+            ]
 
-        # Aguardar todas as tarefas de download
-        for task in asyncio.as_completed(download_tasks):
-            try:
-                result, error, skip_reason = await task
-                if error is None:
-                    if skip_reason:
-                        skipped_files.append((result, skip_reason))
+            # Aguardar todas as tarefas SIMULTANEAMENTE
+            results = await asyncio.gather(*download_tasks, return_exceptions=True)
+
+            # Processar resultados
+            for result in results:
+                if isinstance(result, tuple):
+                    path, error, skip_reason = result
+                    if error is None:
+                        if skip_reason:
+                            skipped_files.append((path, skip_reason))
+                        else:
+                            downloaded_files.append(path)
+                            # Adicionar à fila de processamento
+                            await processing_queue.put(path)
                     else:
-                        downloaded_files.append(result)
-                        # Adicionar à fila de processamento
-                        await processing_queue.put(result)
+                        failed_downloads.append((path, error))
                 else:
-                    failed_downloads.append((result, error))
-            except Exception as e:
-                logger.error(f"Erro na tarefa de download: {e}")
-                failed_downloads.append((None, e))
+                    # Se não é uma tupla, é uma exceção não tratada
+                    failed_downloads.append((None, result))
 
-        # Sinalizar fim do processamento
-        await processing_queue.put(None)
-        await processor_task
+            # Sinalizar fim do processamento
+            await processing_queue.put(None)
 
     # Resumo final
     logger.info("=" * 50)
@@ -790,6 +782,11 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
     logger.info(f"Downloads com falha: {len(failed_downloads)}")
     logger.info(f"Arquivos processados com sucesso: {len(processed_files)}")
     logger.info(f"Processamentos com falha: {len(failed_processing)}")
+    
+    # Calcular tempo total
+    end_time = time.time()
+    total_time = end_time - start_time
+    logger.info(f"Tempo total: {format_elapsed_time(total_time)}")
     logger.info("=" * 50)
 
     return downloaded_files, failed_downloads

@@ -27,6 +27,7 @@ from ..utils import (
 )
 from ..utils.folders import get_output_path, ensure_correct_folder_structure
 import inspect
+from ..utils.time_utils import format_elapsed_time
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +423,8 @@ def extract_file_parallel(zip_path: str, extract_dir: str, num_threads: int = 4)
         logger.info(f"Extração paralela concluída: {total_files} arquivos extraídos em {total_time:.2f} segundos")
         logger.info(f"Tempo de extração: {total_time - move_time:.2f} segundos")
         logger.info(f"Tempo de movimentação: {move_time:.2f} segundos")
+        logger.info(f"Tempo de movimentação dos arquivos: {format_elapsed_time(move_time)}")
+        logger.info(f"Tempo total de extração: {format_elapsed_time(total_time)}")
         return True
         
     except Exception as e:
@@ -464,11 +467,12 @@ def extract_large_zip(zip_path: str, extract_dir: str, chunk_size: int = 1000000
                 
                 # Registrar tempo do chunk
                 chunk_time = time.time() - chunk_start
-                logger.info(f"Chunk {i//chunk_size + 1} extraído em {chunk_time:.2f} segundos")
+                logger.info(f"Tempo de processamento do chunk {i+1}: {format_elapsed_time(chunk_time)}")
                 
             # Registrar tempo total
             total_time = time.time() - start_time
             logger.info(f"Extração concluída: {total_files} arquivos extraídos em {total_time:.2f} segundos")
+            logger.info(f"Tempo total de processamento: {format_elapsed_time(total_time)}")
             return True
             
     except Exception as e:
@@ -667,7 +671,7 @@ def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bo
         logger.info("=" * 50)
         logger.info("RESUMO DO PROCESSAMENTO DE SÓCIOS:")
         logger.info("=" * 50)
-        logger.info(f"Tempo total de processamento: {total_time:.2f} segundos")
+        logger.info(f"Tempo total de processamento: {format_elapsed_time(total_time)}")
         logger.info("=" * 50)
         
         return True

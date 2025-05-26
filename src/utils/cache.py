@@ -39,11 +39,19 @@ class DownloadCache:
         try:
             if os.path.exists(self.cache_path):
                 with open(self.cache_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            return {"files": {}, "errors": {}}
+                    data = json.load(f)
+                    # Garante que todas as chaves necessárias existem
+                    if "files" not in data:
+                        data["files"] = {}
+                    if "errors" not in data:
+                        data["errors"] = {}
+                    if "processing" not in data:
+                        data["processing"] = {}
+                    return data
+            return {"files": {}, "errors": {}, "processing": {}}
         except Exception as e:
             logger.error(f"Erro ao carregar cache: {e}")
-            return {"files": {}, "errors": {}}
+            return {"files": {}, "errors": {}, "processing": {}}
 
     def _save_cache(self):
         """Salva o cache no arquivo JSON."""
@@ -103,13 +111,84 @@ class DownloadCache:
             }
             
             # Se o arquivo foi atualizado com sucesso, remove qualquer erro registrado
-            if status == "success" and filename in self.cache_data.get("errors", {}):
-                del self.cache_data["errors"][filename]
+            if status == "success":
+                if filename in self.cache_data.get("errors", {}):
+                    del self.cache_data["errors"][filename]
+                # Remove também do processamento se existir
+                if filename in self.cache_data.get("processing", {}):
+                    del self.cache_data["processing"][filename]
                 
             self._save_cache()
             logger.debug(f"Cache atualizado para {filename}")
         except Exception as e:
             logger.error(f"Erro ao atualizar cache para {filename}: {e}")
+
+    def update_processing_status(self, filename: str, status: str, parquet_path: str | None = None):
+        """
+        Atualiza o status de processamento de um arquivo.
+        
+        Args:
+            filename: Nome do arquivo
+            status: Status do processamento (downloading, extracting, processing, completed, error)
+            parquet_path: Caminho do arquivo parquet gerado (se aplicável)
+        """
+        try:
+            if "processing" not in self.cache_data:
+                self.cache_data["processing"] = {}
+                
+            self.cache_data["processing"][filename] = {
+                "status": status,
+                "parquet_path": parquet_path,
+                "last_updated": datetime.datetime.now().isoformat()
+            }
+            
+            if status == "completed" and parquet_path:
+                # Verifica se o arquivo parquet existe
+                if os.path.exists(parquet_path):
+                    self.cache_data["processing"][filename]["parquet_size"] = os.path.getsize(parquet_path)
+                    self.cache_data["processing"][filename]["parquet_modified"] = int(os.path.getmtime(parquet_path))
+            
+            self._save_cache()
+            logger.debug(f"Status de processamento atualizado para {filename}: {status}")
+        except Exception as e:
+            logger.error(f"Erro ao atualizar status de processamento para {filename}: {e}")
+
+    def get_processing_status(self, filename: str) -> Dict[str, Any]:
+        """
+        Retorna o status de processamento de um arquivo.
+        
+        Args:
+            filename: Nome do arquivo
+            
+        Returns:
+            Dict[str, Any]: Informações de processamento ou {} se não encontrado
+        """
+        return self.cache_data.get("processing", {}).get(filename, {})
+
+    def is_file_processed(self, filename: str) -> bool:
+        """
+        Verifica se um arquivo já foi processado com sucesso.
+        
+        Args:
+            filename: Nome do arquivo
+            
+        Returns:
+            bool: True se o arquivo foi processado com sucesso, False caso contrário
+        """
+        processing_info = self.get_processing_status(filename)
+        if not processing_info:
+            return False
+            
+        status = processing_info.get("status")
+        if status != "completed":
+            return False
+            
+        # Se tem parquet_path, verifica se o arquivo existe
+        parquet_path = processing_info.get("parquet_path")
+        if parquet_path and not os.path.exists(parquet_path):
+            return False
+            
+        return True
 
     def remove_file_from_cache(self, filename: str):
         """
@@ -121,8 +200,12 @@ class DownloadCache:
         try:
             if filename in self.cache_data.get("files", {}):
                 del self.cache_data["files"][filename]
-                self._save_cache()
-                logger.debug(f"Arquivo {filename} removido do cache")
+            if filename in self.cache_data.get("errors", {}):
+                del self.cache_data["errors"][filename]
+            if filename in self.cache_data.get("processing", {}):
+                del self.cache_data["processing"][filename]
+            self._save_cache()
+            logger.debug(f"Arquivo {filename} removido do cache")
         except Exception as e:
             logger.error(f"Erro ao remover {filename} do cache: {e}")
 
@@ -146,6 +229,9 @@ class DownloadCache:
             # Atualiza o status do arquivo para error
             if filename in self.cache_data.get("files", {}):
                 self.cache_data["files"][filename]["status"] = "error"
+            
+            # Atualiza o status de processamento para error
+            self.update_processing_status(filename, "error")
                 
             self._save_cache()
             logger.debug(f"Erro registrado para {filename}: {error_msg}")
@@ -188,7 +274,7 @@ class DownloadCache:
     def clear_cache(self):
         """Limpa todo o cache."""
         try:
-            self.cache_data = {"files": {}, "errors": {}}
+            self.cache_data = {"files": {}, "errors": {}, "processing": {}}
             self._save_cache()
             logger.info("Cache limpo com sucesso")
         except Exception as e:
@@ -201,9 +287,22 @@ class DownloadCache:
         Returns:
             Dict: Estatísticas do cache
         """
-        return {
+        stats = {
             "total_files": len(self.cache_data.get("files", {})),
             "total_errors": len(self.cache_data.get("errors", {})),
-            "cache_path": self.cache_path,
-            "last_updated": datetime.datetime.now().isoformat()
+            "total_processing": len(self.cache_data.get("processing", {})),
+            "files_by_status": {},
+            "processing_by_status": {}
         }
+        
+        # Conta arquivos por status
+        for file_info in self.cache_data.get("files", {}).values():
+            status = file_info.get("status", "unknown")
+            stats["files_by_status"][status] = stats["files_by_status"].get(status, 0) + 1
+            
+        # Conta processamentos por status
+        for proc_info in self.cache_data.get("processing", {}).values():
+            status = proc_info.get("status", "unknown")
+            stats["processing_by_status"][status] = stats["processing_by_status"].get(status, 0) + 1
+            
+        return stats

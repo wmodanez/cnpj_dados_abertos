@@ -26,6 +26,7 @@ from ..utils import (
     create_parquet_filename
 )
 from ..utils.folders import get_output_path, ensure_correct_folder_structure
+from ..utils.time_utils import format_elapsed_time
 import inspect
 
 logger = logging.getLogger(__name__)
@@ -422,6 +423,8 @@ def extract_file_parallel(zip_path: str, extract_dir: str, num_threads: int = 4)
         logger.info(f"Extração paralela concluída: {total_files} arquivos extraídos em {total_time:.2f} segundos")
         logger.info(f"Tempo de extração: {total_time - move_time:.2f} segundos")
         logger.info(f"Tempo de movimentação: {move_time:.2f} segundos")
+        logger.info(f"Tempo de movimentação dos arquivos: {format_elapsed_time(move_time)}")
+        logger.info(f"Tempo total de extração: {format_elapsed_time(total_time)}")
         return True
         
     except Exception as e:
@@ -463,13 +466,13 @@ def extract_large_zip(zip_path: str, extract_dir: str, chunk_size: int = 1000000
                 # Forçar coleta de lixo após cada chunk
                 gc.collect()
                 
-                # Registrar tempo do chunk
+                # Tempo do chunk
                 chunk_time = time.time() - chunk_start
-                logger.info(f"Chunk {i//chunk_size + 1} extraído em {chunk_time:.2f} segundos")
+                logger.info(f"Tempo de processamento do chunk {i//chunk_size + 1}: {format_elapsed_time(chunk_time)}")
                 
-            # Registrar tempo total
+            # Tempo total
             total_time = time.time() - start_time
-            logger.info(f"Extração concluída: {total_files} arquivos extraídos em {total_time:.2f} segundos")
+            logger.info(f"Tempo total de processamento: {format_elapsed_time(total_time)}")
             return True
             
     except Exception as e:
@@ -541,9 +544,9 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
                     logger.error(f"[{pid}] Falha na extração paralela de {zip_file_path}")
                     return False
                 
-            # Registrar tempo total de extração
+            # Tempo de extração
             extract_time = time.time() - extract_start
-            logger.info(f"[{pid}] Tempo total de extração: {extract_time:.2f} segundos para arquivo de {file_size_mb:.1f}MB")
+            logger.info(f"Tempo de extração: {format_elapsed_time(extract_time)}")
                 
             # Verificar se os arquivos foram extraídos
             extracted_files = os.listdir(path_extracao)
@@ -880,7 +883,7 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
         logger.info("=" * 50)
         logger.info("RESUMO DO PROCESSAMENTO DE EMPRESAS:")
         logger.info("=" * 50)
-        logger.info(f"Tempo total de processamento: {total_time:.2f} segundos")
+        logger.info(f"Tempo total de processamento: {format_elapsed_time(total_time)}")
         logger.info("=" * 50)
         
         return True

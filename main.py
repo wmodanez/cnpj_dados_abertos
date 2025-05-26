@@ -85,6 +85,7 @@ from src.process.estabelecimento import process_estabelecimento_files
 from src.process.simples import process_simples_files
 from src.process.socio import process_socio_files
 from src.utils import check_basic_folders
+from src.utils.time_utils import format_elapsed_time
 
 # Configurar logger global
 logger = logging.getLogger(__name__)
@@ -555,9 +556,9 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     for tipo, resultado in processing_results.items():
         if tipo != 'total_time' and tipo != 'all_ok':
             status = "SUCESSO" if resultado['success'] else "FALHA"
-            logger.info(f"{tipo.upper()}: {status} - Tempo: {resultado['time']:.2f} segundos")
+            logger.info(f"{tipo.upper()}: {status} - Tempo: {format_elapsed_time(resultado['time'])}")
     logger.info("-" * 50)
-    logger.info(f"TEMPO TOTAL DE PROCESSAMENTO: {total_elapsed_time:.2f} segundos")
+    logger.info(f"TEMPO TOTAL DE PROCESSAMENTO: {format_elapsed_time(total_elapsed_time)}")
     logger.info(f"STATUS GERAL: {'SUCESSO' if all_ok else 'FALHA'}")
     logger.info("=" * 50)
     
@@ -790,13 +791,14 @@ def main():
         ))
         
         download_time = time.time() - download_start_time
-        logger.info(f"Tempo de download: {download_time:.2f} segundos")
+        logger.info("=" * 50)
+        logger.info(f"Tempo de download: {format_elapsed_time(download_time)}")
         
         if not download_ok:
             print_error("Falha no processo de download. Verifique os logs para mais detalhes.")
             total_time = time.time() - start_time
             logger.info("=" * 50)
-            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {total_time:.2f} segundos")
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
             logger.info("STATUS FINAL: FALHA")
             logger.info("=" * 50)
             return
@@ -830,13 +832,14 @@ def main():
         )
         
         process_time = time.time() - process_start_time
-        logger.info(f"Tempo de processamento: {process_time:.2f} segundos")
+        logger.info("=" * 50)
+        logger.info(f"Tempo de processamento: {format_elapsed_time(process_time)}")
         
         if not process_results['all_ok']:
             print_warning("Alguns erros ocorreram durante o processamento. O banco de dados NÃO será criado.")
             total_time = time.time() - start_time
             logger.info("=" * 50)
-            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {total_time:.2f} segundos")
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
             logger.info("STATUS FINAL: FALHA")
             logger.info("=" * 50)
             return
@@ -852,13 +855,14 @@ def main():
             logger.info(f"Criando arquivo DuckDB em: {db_file}")
             create_duckdb_file(output_parquet_path, db_file, PATH_REMOTE_PARQUET)
             db_time = time.time() - db_start_time
-            logger.info(f"Tempo de criação do banco: {db_time:.2f} segundos")
+            logger.info("=" * 50)
+            logger.info(f"Tempo de processamento do banco: {format_elapsed_time(db_time)}")
             print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
         except Exception as e:
             logger.exception(f"Erro ao criar banco de dados: {e}")
             print_error(f"Falha ao criar banco de dados: {str(e)}")
             db_time = time.time() - db_start_time
-            logger.info(f"Tempo de criação do banco (falhou): {db_time:.2f} segundos")
+            logger.info(f"Tempo de criação do banco (falhou): {format_elapsed_time(db_time)}")
     
     total_time = time.time() - start_time
     
@@ -869,11 +873,11 @@ def main():
     logger.info("=" * 50)
     
     if args.step == 'all':
-        logger.info(f"Download: {download_time:.2f} segundos")
-        logger.info(f"Processamento: {process_time:.2f} segundos")
-        logger.info(f"Criação do banco: {db_time:.2f} segundos")
+        logger.info(f"Download: {format_elapsed_time(download_time)}")
+        logger.info(f"Processamento: {format_elapsed_time(process_time)}")
+        logger.info(f"Criação do banco: {format_elapsed_time(db_time)}")
     
-    logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {total_time:.2f} segundos")
+    logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
     logger.info("=" * 50)
     logger.info("Execução concluída.")
     return
