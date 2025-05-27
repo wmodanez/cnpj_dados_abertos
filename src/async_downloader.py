@@ -15,6 +15,7 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from rich.logging import RichHandler
+from rich.console import Console
 from rich.progress import (
     Progress,
     BarColumn,
@@ -27,14 +28,18 @@ from rich.progress import (
 # Importações locais do projeto
 from .config import config
 from .utils import DownloadCache
-from .process.empresa import process_single_zip as process_empresa_zip, extract_zip_parallel
+from .process.empresa import process_single_zip as process_empresa_zip
 from .process.estabelecimento import process_single_zip as process_estabelecimento_zip
 from .process.simples import process_single_zip as process_simples_zip
 from .process.socio import process_single_zip as process_socio_zip
 from .utils.time_utils import format_elapsed_time
+from .utils.statistics import global_stats
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
+
+# Instanciar console do Rich
+console = Console()
 
 # Instanciar o cache
 # TODO: Considerar injetar a instância ao invés de criar globalmente, se necessário
@@ -57,9 +62,321 @@ PROCESSOR_MAP = {
     'Socios': process_socio_zip
 }
 
-# Semáforo para limitar o número de processamentos simultâneos
-process_semaphore = asyncio.Semaphore(os.cpu_count() // 2 or 1)  # Metade do número de CPUs
+# ===== OTIMIZAÇÕES DE PIPELINE =====
 
+# Configurações adaptativas baseadas nos recursos do sistema
+def get_optimal_concurrency():
+    """Calcula a concorrência ótima baseada nos recursos do sistema."""
+    import psutil
+    
+    cpu_count = os.cpu_count() or 4
+    memory_gb = psutil.virtual_memory().total / (1024**3)
+    
+    # Algoritmo adaptativo para concorrência
+    if memory_gb >= 16:
+        # Sistema com muita RAM - pode processar mais arquivos simultaneamente
+        download_workers = min(8, cpu_count)
+        process_workers = min(4, cpu_count // 2)
+    elif memory_gb >= 8:
+        # Sistema com RAM moderada
+        download_workers = min(6, cpu_count)
+        process_workers = min(3, cpu_count // 2)
+    else:
+        # Sistema com pouca RAM - ser mais conservador
+        download_workers = min(4, cpu_count)
+        process_workers = min(2, cpu_count // 3)
+    
+    logger.info(f"Configuração adaptativa: {memory_gb:.1f}GB RAM, {cpu_count} CPUs")
+    logger.info(f"Workers de download: {download_workers}, Workers de processamento: {process_workers}")
+    
+    return download_workers, process_workers
+
+# Cache inteligente para resultados intermediários
+class ProcessingCache:
+    """Cache inteligente para otimizar reprocessamento."""
+    
+    def __init__(self):
+        self.cache_dir = os.path.join(os.getenv('PATH_ZIP', 'data'), '.processing_cache')
+        os.makedirs(self.cache_dir, exist_ok=True)
+        self.cache_file = os.path.join(self.cache_dir, 'processing_cache.json')
+        self._load_cache()
+    
+    def _load_cache(self):
+        """Carrega cache do disco."""
+        try:
+            if os.path.exists(self.cache_file):
+                import json
+                with open(self.cache_file, 'r') as f:
+                    self.cache = json.load(f)
+            else:
+                self.cache = {}
+        except Exception as e:
+            logger.warning(f"Erro ao carregar cache de processamento: {e}")
+            self.cache = {}
+    
+    def _save_cache(self):
+        """Salva cache no disco."""
+        try:
+            import json
+            with open(self.cache_file, 'w') as f:
+                json.dump(self.cache, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Erro ao salvar cache de processamento: {e}")
+    
+    def is_processed(self, filename: str, file_size: int, file_mtime: int) -> bool:
+        """Verifica se arquivo já foi processado com sucesso."""
+        key = f"{filename}_{file_size}_{file_mtime}"
+        return key in self.cache and self.cache[key].get('status') == 'completed'
+    
+    def mark_completed(self, filename: str, file_size: int, file_mtime: int, output_path: str):
+        """Marca arquivo como processado com sucesso."""
+        key = f"{filename}_{file_size}_{file_mtime}"
+        self.cache[key] = {
+            'status': 'completed',
+            'output_path': output_path,
+            'timestamp': time.time()
+        }
+        self._save_cache()
+
+# Instância global do cache de processamento
+processing_cache = ProcessingCache()
+
+# Semáforos adaptativos
+download_workers, process_workers = get_optimal_concurrency()
+download_semaphore = asyncio.Semaphore(download_workers)
+process_semaphore = asyncio.Semaphore(process_workers)
+
+# ===== STREAMING E PIPELINE OTIMIZADO =====
+
+class StreamingProcessor:
+    """Processador com streaming otimizado para grandes volumes de dados."""
+    
+    def __init__(self, max_memory_mb: int = 2048):
+        self.max_memory_mb = max_memory_mb
+        self.active_streams = {}
+        self.processing_queue = asyncio.Queue(maxsize=20)  # Limitar fila para controlar memória
+    
+    async def process_with_streaming(self, file_path: str, filename: str, path_unzip: str, path_parquet: str):
+        """Processa arquivo usando streaming otimizado."""
+        try:
+            # Verificar cache primeiro
+            file_stat = os.stat(file_path)
+            if processing_cache.is_processed(filename, file_stat.st_size, int(file_stat.st_mtime)):
+                cached_output = processing_cache.cache[f"{filename}_{file_stat.st_size}_{int(file_stat.st_mtime)}"]["output_path"]
+                if os.path.exists(cached_output):
+                    logger.info(f"Arquivo {filename} já processado (cache). Pulando.")
+                    return cached_output, None
+            
+            # Monitorar uso de memória durante processamento
+            import psutil
+            process = psutil.Process()
+            initial_memory = process.memory_info().rss / 1024 / 1024  # MB
+            
+            # Processamento com monitoramento de recursos
+            logger.info(f"Iniciando processamento streaming de {filename}")
+            
+            # Determinar tipo de arquivo e processador
+            processor_fn = None
+            file_type = None
+            for tipo_prefixo, processor in PROCESSOR_MAP.items():
+                if filename.lower().startswith(tipo_prefixo.lower()):
+                    processor_fn = processor
+                    file_type = tipo_prefixo
+                    break
+            
+            if not processor_fn:
+                raise ValueError(f"Tipo de arquivo não reconhecido: {filename}")
+            
+            # Extrair pasta remota
+            remote_folder = os.path.basename(os.path.dirname(file_path))
+            if not re.match(r'^\d{4}-\d{2}$', remote_folder):
+                match = re.search(r'(20\d{2}-\d{2})', file_path)
+                remote_folder = match.group(1) if match else "dados"
+            
+            # Executar processamento com argumentos otimizados
+            kwargs = {
+                "zip_file": filename,
+                "path_zip": os.path.dirname(file_path),
+                "path_unzip": path_unzip,
+                "path_parquet": path_parquet,
+            }
+            
+            # Adicionar argumentos específicos
+            if "remote_folder" in processor_fn.__code__.co_varnames:
+                kwargs["remote_folder"] = remote_folder
+            if "create_private" in processor_fn.__code__.co_varnames:
+                kwargs["create_private"] = False
+            
+            # Executar em thread separada para não bloquear event loop
+            loop = asyncio.get_event_loop()
+            
+            # Criar função wrapper para passar argumentos corretamente
+            def run_processor():
+                return processor_fn(**kwargs)
+            
+            result = await loop.run_in_executor(None, run_processor)
+            
+            # Verificar uso de memória após processamento
+            final_memory = process.memory_info().rss / 1024 / 1024  # MB
+            memory_used = final_memory - initial_memory
+            
+            if memory_used > self.max_memory_mb:
+                logger.warning(f"Processamento de {filename} usou {memory_used:.1f}MB (limite: {self.max_memory_mb}MB)")
+                # Forçar coleta de lixo
+                import gc
+                gc.collect()
+            
+            if result:
+                # Construir caminho do parquet
+                if remote_folder:
+                    parquet_path = os.path.join(path_parquet, remote_folder, file_type.lower())
+                else:
+                    parquet_path = os.path.join(path_parquet, file_type.lower())
+                
+                # Marcar como processado no cache
+                processing_cache.mark_completed(filename, file_stat.st_size, int(file_stat.st_mtime), parquet_path)
+                
+                logger.info(f"Processamento streaming de {filename} concluído. Memória usada: {memory_used:.1f}MB")
+                return parquet_path, None
+            else:
+                raise ValueError(f"Processamento falhou para {filename}")
+                
+        except Exception as e:
+            logger.error(f"Erro no processamento streaming de {filename}: {e}")
+            return file_path, e
+
+# Instância global do processador streaming
+streaming_processor = StreamingProcessor()
+
+# ===== SISTEMA DE MONITORAMENTO DE RECURSOS =====
+
+class ResourceMonitor:
+    """Monitor de recursos do sistema para otimização dinâmica."""
+    
+    def __init__(self):
+        self.monitoring = False
+        self.stats = {
+            'cpu_percent': [],
+            'memory_percent': [],
+            'disk_io': [],
+            'network_io': []
+        }
+        self.thresholds = {
+            'memory': config.pipeline.memory_threshold_percent,
+            'cpu': config.pipeline.cpu_threshold_percent
+        }
+    
+    async def start_monitoring(self):
+        """Inicia o monitoramento de recursos."""
+        if not config.pipeline.enable_resource_monitoring:
+            return
+            
+        self.monitoring = True
+        logger.info("🔍 Iniciando monitoramento de recursos do sistema")
+        
+        while self.monitoring:
+            try:
+                import psutil
+                
+                # Coletar métricas
+                cpu_percent = psutil.cpu_percent(interval=0.1)
+                memory = psutil.virtual_memory()
+                disk_io = psutil.disk_io_counters()
+                net_io = psutil.net_io_counters()
+                
+                # Armazenar estatísticas
+                self.stats['cpu_percent'].append(cpu_percent)
+                self.stats['memory_percent'].append(memory.percent)
+                
+                if disk_io:
+                    self.stats['disk_io'].append({
+                        'read_bytes': disk_io.read_bytes,
+                        'write_bytes': disk_io.write_bytes
+                    })
+                
+                if net_io:
+                    self.stats['network_io'].append({
+                        'bytes_sent': net_io.bytes_sent,
+                        'bytes_recv': net_io.bytes_recv
+                    })
+                
+                # Verificar se precisa ajustar concorrência
+                await self._adjust_concurrency_if_needed(cpu_percent, memory.percent)
+                
+                # Manter apenas últimas 100 medições
+                for key in self.stats:
+                    if len(self.stats[key]) > 100:
+                        self.stats[key] = self.stats[key][-100:]
+                
+                await asyncio.sleep(2)  # Monitorar a cada 2 segundos
+                
+            except Exception as e:
+                logger.warning(f"Erro no monitoramento de recursos: {e}")
+                await asyncio.sleep(5)
+    
+    async def _adjust_concurrency_if_needed(self, cpu_percent: float, memory_percent: float):
+        """Ajusta a concorrência dinamicamente baseado no uso de recursos."""
+        global download_semaphore, process_semaphore
+        
+        # Se recursos estão sobrecarregados, reduzir concorrência
+        if memory_percent > self.thresholds['memory'] or cpu_percent > self.thresholds['cpu']:
+            current_download = download_semaphore._value
+            current_process = process_semaphore._value
+            
+            if current_download > config.pipeline.min_download_workers:
+                # Reduzir workers de download
+                new_download = max(config.pipeline.min_download_workers, current_download - 1)
+                download_semaphore = asyncio.Semaphore(new_download)
+                logger.warning(f"🔻 Recursos sobrecarregados. Reduzindo workers de download: {current_download} → {new_download}")
+            
+            if current_process > config.pipeline.min_process_workers:
+                # Reduzir workers de processamento
+                new_process = max(config.pipeline.min_process_workers, current_process - 1)
+                process_semaphore = asyncio.Semaphore(new_process)
+                logger.warning(f"🔻 Recursos sobrecarregados. Reduzindo workers de processamento: {current_process} → {new_process}")
+        
+        # Se recursos estão ociosos, aumentar concorrência gradualmente
+        elif memory_percent < self.thresholds['memory'] * 0.7 and cpu_percent < self.thresholds['cpu'] * 0.7:
+            current_download = download_semaphore._value
+            current_process = process_semaphore._value
+            
+            if current_download < config.pipeline.max_download_workers:
+                new_download = min(config.pipeline.max_download_workers, current_download + 1)
+                download_semaphore = asyncio.Semaphore(new_download)
+                logger.info(f"🔺 Recursos disponíveis. Aumentando workers de download: {current_download} → {new_download}")
+            
+            if current_process < config.pipeline.max_process_workers:
+                new_process = min(config.pipeline.max_process_workers, current_process + 1)
+                process_semaphore = asyncio.Semaphore(new_process)
+                logger.info(f"🔺 Recursos disponíveis. Aumentando workers de processamento: {current_process} → {new_process}")
+    
+    def stop_monitoring(self):
+        """Para o monitoramento de recursos."""
+        self.monitoring = False
+        logger.info("🛑 Monitoramento de recursos parado")
+    
+    def get_stats_summary(self):
+        """Retorna um resumo das estatísticas coletadas."""
+        if not self.stats['cpu_percent']:
+            return "Nenhuma estatística coletada"
+        
+        cpu_avg = sum(self.stats['cpu_percent']) / len(self.stats['cpu_percent'])
+        cpu_max = max(self.stats['cpu_percent'])
+        memory_avg = sum(self.stats['memory_percent']) / len(self.stats['memory_percent'])
+        memory_max = max(self.stats['memory_percent'])
+        
+        return {
+            'cpu_avg': cpu_avg,
+            'cpu_max': cpu_max,
+            'memory_avg': memory_avg,
+            'memory_max': memory_max,
+            'samples': len(self.stats['cpu_percent'])
+        }
+
+# Instância global do monitor de recursos
+resource_monitor = ResourceMonitor()
+
+# ===== OTIMIZAÇÕES NO PIPELINE PRINCIPAL =====
 
 def _fetch_and_parse(url: str) -> BeautifulSoup | None:
     """Busca HTML de uma URL e parseia com BeautifulSoup."""
@@ -325,6 +642,10 @@ async def download_file(session: aiohttp.ClientSession | None, url: str, destina
     max_retries = 3
     retry_count = 0
     last_error = None
+    
+    # Iniciar coleta de estatísticas
+    download_start_time = time.time()
+    file_size = 0
 
     while retry_count < max_retries:
         try:
@@ -334,6 +655,11 @@ async def download_file(session: aiohttp.ClientSession | None, url: str, destina
                 initial_size = 0
                 skip_download = False
                 force_download = False
+
+                # Verificar se o download forçado foi solicitado via variável de ambiente
+                if os.getenv('FORCE_DOWNLOAD', '').lower() == 'true':
+                    force_download = True
+                    logger.info(f"Download forçado ativado para {filename} via variável de ambiente")
 
                 # Criar sessão se não for fornecida
                 if session is None:
@@ -355,6 +681,9 @@ async def download_file(session: aiohttp.ClientSession | None, url: str, destina
 
                 if remote_size is None:
                     raise ValueError(f"Não foi possível obter metadados remotos para {url}")
+
+                # Armazenar tamanho do arquivo para estatísticas
+                file_size = remote_size
 
                 # Atualiza o total da barra assim que conhecido
                 progress.update(task_id, total=remote_size)
@@ -378,6 +707,27 @@ async def download_file(session: aiohttp.ClientSession | None, url: str, destina
                                             style="yellow")
                             file_mode = 'wb'
                             initial_size = 0
+                    elif local_size == remote_size:
+                        # Arquivo tem o mesmo tamanho que o remoto
+                        if remote_last_modified is not None:
+                            local_last_modified = int(os.path.getmtime(destination_path))
+                            if local_last_modified >= remote_last_modified:
+                                progress.update(task_id, description=f"[green]{filename[:30]} (atualizado)[/green]",
+                                                completed=remote_size, style="green")
+                                skip_download = True
+                                skip_reason = "up-to-date"
+                                logger.info(f"Arquivo {filename} já está atualizado (mesmo tamanho e data)")
+                            else:
+                                logger.info(f"Arquivo {filename} desatualizado. Baixando novamente.")
+                                file_mode = 'wb'
+                                initial_size = 0
+                        else:
+                            # Sem data de modificação remota, mas tamanho igual - assumir que está OK
+                            progress.update(task_id, description=f"[green]{filename[:30]} (completo)[/green]",
+                                            completed=remote_size, style="green")
+                            skip_download = True
+                            skip_reason = "same-size"
+                            logger.info(f"Arquivo {filename} tem o mesmo tamanho do remoto, assumindo que está completo")
                     elif local_size < remote_size:
                         if remote_last_modified is not None:
                             local_last_modified = int(os.path.getmtime(destination_path))
@@ -407,18 +757,6 @@ async def download_file(session: aiohttp.ClientSession | None, url: str, destina
                             f"Arquivo local {filename} maior que remoto? Local: {local_size}, Remoto: {remote_size}")
                         file_mode = 'wb'
                         initial_size = 0
-                    elif local_size == remote_size:
-                        if remote_last_modified is not None:
-                            local_last_modified = int(os.path.getmtime(destination_path))
-                            if local_last_modified >= remote_last_modified:
-                                progress.update(task_id, description=f"[green]{filename[:30]} (atualizado)[/green]",
-                                                completed=remote_size, style="green")
-                                skip_download = True
-                                skip_reason = "up-to-date"
-                            else:
-                                logger.info(f"Arquivo {filename} desatualizado. Baixando novamente.")
-                                file_mode = 'wb'
-                                initial_size = 0
 
                 if not skip_download:
                     # 3. Baixar arquivo
@@ -431,6 +769,16 @@ async def download_file(session: aiohttp.ClientSession | None, url: str, destina
                                         response, destination_path, file_mode, progress, task_id,
                                         remote_size, initial_size, filename, remote_last_modified)
                                     if error is None:
+                                        # Registrar estatística de download bem-sucedido
+                                        download_end_time = time.time()
+                                        global_stats.add_download_stat(
+                                            filename=filename,
+                                            url=url,
+                                            size_bytes=file_size,
+                                            start_time=download_start_time,
+                                            end_time=download_end_time,
+                                            success=True
+                                        )
                                         return result, None, skip_reason
                                 else:
                                     logger.warning(f"Servidor não suporta retomada para {filename}. Baixando completo.")
@@ -450,11 +798,32 @@ async def download_file(session: aiohttp.ClientSession | None, url: str, destina
                                     response, destination_path, file_mode, progress, task_id,
                                     remote_size, initial_size, filename, remote_last_modified)
                                 if error is None:
+                                    # Registrar estatística de download bem-sucedido
+                                    download_end_time = time.time()
+                                    global_stats.add_download_stat(
+                                        filename=filename,
+                                        url=url,
+                                        size_bytes=file_size,
+                                        start_time=download_start_time,
+                                        end_time=download_end_time,
+                                        success=True
+                                    )
                                     return result, None, skip_reason
                             else:
                                 raise aiohttp.ClientError(
                                     f"Status inesperado ao baixar {filename}: {response.status}")
                 else:
+                    # Arquivo foi pulado (cache ou up-to-date)
+                    download_end_time = time.time()
+                    global_stats.add_download_stat(
+                        filename=filename,
+                        url=url,
+                        size_bytes=file_size,
+                        start_time=download_start_time,
+                        end_time=download_end_time,
+                        success=True,
+                        skip_reason=skip_reason
+                    )
                     return destination_path, None, skip_reason
 
         except (aiohttp.ClientError, asyncio.TimeoutError, ConnectionResetError) as e:
@@ -478,6 +847,18 @@ async def download_file(session: aiohttp.ClientSession | None, url: str, destina
     error_msg = f"Todas as tentativas falharam para {filename}. Último erro: {last_error}"
     logger.error(error_msg)
     progress.update(task_id, description=f"[red]{filename[:30]} (ERRO final)[/red]", style="red")
+    
+    # Registrar estatística de download falhado
+    download_end_time = time.time()
+    global_stats.add_download_stat(
+        filename=filename,
+        url=url,
+        size_bytes=file_size,
+        start_time=download_start_time,
+        end_time=download_end_time,
+        success=False,
+        error=str(last_error)
+    )
     
     if config.cache.enabled:
         get_download_cache().register_file_error(filename, str(error_msg))
@@ -517,7 +898,7 @@ async def get_remote_file_metadata(session: aiohttp.ClientSession, url: str) -> 
 
 async def process_downloaded_file(filename: str, file_path: str, path_unzip: str, path_parquet: str) -> Tuple[str, Exception | None]:
     """
-    Processa um arquivo baixado, extraindo e convertendo para parquet.
+    Processa um arquivo baixado usando o sistema de streaming otimizado.
     
     Args:
         filename: Nome do arquivo
@@ -529,127 +910,20 @@ async def process_downloaded_file(filename: str, file_path: str, path_unzip: str
         Tuple[str, Exception | None]: (Caminho do arquivo, Erro se houver)
     """
     try:
-        # Extrair pasta remota do caminho zip (geralmente algo como 2025-03)
-        remote_folder = os.path.basename(os.path.dirname(file_path))
-        # Verificar se o formato é AAAA-MM
-        if not re.match(r'^\d{4}-\d{2}$', remote_folder):
-            # Se não for uma pasta no formato esperado, tentar extrair do caminho
-            match = re.search(r'(20\d{2}-\d{2})', file_path)
-            if match:
-                remote_folder = match.group(1)
-            else:
-                # Último recurso: usar um valor padrão
-                remote_folder = datetime.datetime.now().strftime("%Y-%m")
+        # Usar o processador streaming otimizado
+        result, error = await streaming_processor.process_with_streaming(
+            file_path, filename, path_unzip, path_parquet
+        )
         
-        logger.info(f"Pasta remota identificada para processamento: {remote_folder}")
-
-        # Verifica se o arquivo já foi processado com sucesso
-        if config.cache.enabled:
-            cache = get_download_cache()
-            if cache.is_file_processed(filename):
-                processing_info = cache.get_processing_status(filename)
-                parquet_path = processing_info.get("parquet_path")
-                if parquet_path and os.path.exists(parquet_path):
-                    logger.info(f"Arquivo {filename} já foi processado anteriormente. Pulando processamento.")
-                    return parquet_path, None
-
-        # Atualiza status para extraindo
-        if config.cache.enabled:
-            cache = get_download_cache()
-            cache.update_processing_status(filename, "extracting")
-
-        # Extrair o arquivo
-        logger.info(f"Extraindo {filename}...")
-        print(f"📦 Extraindo {filename}...")
-        
-        # Determinar o diretório de extração específico para este arquivo
-        extract_dir = os.path.join(path_unzip, os.path.splitext(filename)[0])
-        
-        # Usar a função de extração paralela do módulo empresa
-        success = extract_zip_parallel(file_path, extract_dir)
-        
-        if not success:
-            error_msg = f"Falha na extração de {filename}"
-            logger.error(error_msg)
-            return filename, Exception(error_msg)
-        
-        logger.info(f"Extração paralela concluída para {filename}")
-        print(f"✅ Extração de {filename} concluída")
-
-        # Atualiza status para processando
-        if config.cache.enabled:
-            cache.update_processing_status(filename, "processing")
-
-        # Processa o arquivo baseado no tipo
-        parquet_file = None
-        success = False
-        
-        # Determina o tipo de arquivo e usa a função de processamento apropriada
-        for tipo_prefixo, processor_fn in PROCESSOR_MAP.items():
-            if filename.lower().startswith(tipo_prefixo.lower()):
-                logger.info(f"Processando {filename} como {tipo_prefixo}")
-                print(f"🔄 Processando {filename} como {tipo_prefixo}")
-                try:
-                    # Criar argumentos específicos para cada tipo de processador
-                    kwargs = {
-                        "zip_file": filename,
-                        "path_zip": os.path.dirname(file_path),
-                        "path_unzip": path_unzip,
-                        "path_parquet": path_parquet,
-                    }
-                    
-                    # Adicionar argumentos específicos baseados na função
-                    if "remote_folder" in processor_fn.__code__.co_varnames:
-                        kwargs["remote_folder"] = remote_folder
-                    if "create_private" in processor_fn.__code__.co_varnames:
-                        kwargs["create_private"] = False
-                    
-                    # Executar a função de processamento correta
-                    logger.info(f"Chamando processador {processor_fn.__name__} para {filename}")
-                    print(f"⚙️  Executando processador {processor_fn.__name__} para {filename}")
-                    result = processor_fn(**kwargs)
-                    
-                    if result:
-                        success = True
-                        # Construir caminho do parquet baseado no tipo e pasta remota
-                        if remote_folder:
-                            parquet_file = os.path.join(path_parquet, remote_folder, tipo_prefixo.lower())
-                        else:
-                            parquet_file = os.path.join(path_parquet, tipo_prefixo.lower())
-                        
-                        logger.info(f"Processamento de {filename} concluído com sucesso. Parquet salvo em: {parquet_file}")
-                        print(f"💾 Parquet salvo em: {parquet_file}")
-                        break
-                    else:
-                        logger.warning(f"Processador {processor_fn.__name__} retornou None para {filename}")
-                        print(f"⚠️  Processador retornou None para {filename}")
-                except Exception as e:
-                    logger.error(f"Erro no processador {processor_fn.__name__} para {filename}: {e}")
-                    print(f"❌ Erro no processador para {filename}: {e}")
-                    continue
-                    
-                break  # Sai do loop após encontrar o tipo correto
-
-        if success and parquet_file:
-            logger.info(f"Arquivo {filename} processado com sucesso. Parquet: {parquet_file}")
-            # Atualiza cache com sucesso
-            if config.cache.enabled:
-                cache.update_processing_status(filename, "completed", parquet_file)
-            return parquet_file, None
+        if error is None:
+            logger.info(f"Arquivo {filename} processado com sucesso via streaming")
+            return result, None
         else:
-            error_msg = f"Falha ao processar {filename} - nenhum processador adequado encontrado ou processamento falhou"
-            logger.error(error_msg)
-            if config.cache.enabled:
-                cache = get_download_cache()
-                cache.register_file_error(filename, error_msg)
-            return file_path, ValueError(error_msg)
-
+            logger.error(f"Erro no processamento streaming de {filename}: {error}")
+            return file_path, error
+            
     except Exception as e:
-        error_msg = f"Erro ao processar {filename}: {e}"
-        logger.error(error_msg)
-        if config.cache.enabled:
-            cache = get_download_cache()
-            cache.register_file_error(filename, error_msg)
+        logger.error(f"Erro crítico no processamento de {filename}: {e}")
         return file_path, e
 
 
@@ -677,71 +951,75 @@ def format_elapsed_time(seconds: float) -> str:
     return " ".join(parts)
 
 
-async def download_multiple_files(urls: List[str], destination_folder: str, max_concurrent: int = 5):
+async def download_multiple_files(
+    urls: List[str], 
+    path_zip: str, 
+    path_unzip: str, 
+    path_parquet: str, 
+    force_download: bool = False,
+    max_concurrent_downloads: int = 4,
+    max_concurrent_processing: int = 2
+) -> Tuple[List[str], List[Tuple[str, Exception]]]:
     """
-    Downloads multiple files asynchronously with progress bars using Rich.
-    Also processes each file immediately after download is completed or identified as already existing.
-    Files are downloaded in order of size (smallest first) for better optimization.
-    """
-    start_time = time.time()
+    Baixa múltiplos arquivos de forma assíncrona com pipeline otimizado.
     
-    if not os.path.exists(destination_folder):
-        os.makedirs(destination_folder)
-        logger.info(f"Diretório criado: {destination_folder}")
-
-    # ===== ORDENAÇÃO POR TAMANHO =====
-    logger.info("🔍 Analisando tamanhos dos arquivos para otimizar ordem de download...")
-    try:
-        url_sizes = await get_file_sizes_and_sort(urls)
-        # Extrair apenas as URLs ordenadas
-        sorted_urls = [url for url, _ in url_sizes]
-        logger.info(f"✅ Arquivos ordenados por tamanho (menor → maior). Iniciando downloads otimizados...")
-    except Exception as e:
-        logger.warning(f"⚠️  Erro ao ordenar arquivos por tamanho: {e}. Usando ordem original.")
-        sorted_urls = urls
-
-    semaphore = asyncio.Semaphore(max_concurrent)
-    download_tasks = []
-    processing_tasks = []
+    Args:
+        urls: Lista de URLs para baixar
+        path_zip: Diretório onde salvar os arquivos zip
+        path_unzip: Diretório onde extrair os arquivos
+        path_parquet: Diretório onde salvar os arquivos parquet
+        force_download: Se True, força o download mesmo se o arquivo já existir
+        max_concurrent_downloads: Número máximo de downloads simultâneos
+        max_concurrent_processing: Número máximo de processamentos simultâneos
+        
+    Returns:
+        Tuple[List[str], List[Tuple[str, Exception]]]: (arquivos processados, falhas)
+    """
+    global download_semaphore, process_semaphore
+    
+    # Configurar semáforos adaptativos baseados na configuração
+    if config.pipeline.adaptive_concurrency:
+        max_concurrent_downloads = min(max_concurrent_downloads, config.pipeline.max_download_workers)
+        max_concurrent_processing = min(max_concurrent_processing, config.pipeline.max_process_workers)
+    
+    download_semaphore = asyncio.Semaphore(max_concurrent_downloads)
+    process_semaphore = asyncio.Semaphore(max_concurrent_processing)
+    
+    # Inicializar listas de resultados
     downloaded_files = []
-    failed_downloads = []
-    skipped_files = []
     processed_files = []
+    failed_downloads = []
     failed_processing = []
     
-    # Verificar se há arquivos com erros no cache
-    files_with_errors = []
-    if config.cache.enabled:
-        cache = get_download_cache()
-        files_with_errors = cache.get_files_with_errors()
-        if files_with_errors:
-            logger.warning(f"Encontrados {len(files_with_errors)} arquivos com erros no cache. Eles serão baixados novamente.")
-            for error_file in files_with_errors:
-                logger.info(f"Arquivo com erro: {error_file}")
-    
-    # Fila para comunicação entre downloads e processamento
+    # Fila para comunicação entre download e processamento
     processing_queue = asyncio.Queue()
     
-    # Pegar caminhos para processamento dos arquivos
-    path_unzip = os.getenv('PATH_UNZIP')
-    path_parquet = os.getenv('PATH_PARQUET')
+    # Iniciar monitoramento de recursos
+    monitor_task = None
+    if config.pipeline.enable_resource_monitoring:
+        monitor_task = asyncio.create_task(resource_monitor.start_monitoring())
+        logger.info("🔍 Sistema de monitoramento de recursos ativado")
     
-    if not path_unzip or not path_parquet:
-        logger.error("PATH_UNZIP ou PATH_PARQUET não definidos, o processamento paralelo será desabilitado.")
-
-    # Configurar colunas do Rich Progress
-    progress_columns = [
-        TextColumn("[progress.description]{task.description}", justify="left"),
-        BarColumn(bar_width=None),
-        "[progress.percentage]{task.percentage:>3.1f}%",
-        "•",
-        DownloadColumn(),
-        "•",
-        TransferSpeedColumn(),
-        "•",
-        TimeRemainingColumn(),
-    ]
-
+    # Inicializar estatísticas globais
+    global_stats.reset()
+    start_time = time.time()
+    
+    # ORDENAR ARQUIVOS POR TAMANHO (MENOR PRIMEIRO)
+    logger.info("📏 Ordenando arquivos por tamanho para otimizar pipeline...")
+    try:
+        sorted_urls_with_sizes = await get_file_sizes_and_sort(urls)
+        sorted_urls = [url for url, size in sorted_urls_with_sizes]
+        logger.info("✅ Arquivos ordenados por tamanho (menores primeiro)")
+    except Exception as e:
+        logger.warning(f"Erro ao ordenar arquivos por tamanho: {e}. Usando ordem original.")
+        sorted_urls = urls
+    
+    print(f"\n🚀 Iniciando pipeline otimizado para {len(sorted_urls)} arquivos")
+    print(f"📊 Configuração: {max_concurrent_downloads} downloads | {max_concurrent_processing} processamentos")
+    print(f"🧠 Streaming: {'✅' if config.pipeline.enable_streaming else '❌'}")
+    print(f"📈 Monitoramento adaptativo: {'✅' if config.pipeline.adaptive_concurrency else '❌'}")
+    print(f"📏 Ordenação por tamanho: ✅ (menores primeiro)")
+    
     # Função que processa os arquivos da fila em paralelo
     async def process_files_from_queue():
         """Consome a fila de processamento e processa os arquivos em tempo real."""
@@ -754,77 +1032,50 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
         
         while True:
             try:
-                logger.debug(f"Processador {processor_id} aguardando arquivo...")
-                file_path = await processing_queue.get()
+                # Aguardar um arquivo da fila (com timeout para evitar travamento)
+                try:
+                    file_path = await asyncio.wait_for(processing_queue.get(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    # Verificar se ainda há downloads ativos
+                    if 'download_tasks' in locals() and not any(not task.done() for task in download_tasks if hasattr(task, 'done')):
+                        # Não há downloads ativos, verificar se fila está vazia
+                        if processing_queue.empty():
+                            logger.debug(f"Processador {processor_id} finalizando - sem downloads ativos e fila vazia")
+                            break
+                    continue
                 
-                # Verifica se recebemos o sinal de encerramento (None)
+                # Sinal de parada
                 if file_path is None:
-                    print(f"\n🏁 {processor_name} finalizando...")
-                    logger.debug(f"Processador {processor_id} recebeu sinal de encerramento")
-                    processing_queue.task_done()
+                    logger.debug(f"Processador {processor_id} recebeu sinal de parada")
                     break
                 
                 filename = os.path.basename(file_path)
-                
-                # Log visível no console
-                print(f"\n⚙️  {processor_name} processando: {filename}")
-                logger.info(f"Processador {processor_id} iniciando processamento de {filename}")
-                
-                # Verificar se arquivo tem erros no cache
-                if config.cache.enabled:
-                    cache = get_download_cache()
-                    if cache.has_file_error(filename):
-                        print(f"⚠️  {processor_name}: {filename} tem erros no cache - pulando")
-                        logger.warning(f"Processador {processor_id}: Arquivo {filename} tem erros registrados no cache. Pulando processamento.")
-                        processing_queue.task_done()
-                        continue
+                logger.debug(f"Processador {processor_id} aguardando arquivo...")
                 
                 try:
-                    # Usar o semáforo para limitar processamento paralelo
+                    # Usar o semáforo adaptativo para limitar processamento paralelo
                     logger.debug(f"Processador {processor_id} aguardando semáforo para {filename}")
                     async with process_semaphore:
-                        print(f"🔄 {processor_name}: Iniciando extração e processamento de {filename}")
+                        print(f"🔄 {processor_name}: Iniciando processamento otimizado de {filename}")
                         logger.info(f"Processador {processor_id} obteve semáforo para {filename}")
                         
-                        # Executar o processamento diretamente (função já é assíncrona)
-                        result, error = await process_downloaded_file(filename, file_path, path_unzip, path_parquet)
+                        # Usar o novo sistema de processamento streaming
+                        result, error = await streaming_processor.process_with_streaming(
+                            file_path, filename, path_unzip, path_parquet
+                        )
                         
                         if error is None:
                             processed_files.append(result)
-                            print(f"✅ {processor_name}: {filename} processado com sucesso!")
-                            logger.info(f"Processador {processor_id} concluiu processamento de {filename} com sucesso")
-                            # Atualiza o cache para indicar processamento bem-sucedido
-                            if config.cache.enabled:
-                                cache = get_download_cache()
-                                # Obtém informações atuais do arquivo
-                                file_info = cache.get_file_info(filename)
-                                if file_info:
-                                    cache.update_file_cache(
-                                        filename, 
-                                        file_info.get("size", 0), 
-                                        file_info.get("modified", 0),
-                                        status="success",
-                                        log_update=False
-                                    )
-                                    logger.info(f"Processador {processor_id}: Cache atualizado para {filename}")
+                            print(f"✅ {processor_name}: {filename} processado com sucesso via streaming!")
+                            logger.info(f"Processador {processor_id} concluiu processamento streaming de {filename}")
                         else:
                             failed_processing.append((result, error))
-                            print(f"❌ {processor_name}: Falha ao processar {filename} - {error}")
-                            logger.warning(f"Processador {processor_id}: Falha ao processar {filename}: {error}")
-                            # Registra o erro de processamento no cache
-                            if config.cache.enabled:
-                                cache = get_download_cache()
-                                error_msg = f"Erro de processamento: {str(error)}"
-                                cache.register_file_error(filename, error_msg)
+                            print(f"❌ {processor_name}: Falha no processamento streaming de {filename} - {error}")
+                            logger.warning(f"Processador {processor_id}: Falha no processamento streaming de {filename}: {error}")
                 except Exception as e:
-                    print(f"💥 {processor_name}: Erro crítico ao processar {filename} - {e}")
-                    logger.error(f"Processador {processor_id}: Erro ao processar {filename}: {e}")
+                    print(f"💥 {processor_name}: Erro crítico no processamento streaming de {filename} - {e}")
+                    logger.error(f"Processador {processor_id}: Erro no processamento streaming de {filename}: {e}")
                     failed_processing.append((filename, e))
-                    # Registra o erro no cache
-                    if config.cache.enabled:
-                        cache = get_download_cache()
-                        error_msg = f"Erro não tratado: {str(e)}"
-                        cache.register_file_error(filename, error_msg)
                 
                 logger.debug(f"Processador {processor_id} finalizando tarefa para {filename}")
                 processing_queue.task_done()
@@ -836,115 +1087,115 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
         print(f"🏁 {processor_name} encerrado")
         logger.info(f"Processador {processor_id} encerrado")
 
-    # Criar múltiplos processadores para trabalhar em paralelo
-    num_processors = min(3, os.cpu_count() or 1)  # Limitar a 3 processadores ou número de CPUs
-    logger.info(f"Iniciando {num_processors} processadores paralelos")
-    processor_tasks = [
-        asyncio.create_task(process_files_from_queue())
-        for _ in range(num_processors)
-    ]
-
-    # Verificar arquivos já existentes e adicioná-los à fila de processamento
-    if path_unzip and path_parquet:
-        print(f"\n📋 Verificando arquivos já baixados para processamento...")
-        logger.info("Verificando arquivos já baixados para processamento...")
-        # Usar a lista ordenada para verificar arquivos existentes
-        for url in sorted_urls:
-            filename = os.path.basename(url)
-            file_path = os.path.join(destination_folder, filename)
-            
-            # Se o arquivo já existe e não tem erros no cache
-            if os.path.exists(file_path):
-                if config.cache.enabled:
-                    cache = get_download_cache()
-                    if cache.has_file_error(filename):
-                        logger.debug(f"Arquivo {filename} tem erros no cache, será baixado novamente")
-                        continue
-                
-                print(f"📁 Adicionando arquivo existente {filename} à fila de processamento")
-                logger.info(f"Adicionando arquivo já existente {filename} à fila de processamento")
-                await processing_queue.put(file_path)
-
-    # Criar sessão compartilhada para todos os downloads
-    async with aiohttp.ClientSession() as session:
-        # Configurar barra de progresso
-        with Progress(*progress_columns, expand=True) as progress:
-            # Criar tarefas de download usando URLs ordenadas
-            tasks_info = []
-            for url in sorted_urls:
+    # Função de download otimizada
+    async def download_and_queue(url: str):
+        """Baixa um arquivo e o adiciona à fila de processamento."""
+        try:
+            async with download_semaphore:
                 filename = os.path.basename(url)
-                destination_path = os.path.join(destination_folder, filename)
-                task_id = progress.add_task(f"[cyan]{filename[:30]}...", total=None)
-                tasks_info.append((url, destination_path, task_id))
-
-            # Criar e iniciar todas as tarefas de download simultaneamente
-            download_tasks = [
-                asyncio.create_task(
-                    download_file(
-                        session,  # Usar a mesma sessão para todos os downloads
-                        url,
-                        destination_path,
-                        semaphore,
-                        progress,
-                        task_id
+                print(f"⬇️  Iniciando download otimizado: {filename}")
+                
+                # Criar caminho de destino
+                destination_path = os.path.join(path_zip, filename)
+                
+                # Criar sessão HTTP temporária para este download
+                async with aiohttp.ClientSession() as session:
+                    # Usar Progress simples sem display para evitar conflitos
+                    progress = Progress(console=None, disable=True)  # Progress desabilitado
+                    task_id = progress.add_task(f"Downloading {filename}", total=100)
+                    
+                    # Chamar download_file com todos os argumentos necessários
+                    file_path, error, skip_reason = await download_file(
+                        session, url, destination_path, download_semaphore, progress, task_id
                     )
-                )
-                for url, destination_path, task_id in tasks_info
-            ]
-
-            # Aguardar todas as tarefas SIMULTANEAMENTE
-            results = await asyncio.gather(*download_tasks, return_exceptions=True)
-
-            # Processar resultados
-            for result in results:
-                if isinstance(result, tuple):
-                    path, error, skip_reason = result
-                    if error is None:
-                        if skip_reason:
-                            skipped_files.append((path, skip_reason))
-                            logger.info(f"Arquivo {os.path.basename(path)} pulado: {skip_reason}")
-                        else:
-                            downloaded_files.append(path)
-                            filename = os.path.basename(path)
-                            print(f"📥 Download concluído: {filename} → Adicionando à fila de processamento")
-                            logger.info(f"Adicionando {filename} à fila de processamento")
-                            # Adicionar à fila de processamento
-                            await processing_queue.put(path)
-                    else:
-                        failed_downloads.append((path, error))
-                        logger.error(f"Download falhou para {os.path.basename(path)}: {error}")
+                
+                if error is None:
+                    downloaded_files.append(file_path)
+                    # Adicionar à fila de processamento imediatamente
+                    await processing_queue.put(file_path)
+                    print(f"✅ Download concluído e enfileirado: {filename}")
+                    logger.info(f"Arquivo {filename} baixado e adicionado à fila de processamento")
                 else:
-                    # Se não é uma tupla, é uma exceção não tratada
-                    failed_downloads.append((None, result))
-                    logger.error(f"Erro não tratado durante download: {result}")
+                    failed_downloads.append((filename, error))
+                    print(f"❌ Falha no download: {filename} - {error}")
+                    logger.error(f"Falha no download de {filename}: {error}")
+        except Exception as e:
+            filename = os.path.basename(url)
+            failed_downloads.append((filename, e))
+            print(f"💥 Erro crítico no download: {filename} - {e}")
+            logger.error(f"Erro crítico no download de {filename}: {e}")
 
-            # Sinalizar fim do processamento para todos os processadores
-            logger.info("Todos os downloads concluídos. Sinalizando encerramento para os processadores...")
-            for _ in range(num_processors):
-                await processing_queue.put(None)
-
-            # Aguardar todos os processadores terminarem
-            logger.info("Aguardando conclusão de todos os processadores...")
-            await asyncio.gather(*processor_tasks)
-            logger.info("Todos os processadores concluídos")
-
-    # Resumo final
-    logger.info("=" * 50)
-    logger.info("RESUMO DO DOWNLOAD:")
-    logger.info("=" * 50)
-    logger.info(f"Arquivos baixados com sucesso: {len(downloaded_files)}")
-    logger.info(f"Arquivos pulados: {len(skipped_files)}")
-    logger.info(f"Downloads com falha: {len(failed_downloads)}")
-    logger.info(f"Arquivos processados com sucesso: {len(processed_files)}")
-    logger.info(f"Processamentos com falha: {len(failed_processing)}")
+    try:
+        # Iniciar workers de processamento
+        processing_tasks = [
+            asyncio.create_task(process_files_from_queue()) 
+            for _ in range(max_concurrent_processing)
+        ]
+        
+        # Iniciar downloads
+        download_tasks = [
+            asyncio.create_task(download_and_queue(url)) 
+            for url in sorted_urls
+        ]
+        
+        print(f"\n🔄 Executando {len(download_tasks)} downloads e {len(processing_tasks)} processadores...")
+        
+        # Aguardar todos os downloads terminarem
+        await asyncio.gather(*download_tasks, return_exceptions=True)
+        print("📥 Todos os downloads finalizados")
+        
+        # Aguardar a fila de processamento esvaziar
+        await processing_queue.join()
+        print("🔄 Todos os processamentos finalizados")
+        
+        # Sinalizar para os workers de processamento pararem
+        for _ in processing_tasks:
+            await processing_queue.put(None)
+        
+        # Aguardar workers de processamento terminarem
+        await asyncio.gather(*processing_tasks, return_exceptions=True)
+        print("🏁 Todos os workers finalizados")
+        
+    except Exception as e:
+        logger.error(f"Erro no pipeline principal: {e}")
+        print(f"💥 Erro no pipeline principal: {e}")
     
-    # Calcular tempo total
-    end_time = time.time()
-    total_time = end_time - start_time
-    logger.info(f"Tempo total: {format_elapsed_time(total_time)}")
-    logger.info("=" * 50)
-
-    return downloaded_files, failed_downloads
+    finally:
+        # Parar monitoramento de recursos
+        if monitor_task:
+            resource_monitor.stop_monitoring()
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Calcular estatísticas finais
+        end_time = time.time()
+        total_time = end_time - start_time
+        
+        # Obter estatísticas do monitor de recursos
+        resource_stats = resource_monitor.get_stats_summary()
+        
+        # Relatório final otimizado
+        print(f"\n📊 === RELATÓRIO FINAL DO PIPELINE OTIMIZADO ===")
+        print(f"⏱️  Tempo total: {format_elapsed_time(total_time)}")
+        print(f"📥 Downloads: {len(downloaded_files)} sucessos, {len(failed_downloads)} falhas")
+        print(f"🔄 Processamentos: {len(processed_files)} sucessos, {len(failed_processing)} falhas")
+        
+        if isinstance(resource_stats, dict):
+            print(f"💻 CPU médio: {resource_stats['cpu_avg']:.1f}% (máx: {resource_stats['cpu_max']:.1f}%)")
+            print(f"🧠 Memória média: {resource_stats['memory_avg']:.1f}% (máx: {resource_stats['memory_max']:.1f}%)")
+        
+        # Estatísticas globais
+        stats_summary = global_stats.get_summary()
+        if stats_summary['total_files'] > 0:
+            print(f"📈 Throughput: {stats_summary['total_files'] / total_time:.2f} arquivos/segundo")
+            print(f"💾 Dados processados: {stats_summary['total_size_mb']:.1f} MB")
+        
+        print("=" * 50)
+    
+    return processed_files, failed_downloads + failed_processing
 
 
 def get_remote_folders(base_url: str) -> List[str]:
@@ -994,8 +1245,7 @@ async def get_latest_remote_folder(base_url: str) -> str:
         logger.error("Nenhuma pasta remota encontrada")
         return ""
     
-    latest_folder = folders[0]  # A lista já está ordenada por data (mais recente primeiro)
-    logger.info(f"Pasta remota mais recente: {latest_folder}")
+    latest_folder = folders[0]
     return latest_folder
 
 

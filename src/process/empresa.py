@@ -29,6 +29,7 @@ from ..utils import (
 )
 from ..utils.folders import get_output_path, ensure_correct_folder_structure
 from ..utils.time_utils import format_elapsed_time
+from ..utils.statistics import global_stats
 import inspect
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ _processing_lock = Lock()
 _active_processes = Value('i', 0)
 _max_concurrent_processes = Value('i', 2)  # Máximo de 2 processamentos simultâneos
 _process_queue = PriorityQueue()
+_workers_should_stop = Value('b', False)  # Flag para parar workers
 
 # Configurações globais para otimização de memória
 CHUNK_SIZE = 500_000  # Tamanho do chunk para processamento
@@ -323,10 +325,9 @@ def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str,
                     if re.match(r'^\d{4}-\d{2}$', parent_dir):
                         remote_folder = parent_dir
                     else:
-                        # Último recurso: usar um valor padrão
-                        current_date = datetime.datetime.now()
-                        remote_folder = f"{current_date.year}-{current_date.month:02d}"
-                        logger.warning(f"Não foi possível extrair pasta remota do caminho. Usando data atual: {remote_folder}")
+                        # Último recurso: usar um valor padrão fixo
+                        remote_folder = "dados"
+                        logger.warning(f"Não foi possível extrair pasta remota do caminho. Usando pasta padrão: {remote_folder}")
         
         logger.info(f"Pasta remota identificada: {remote_folder}")
         
@@ -902,12 +903,23 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, crea
     worker_id = threading.current_thread().name
     logger.info(f"[WORKER-{worker_id}] Worker iniciado para processamento de empresas")
     
-    while True:
+    consecutive_empty_checks = 0
+    max_empty_checks = 6  # Máximo de 6 verificações vazias (30 segundos) antes de parar
+    
+    while not _workers_should_stop.value:
         try:
             if _process_queue.empty():
-                logger.debug(f"[WORKER-{worker_id}] Fila vazia, aguardando 5 segundos...")
-                time.sleep(5)  # Espera 5 segundos se a fila estiver vazia
+                consecutive_empty_checks += 1
+                if consecutive_empty_checks >= max_empty_checks:
+                    logger.info(f"[WORKER-{worker_id}] Fila vazia por {max_empty_checks * 5}s. Finalizando worker.")
+                    break
+                
+                logger.debug(f"[WORKER-{worker_id}] Fila vazia, aguardando 5 segundos... ({consecutive_empty_checks}/{max_empty_checks})")
+                time.sleep(5)
                 continue
+            
+            # Reset contador se encontrou trabalho
+            consecutive_empty_checks = 0
                 
             if not can_start_processing():
                 resources = get_system_resources()
@@ -918,7 +930,12 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, crea
                 continue
                 
             # Pega o próximo arquivo da fila
-            priority, timestamp, zip_file = _process_queue.get()
+            try:
+                priority, timestamp, zip_file = _process_queue.get_nowait()
+            except:
+                # Fila ficou vazia entre a verificação e o get
+                continue
+                
             logger.info(f"[WORKER-{worker_id}] Iniciando processamento de {zip_file}")
             
             with _processing_lock:
@@ -926,10 +943,25 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, crea
                 logger.debug(f"[WORKER-{worker_id}] Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
                 
             try:
+                # Obter tamanho do arquivo para estatísticas
+                zip_path = os.path.join(path_zip, zip_file)
+                file_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
+                
                 # Processa o arquivo
                 start_time = time.time()
                 result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, create_private=create_private)
                 elapsed_time = time.time() - start_time
+                
+                # Registrar estatística de processamento
+                global_stats.add_processing_stat(
+                    filename=zip_file,
+                    file_type="empresas",
+                    size_bytes=file_size,
+                    start_time=start_time,
+                    end_time=time.time(),
+                    success=result,
+                    error=None if result else "Processamento falhou"
+                )
                 
                 if result:
                     logger.info(f"[WORKER-{worker_id}] ✓ {zip_file} processado com sucesso em {elapsed_time:.2f}s")
@@ -943,7 +975,22 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, crea
                     
         except Exception as e:
             logger.error(f"[WORKER-{worker_id}] Erro no worker da fila: {str(e)}")
+            # Registrar estatística de erro
+            try:
+                global_stats.add_processing_stat(
+                    filename=zip_file if 'zip_file' in locals() else "unknown",
+                    file_type="empresas",
+                    size_bytes=0,
+                    start_time=start_time if 'start_time' in locals() else time.time(),
+                    end_time=time.time(),
+                    success=False,
+                    error=str(e)
+                )
+            except:
+                pass  # Evitar erro duplo
             time.sleep(5)
+    
+    logger.info(f"[WORKER-{worker_id}] Worker finalizado")
 
 def start_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False):
     """Inicia o worker da fila em uma thread separada."""
@@ -960,6 +1007,9 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
     logger.info('=' * 50)
     
     try:
+        # Reset flag de parada
+        _workers_should_stop.value = False
+        
         zip_files = [f for f in os.listdir(path_zip)
                      if f.startswith('Empr') and f.endswith('.zip')]
         
@@ -984,6 +1034,7 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
         # Aguardar processamento da fila com relatórios de progresso
         last_queue_size = len(zip_files)
         processed_count = 0
+        no_progress_count = 0
         
         while not _process_queue.empty() or _active_processes.value > 0:
             current_queue_size = _process_queue.qsize()
@@ -997,6 +1048,14 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
                 logger.info(f"Progresso: {processed_count}/{len(zip_files)} arquivos processados ({progress_percent:.1f}%) - "
                            f"Fila: {current_queue_size}, Ativos: {current_active}")
                 last_queue_size = current_queue_size
+                no_progress_count = 0
+            else:
+                no_progress_count += 1
+                
+                # Se não há progresso por muito tempo e não há processos ativos, sair
+                if no_progress_count > 12 and current_active == 0:  # 60 segundos sem progresso
+                    logger.warning("Sem progresso por 60 segundos e nenhum processo ativo. Finalizando...")
+                    break
             
             # Mostrar informações detalhadas em modo DEBUG
             if logger.isEnabledFor(logging.DEBUG):
@@ -1005,6 +1064,16 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
                            f"CPU: {resources['cpu_percent']:.1f}%, Memória: {resources['memory_percent']:.1f}%")
             
             time.sleep(5)
+        
+        # Sinalizar workers para parar
+        _workers_should_stop.value = True
+        
+        # Aguardar worker finalizar (máximo 30 segundos)
+        if worker_thread.is_alive():
+            logger.info("Aguardando worker finalizar...")
+            worker_thread.join(timeout=30)
+            if worker_thread.is_alive():
+                logger.warning("Worker não finalizou no tempo esperado")
             
         # Calcular estatísticas finais
         total_time = time.time() - start_time
@@ -1023,3 +1092,6 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
         logger.error(f'Erro no processamento principal de Empresas: {str(e)}')
         traceback.print_exc()
         return False
+    finally:
+        # Garantir que workers parem
+        _workers_should_stop.value = True

@@ -412,10 +412,9 @@ def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str, zip_fil
                     if re.match(r'^\d{4}-\d{2}$', parent_dir):
                         remote_folder = parent_dir
                     else:
-                        # Último recurso: usar um valor padrão
-                        current_date = datetime.datetime.now()
-                        remote_folder = f"{current_date.year}-{current_date.month:02d}"
-                        logger.warning(f"Não foi possível extrair pasta remota do caminho. Usando data atual: {remote_folder}")
+                        # Último recurso: usar um valor padrão fixo
+                        remote_folder = "dados"
+                        logger.warning(f"Não foi possível extrair pasta remota do caminho. Usando pasta padrão: {remote_folder}")
         
         logger.info(f"Pasta remota identificada: {remote_folder}")
         
@@ -578,7 +577,7 @@ def extract_large_zip(zip_path: str, extract_dir: str, chunk_size: int = 1000000
         return False
 
 
-def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
+def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, remote_folder: str = None, uf_subset: str | None = None) -> bool:
     """Processa um único arquivo ZIP."""
     pid = os.getpid()
     logger.info(f"[{pid}] Iniciando processamento para: {zip_file}")
@@ -587,7 +586,8 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
     zip_filename_prefix = os.path.splitext(zip_file)[0]
     
     # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
-    remote_folder = os.path.basename(os.path.normpath(path_zip))
+    if remote_folder is None:
+        remote_folder = os.path.basename(os.path.normpath(path_zip))
     # Verificar se o formato é AAAA-MM
     if not re.match(r'^\d{4}-\d{2}$', remote_folder):
         # Se não for uma pasta no formato esperado, tentar extrair do caminho
@@ -972,7 +972,7 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
             
             try:
                 file_start_time = time.time()
-                result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, uf_subset)
+                result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, remote_folder, uf_subset)
                 file_elapsed_time = time.time() - file_start_time
                 
                 if result:

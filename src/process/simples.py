@@ -21,6 +21,7 @@ from ..config import config
 from ..utils import file_delete, verify_csv_integrity
 from ..utils.folders import get_output_path, ensure_correct_folder_structure
 from ..utils.time_utils import format_elapsed_time
+from ..utils.statistics import global_stats
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ _processing_lock = Lock()
 _active_processes = Value('i', 0)
 _max_concurrent_processes = Value('i', 2)  # Máximo de 2 processamentos simultâneos
 _process_queue = PriorityQueue()
+_workers_should_stop = Value('b', False)  # Flag para parar workers
 
 def get_system_resources():
     """Retorna informações sobre os recursos do sistema."""
@@ -69,12 +71,23 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str):
     worker_id = threading.current_thread().name
     logger.info(f"[WORKER-{worker_id}] Worker iniciado para processamento do Simples Nacional")
     
-    while True:
+    consecutive_empty_checks = 0
+    max_empty_checks = 6  # Máximo de 6 verificações vazias (30 segundos) antes de parar
+    
+    while not _workers_should_stop.value:
         try:
             if _process_queue.empty():
-                logger.debug(f"[WORKER-{worker_id}] Fila vazia, aguardando 5 segundos...")
-                time.sleep(5)  # Espera 5 segundos se a fila estiver vazia
+                consecutive_empty_checks += 1
+                if consecutive_empty_checks >= max_empty_checks:
+                    logger.info(f"[WORKER-{worker_id}] Fila vazia por {max_empty_checks * 5}s. Finalizando worker.")
+                    break
+                
+                logger.debug(f"[WORKER-{worker_id}] Fila vazia, aguardando 5 segundos... ({consecutive_empty_checks}/{max_empty_checks})")
+                time.sleep(5)
                 continue
+            
+            # Reset contador se encontrou trabalho
+            consecutive_empty_checks = 0
                 
             if not can_start_processing():
                 resources = get_system_resources()
@@ -85,7 +98,12 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str):
                 continue
                 
             # Pega o próximo arquivo da fila
-            priority, timestamp, zip_file = _process_queue.get()
+            try:
+                priority, timestamp, zip_file = _process_queue.get_nowait()
+            except:
+                # Fila ficou vazia entre a verificação e o get
+                continue
+                
             logger.info(f"[WORKER-{worker_id}] Iniciando processamento de {zip_file}")
             
             with _processing_lock:
@@ -111,6 +129,8 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str):
         except Exception as e:
             logger.error(f"[WORKER-{worker_id}] Erro no worker da fila: {str(e)}")
             time.sleep(5)
+    
+    logger.info(f"[WORKER-{worker_id}] Worker finalizado")
 
 def start_queue_worker(path_zip: str, path_unzip: str, path_parquet: str):
     """Inicia o worker da fila em uma thread separada."""
@@ -284,7 +304,7 @@ def apply_simples_transformations(df: pl.DataFrame) -> pl.DataFrame:
     
     return df
 
-def save_simples_parquet(df: pl.DataFrame, output_path: str, zip_prefix: str) -> bool:
+def save_simples_parquet(df: pl.DataFrame, output_path: str, zip_prefix: str, remote_folder: str) -> bool:
     """
     Salva DataFrame em arquivos Parquet particionados.
     
@@ -292,47 +312,25 @@ def save_simples_parquet(df: pl.DataFrame, output_path: str, zip_prefix: str) ->
         df: DataFrame
         output_path: Caminho de saída
         zip_prefix: Prefixo do arquivo ZIP
+        remote_folder: Pasta remota identificada
         
     Returns:
         bool: True se salvou com sucesso
     """
     try:
-        # Extrair pasta remota do caminho ou do prefixo do arquivo
-        remote_folder = None
-        
-        # Verificar se podemos extrair uma data no formato YYYY-MM do caminho
-        parts = output_path.split(os.path.sep)
-        for part in parts:
-            if len(part) == 7 and part[4] == '-':  # Formato AAAA-MM
-                remote_folder = part
-                break
-        
-        # Se não conseguimos extrair do caminho, tentar extrair do prefixo do arquivo ou output_path
+        # Usar o remote_folder passado como parâmetro
         if not remote_folder:
-            # Tentar extrair de output_path
+            # Se não foi passado, tentar extrair do output_path
             match = re.search(r'(20\d{2}-\d{2})', output_path)
             if match:
                 remote_folder = match.group(1)
             else:
-                # Tentar extrair do prefixo do arquivo
-                match = re.search(r'(20\d{2}-\d{2})', zip_prefix)
-                if match:
-                    remote_folder = match.group(1)
-                else:
-                    # Tentar extrair do diretório pai do output_path
-                    parent_dir = os.path.basename(os.path.dirname(output_path))
-                    if re.match(r'^\d{4}-\d{2}$', parent_dir):
-                        remote_folder = parent_dir
-                    else:
-                        # Último recurso: usar um valor padrão
-                        current_date = datetime.datetime.now()
-                        remote_folder = f"{current_date.year}-{current_date.month:02d}"
-                        logger.warning(f"Não foi possível extrair pasta remota do caminho. Usando data atual: {remote_folder}")
+                # Usar um valor padrão fixo em vez da data atual
+                remote_folder = "dados"
         
-        logger.info(f"Pasta remota identificada: {remote_folder}")
+        logger.info(f"Pasta remota para salvamento: {remote_folder}")
         
-        # Forçar a utilização do remote_folder para garantir que não salve na raiz do parquet
-        # Usando a função que garante a estrutura correta de pastas
+        # Usar a função que garante a estrutura correta de pastas
         output_dir = ensure_correct_folder_structure(output_path, remote_folder, 'simples')
         
         total_rows = df.height
@@ -343,19 +341,20 @@ def save_simples_parquet(df: pl.DataFrame, output_path: str, zip_prefix: str) ->
         num_partitions = (total_rows + 500000 - 1) // 500000
         
         logger.info(f"Salvando DataFrame com {total_rows} linhas em {num_partitions} partições de aproximadamente 500.000 linhas cada")
+        logger.info(f"Diretório de saída: {output_dir}")
         
         for i in range(num_partitions):
             start_idx = i * 500000
             end_idx = min((i + 1) * 500000, total_rows)
             
             partition = df.slice(start_idx, end_idx - start_idx)
-            output_path = os.path.join(output_dir, f"{zip_prefix}_part{i:03d}.parquet")
+            output_file = os.path.join(output_dir, f"{zip_prefix}_part{i:03d}.parquet")
             
-            logger.info(f"Salvando partição {i+1}/{num_partitions} com {end_idx-start_idx} linhas para {output_path}")
+            logger.info(f"Salvando partição {i+1}/{num_partitions} com {end_idx-start_idx} linhas para {output_file}")
             
             try:
-                partition.write_parquet(output_path, compression="snappy")
-                logger.info(f"Partição {i+1}/{num_partitions} salva com sucesso")
+                partition.write_parquet(output_file, compression="snappy")
+                logger.info(f"Partição {i+1}/{num_partitions} salva com sucesso em {output_file}")
             except Exception as e:
                 logger.error(f"Erro ao salvar partição {i+1}: {str(e)}")
                 raise
@@ -650,7 +649,8 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
             main_saved = save_simples_parquet(
                 df_transformed, 
                 path_parquet, 
-                zip_filename_prefix
+                zip_filename_prefix,
+                remote_folder
             )
             
             if main_saved:
@@ -690,6 +690,9 @@ def process_simples_files(path_zip: str, path_unzip: str, path_parquet: str) -> 
     logger.info('=' * 50)
     
     try:
+        # Reset flag de parada
+        _workers_should_stop.value = False
+        
         zip_files = [f for f in os.listdir(path_zip) 
                     if f.startswith('Simples') and f.endswith('.zip')]
         
@@ -714,6 +717,7 @@ def process_simples_files(path_zip: str, path_unzip: str, path_parquet: str) -> 
         # Aguardar processamento da fila com relatórios de progresso
         last_queue_size = len(zip_files)
         processed_count = 0
+        no_progress_count = 0
         
         while not _process_queue.empty() or _active_processes.value > 0:
             current_queue_size = _process_queue.qsize()
@@ -727,6 +731,14 @@ def process_simples_files(path_zip: str, path_unzip: str, path_parquet: str) -> 
                 logger.info(f"Progresso: {processed_count}/{len(zip_files)} arquivos processados ({progress_percent:.1f}%) - "
                            f"Fila: {current_queue_size}, Ativos: {current_active}")
                 last_queue_size = current_queue_size
+                no_progress_count = 0
+            else:
+                no_progress_count += 1
+                
+                # Se não há progresso por muito tempo e não há processos ativos, sair
+                if no_progress_count > 12 and current_active == 0:  # 60 segundos sem progresso
+                    logger.warning("Sem progresso por 60 segundos e nenhum processo ativo. Finalizando...")
+                    break
             
             # Mostrar informações detalhadas em modo DEBUG
             if logger.isEnabledFor(logging.DEBUG):
@@ -735,6 +747,16 @@ def process_simples_files(path_zip: str, path_unzip: str, path_parquet: str) -> 
                            f"CPU: {resources['cpu_percent']:.1f}%, Memória: {resources['memory_percent']:.1f}%")
             
             time.sleep(5)
+        
+        # Sinalizar workers para parar
+        _workers_should_stop.value = True
+        
+        # Aguardar worker finalizar (máximo 30 segundos)
+        if worker_thread.is_alive():
+            logger.info("Aguardando worker finalizar...")
+            worker_thread.join(timeout=30)
+            if worker_thread.is_alive():
+                logger.warning("Worker não finalizou no tempo esperado")
             
         # Calcular estatísticas finais
         total_time = time.time() - start_time
@@ -753,3 +775,6 @@ def process_simples_files(path_zip: str, path_unzip: str, path_parquet: str) -> 
         logger.error(f'Erro no processamento principal do Simples Nacional: {str(e)}')
         traceback.print_exc()
         return False
+    finally:
+        # Garantir que workers parem
+        _workers_should_stop.value = True

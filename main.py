@@ -86,6 +86,7 @@ from src.process.simples import process_simples_files
 from src.process.socio import process_socio_files
 from src.utils import check_basic_folders
 from src.utils.time_utils import format_elapsed_time
+from src.utils.statistics import global_stats
 
 # Configurar logger global
 logger = logging.getLogger(__name__)
@@ -311,17 +312,23 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                 # Baixar os arquivos deste diretório
                 try:
                     max_concurrent_downloads = config.n_workers
-                    downloaded, failed = await download_multiple_files(
+                    
+                    # Usar a nova função otimizada com pipeline completo
+                    processed, failed = await download_multiple_files(
                         zip_urls,
-                        folder_download_path,
-                        max_concurrent=max_concurrent_downloads
+                        folder_download_path,  # path_zip
+                        PATH_UNZIP,           # path_unzip
+                        PATH_PARQUET,         # path_parquet
+                        force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
+                        max_concurrent_downloads=max_concurrent_downloads,
+                        max_concurrent_processing=min(2, config.n_workers // 2)
                     )
                     
-                    downloaded_files_count += len(downloaded)
+                    downloaded_files_count += len(processed)
                     failed_downloads_count += len(failed)
                     
                     if failed:
-                        logger.warning(f"{len(failed)} downloads falharam em {folder_name}.")
+                        logger.warning(f"{len(failed)} downloads/processamentos falharam em {folder_name}.")
                         all_successful = False
                 except Exception as e:
                     logger.error(f"Erro durante downloads em {folder_name}: {e}")
@@ -380,17 +387,23 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
             # Baixar os arquivos
             try:
                 max_concurrent_downloads = config.n_workers
-                downloaded, failed = await download_multiple_files(
+                
+                # Usar a nova função otimizada com pipeline completo
+                processed, failed = await download_multiple_files(
                     zip_urls,
-                    folder_download_path,
-                    max_concurrent=max_concurrent_downloads
+                    folder_download_path,  # path_zip
+                    PATH_UNZIP,           # path_unzip
+                    PATH_PARQUET,         # path_parquet
+                    force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
+                    max_concurrent_downloads=max_concurrent_downloads,
+                    max_concurrent_processing=min(2, config.n_workers // 2)
                 )
                 
-                downloaded_files_count = len(downloaded)
+                downloaded_files_count = len(processed)
                 failed_downloads_count = len(failed)
                 
                 if failed:
-                    logger.warning(f"{len(failed)} downloads falharam.")
+                    logger.warning(f"{len(failed)} downloads/processamentos falharam.")
                     all_successful = False
                     
             except aiohttp.ClientError as e:
@@ -407,7 +420,7 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
 
             if failed:
                 logger.error(f"{len(failed)} downloads falharam. Verifique os logs acima.")
-                if not downloaded:  # Se nenhum arquivo foi baixado com sucesso
+                if not processed:  # Se nenhum arquivo foi baixado com sucesso
                     return False, ""
                 logger.warning("Continuando processamento com os arquivos baixados com sucesso.")
 
@@ -640,7 +653,7 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
             status = "✅ SUCESSO" if resultado['success'] else "❌ FALHA"
             logger.info(f"{tipo.upper()}: {status} - Tempo: {format_elapsed_time(resultado['time'])}")
     logger.info("-" * 60)
-    logger.info(f"⏱️  TEMPO TOTAL DE PROCESSAMENTO: {format_elapsed_time(total_elapsed_time)}")
+    logger.info(f"⏱️  TEMPO DE PROCESSAMENTO DOS DADOS: {format_elapsed_time(total_elapsed_time)}")
     status_final = "✅ SUCESSO COMPLETO" if all_ok else "❌ FALHA PARCIAL/TOTAL"
     logger.info(f"🎯 STATUS GERAL: {status_final}")
     logger.info("=" * 60)
@@ -651,6 +664,9 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
 def main():
     """Função principal de execução."""
     start_time = time.time()
+    
+    # Inicializar coleta de estatísticas
+    global_stats.start_session()
     
     parser = argparse.ArgumentParser(description='Realizar download e processamento dos dados de CNPJ')
     parser.add_argument('--tipos', '-t', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
@@ -974,6 +990,9 @@ def main():
     
     total_time = time.time() - start_time
     
+    # Finalizar coleta de estatísticas
+    global_stats.end_session()
+    
     # Resumo final
     print_header("Processamento concluído")
     logger.info("=" * 50)
@@ -988,6 +1007,20 @@ def main():
     logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
     logger.info("=" * 50)
     logger.info("Execução concluída.")
+    
+    # Exibir relatório detalhado de estatísticas
+    global_stats.print_detailed_report()
+    
+    # Salvar estatísticas em arquivo
+    try:
+        stats_filename = f"estatisticas_cnpj_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        stats_path = os.path.join("logs", stats_filename)
+        os.makedirs("logs", exist_ok=True)
+        global_stats.save_to_json(stats_path)
+        print(f"\n📄 Estatísticas detalhadas salvas em: {stats_path}")
+    except Exception as e:
+        logger.error(f"Erro ao salvar estatísticas: {e}")
+    
     return
 
 

@@ -57,6 +57,45 @@ class CacheConfig:
 
 
 @dataclass
+class PipelineConfig:
+    """Configurações para otimização do pipeline de processamento."""
+    
+    # Configurações de streaming
+    enable_streaming: bool = True
+    streaming_chunk_size: int = 1000000  # 1M linhas por chunk
+    max_memory_per_process_mb: int = 2048  # 2GB por processo
+    
+    # Configurações de cache inteligente
+    enable_smart_cache: bool = True
+    cache_cleanup_interval_hours: int = 24
+    max_cache_size_gb: int = 10
+    
+    # Configurações adaptativas de concorrência
+    adaptive_concurrency: bool = True
+    min_download_workers: int = 2
+    max_download_workers: int = 8
+    min_process_workers: int = 1
+    max_process_workers: int = 4
+    
+    # Configurações de I/O otimizado
+    use_async_io: bool = True
+    io_buffer_size: int = 8192 * 8  # 64KB buffer
+    enable_compression: bool = True
+    compression_level: int = 6  # Balanceio entre velocidade e compressão
+    
+    # Configurações de monitoramento
+    enable_resource_monitoring: bool = True
+    memory_threshold_percent: int = 85  # Pausar processamento se memória > 85%
+    cpu_threshold_percent: int = 90     # Pausar processamento se CPU > 90%
+    
+    # Configurações de otimização específicas por tipo
+    empresa_chunk_size: int = 500000
+    estabelecimento_chunk_size: int = 1000000  # Arquivos maiores
+    simples_chunk_size: int = 2000000
+    socio_chunk_size: int = 750000
+
+
+@dataclass
 class Config:
     # Configurações de paralelismo
     n_workers: int = os.cpu_count() or 4
@@ -65,6 +104,7 @@ class Config:
     file: FileConfig = field(default_factory=FileConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
+    pipeline: PipelineConfig = field(default_factory=PipelineConfig)  # Nova configuração
 
     # Lista de arquivos a serem ignorados no download
     ignored_files: List[str] = field(default_factory=lambda: [

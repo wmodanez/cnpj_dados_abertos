@@ -1,12 +1,14 @@
 import logging
 import os
 import shutil
+import time
 
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .config import config
+from .utils.statistics import global_stats
 
 logger = logging.getLogger(__name__)
 
