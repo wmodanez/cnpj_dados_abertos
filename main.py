@@ -843,10 +843,15 @@ def main():
         
         # Criar o arquivo DuckDB
         try:
-            db_file = os.path.join(parquet_folder, FILE_DB_PARQUET)
-            logger.info(f"Criando arquivo DuckDB em: {db_file}")
-            create_duckdb_file(parquet_folder, db_file, PATH_REMOTE_PARQUET)
-            print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
+            logger.info(f"Criando arquivo DuckDB em: {parquet_folder}")
+            db_success = create_duckdb_file(parquet_folder, FILE_DB_PARQUET, PATH_REMOTE_PARQUET)
+            if db_success:
+                db_file = os.path.join(parquet_folder, FILE_DB_PARQUET)
+                print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
+            else:
+                print_error("Falha ao criar banco de dados. Verifique os logs para mais detalhes.")
+                logger.error("Criação do banco de dados falhou")
+                return
         except Exception as e:
             logger.exception(f"Erro ao criar banco de dados: {e}")
             print_error(f"Falha ao criar banco de dados: {str(e)}")
@@ -934,18 +939,38 @@ def main():
         db_start_time = time.time()
         
         try:
-            db_file = os.path.join(output_parquet_path, FILE_DB_PARQUET)
-            logger.info(f"Criando arquivo DuckDB em: {db_file}")
-            create_duckdb_file(output_parquet_path, db_file, PATH_REMOTE_PARQUET)
+            logger.info(f"Criando arquivo DuckDB em: {output_parquet_path}")
+            db_success = create_duckdb_file(output_parquet_path, FILE_DB_PARQUET, PATH_REMOTE_PARQUET)
             db_time = time.time() - db_start_time
-            logger.info("=" * 50)
-            logger.info(f"Tempo de processamento do banco: {format_elapsed_time(db_time)}")
-            print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
+            
+            if db_success:
+                logger.info("=" * 50)
+                logger.info(f"Tempo de processamento do banco: {format_elapsed_time(db_time)}")
+                db_file = os.path.join(output_parquet_path, FILE_DB_PARQUET)
+                print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
+            else:
+                logger.info("=" * 50)
+                logger.info(f"Tempo de processamento do banco (falhou): {format_elapsed_time(db_time)}")
+                print_error("Falha ao criar banco de dados. Verifique os logs para mais detalhes.")
+                logger.error("Criação do banco de dados falhou")
+                total_time = time.time() - start_time
+                logger.info("=" * 50)
+                logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+                logger.info("STATUS FINAL: FALHA")
+                logger.info("=" * 50)
+                return
         except Exception as e:
-            logger.exception(f"Erro ao criar banco de dados: {e}")
-            print_error(f"Falha ao criar banco de dados: {str(e)}")
             db_time = time.time() - db_start_time
-            logger.info(f"Tempo de criação do banco (falhou): {format_elapsed_time(db_time)}")
+            logger.exception(f"Erro ao criar banco de dados: {e}")
+            logger.info("=" * 50)
+            logger.info(f"Tempo de processamento do banco (erro): {format_elapsed_time(db_time)}")
+            print_error(f"Falha ao criar banco de dados: {str(e)}")
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
+            return
     
     total_time = time.time() - start_time
     
