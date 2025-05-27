@@ -27,7 +27,7 @@ from rich.progress import (
 # Importações locais do projeto
 from .config import config
 from .utils import DownloadCache
-from .process.empresa import process_single_zip as process_empresa_zip, extract_file_parallel
+from .process.empresa import process_single_zip as process_empresa_zip, extract_zip_parallel
 from .process.estabelecimento import process_single_zip as process_estabelecimento_zip
 from .process.simples import process_single_zip as process_simples_zip
 from .process.socio import process_single_zip as process_socio_zip
@@ -558,34 +558,23 @@ async def process_downloaded_file(filename: str, file_path: str, path_unzip: str
             cache = get_download_cache()
             cache.update_processing_status(filename, "extracting")
 
-        # Extrai o arquivo
+        # Extrair o arquivo
         logger.info(f"Extraindo {filename}...")
+        print(f"📦 Extraindo {filename}...")
+        
+        # Determinar o diretório de extração específico para este arquivo
         extract_dir = os.path.join(path_unzip, os.path.splitext(filename)[0])
-        os.makedirs(extract_dir, exist_ok=True)
-
-        # Tenta extração paralela primeiro
-        extraction_success = False
-        try:
-            # Usar extração paralela para arquivos menores
-            num_threads = max(1, int((os.cpu_count() or 4) * 0.75))
-            if extract_file_parallel(file_path, extract_dir, num_threads):
-                extraction_success = True
-                logger.info(f"Extração paralela concluída para {filename}")
-            else:
-                logger.warning(f"Extração paralela falhou para {filename}, tentando método tradicional")
-        except Exception as e:
-            logger.warning(f"Erro na extração paralela: {e}")
-
-        # Se a extração paralela falhou, tenta o método tradicional
-        if not extraction_success:
-            try:
-                with zipfile.ZipFile(file_path) as zip_ref:
-                    zip_ref.extractall(extract_dir)
-                extraction_success = True
-                logger.info(f"Extração tradicional concluída para {filename}")
-            except Exception as e:
-                logger.error(f"Erro na extração tradicional: {e}")
-                raise
+        
+        # Usar a função de extração paralela do módulo empresa
+        success = extract_zip_parallel(file_path, extract_dir)
+        
+        if not success:
+            error_msg = f"Falha na extração de {filename}"
+            logger.error(error_msg)
+            return filename, Exception(error_msg)
+        
+        logger.info(f"Extração paralela concluída para {filename}")
+        print(f"✅ Extração de {filename} concluída")
 
         # Atualiza status para processando
         if config.cache.enabled:
@@ -599,6 +588,7 @@ async def process_downloaded_file(filename: str, file_path: str, path_unzip: str
         for tipo_prefixo, processor_fn in PROCESSOR_MAP.items():
             if filename.lower().startswith(tipo_prefixo.lower()):
                 logger.info(f"Processando {filename} como {tipo_prefixo}")
+                print(f"🔄 Processando {filename} como {tipo_prefixo}")
                 try:
                     # Criar argumentos específicos para cada tipo de processador
                     kwargs = {
@@ -608,43 +598,35 @@ async def process_downloaded_file(filename: str, file_path: str, path_unzip: str
                         "path_parquet": path_parquet,
                     }
                     
-                    # Adicionar parâmetros específicos baseado no tipo
-                    if tipo_prefixo == 'Empresas':
-                        kwargs["create_private"] = False  # Configuração padrão para empresas
-                    elif tipo_prefixo == 'Estabelecimentos':
-                        kwargs["uf_subset"] = None  # Configuração padrão para estabelecimentos
-                    else:
-                        kwargs["remote_folder"] = remote_folder  # Passa a pasta remota correta
+                    # Adicionar argumentos específicos baseados na função
+                    if "remote_folder" in processor_fn.__code__.co_varnames:
+                        kwargs["remote_folder"] = remote_folder
+                    if "create_private" in processor_fn.__code__.co_varnames:
+                        kwargs["create_private"] = False
                     
                     # Executar a função de processamento correta
                     logger.info(f"Chamando processador {processor_fn.__name__} para {filename}")
-                    processing_success = processor_fn(**kwargs)
+                    print(f"⚙️  Executando processador {processor_fn.__name__} para {filename}")
+                    result = processor_fn(**kwargs)
                     
-                    if processing_success:
+                    if result:
                         success = True
-                        # Construir o caminho esperado do parquet baseado no tipo
-                        zip_prefix = os.path.splitext(filename)[0]
-                        if tipo_prefixo == 'Empresas':
-                            parquet_dir = os.path.join(path_parquet, remote_folder, 'empresas')
-                        elif tipo_prefixo == 'Estabelecimentos':
-                            parquet_dir = os.path.join(path_parquet, remote_folder, 'estabelecimentos')
-                        elif tipo_prefixo == 'Simples':
-                            parquet_dir = os.path.join(path_parquet, remote_folder, 'simples')
-                        elif tipo_prefixo == 'Socios':
-                            parquet_dir = os.path.join(path_parquet, remote_folder, 'socios')
+                        # Construir caminho do parquet baseado no tipo e pasta remota
+                        if remote_folder:
+                            parquet_file = os.path.join(path_parquet, remote_folder, tipo_prefixo.lower())
                         else:
-                            parquet_dir = os.path.join(path_parquet, remote_folder, tipo_prefixo.lower())
+                            parquet_file = os.path.join(path_parquet, tipo_prefixo.lower())
                         
-                        # O arquivo parquet pode ter múltiplas partições, então vamos usar o diretório
-                        parquet_file = parquet_dir
                         logger.info(f"Processamento de {filename} concluído com sucesso. Parquet salvo em: {parquet_file}")
+                        print(f"💾 Parquet salvo em: {parquet_file}")
                         break
                     else:
-                        logger.warning(f"Processador {processor_fn.__name__} retornou False para {filename}")
-                        
+                        logger.warning(f"Processador {processor_fn.__name__} retornou None para {filename}")
+                        print(f"⚠️  Processador retornou None para {filename}")
                 except Exception as e:
-                    logger.error(f"Erro ao processar {filename} como {tipo_prefixo}: {e}")
-                    raise
+                    logger.error(f"Erro no processador {processor_fn.__name__} para {filename}: {e}")
+                    print(f"❌ Erro no processador para {filename}: {e}")
+                    continue
                     
                 break  # Sai do loop após encontrar o tipo correto
 
@@ -752,6 +734,10 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
     async def process_files_from_queue():
         """Consome a fila de processamento e processa os arquivos em tempo real."""
         processor_id = id(asyncio.current_task())
+        processor_name = f"Worker-{processor_id % 1000}"  # Nome mais legível
+        
+        # Log visível no console
+        print(f"\n🔧 {processor_name} iniciado e aguardando arquivos...")
         logger.info(f"Iniciando processador {processor_id}")
         
         while True:
@@ -761,17 +747,22 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
                 
                 # Verifica se recebemos o sinal de encerramento (None)
                 if file_path is None:
+                    print(f"\n🏁 {processor_name} finalizando...")
                     logger.debug(f"Processador {processor_id} recebeu sinal de encerramento")
                     processing_queue.task_done()
                     break
                 
                 filename = os.path.basename(file_path)
+                
+                # Log visível no console
+                print(f"\n⚙️  {processor_name} processando: {filename}")
                 logger.info(f"Processador {processor_id} iniciando processamento de {filename}")
                 
                 # Verificar se arquivo tem erros no cache
                 if config.cache.enabled:
                     cache = get_download_cache()
                     if cache.has_file_error(filename):
+                        print(f"⚠️  {processor_name}: {filename} tem erros no cache - pulando")
                         logger.warning(f"Processador {processor_id}: Arquivo {filename} tem erros registrados no cache. Pulando processamento.")
                         processing_queue.task_done()
                         continue
@@ -780,12 +771,15 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
                     # Usar o semáforo para limitar processamento paralelo
                     logger.debug(f"Processador {processor_id} aguardando semáforo para {filename}")
                     async with process_semaphore:
+                        print(f"🔄 {processor_name}: Iniciando extração e processamento de {filename}")
                         logger.info(f"Processador {processor_id} obteve semáforo para {filename}")
+                        
                         # Executar o processamento diretamente (função já é assíncrona)
                         result, error = await process_downloaded_file(filename, file_path, path_unzip, path_parquet)
                         
                         if error is None:
                             processed_files.append(result)
+                            print(f"✅ {processor_name}: {filename} processado com sucesso!")
                             logger.info(f"Processador {processor_id} concluiu processamento de {filename} com sucesso")
                             # Atualiza o cache para indicar processamento bem-sucedido
                             if config.cache.enabled:
@@ -803,6 +797,7 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
                                     logger.info(f"Processador {processor_id}: Cache atualizado para {filename}")
                         else:
                             failed_processing.append((result, error))
+                            print(f"❌ {processor_name}: Falha ao processar {filename} - {error}")
                             logger.warning(f"Processador {processor_id}: Falha ao processar {filename}: {error}")
                             # Registra o erro de processamento no cache
                             if config.cache.enabled:
@@ -810,6 +805,7 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
                                 error_msg = f"Erro de processamento: {str(error)}"
                                 cache.register_file_error(filename, error_msg)
                 except Exception as e:
+                    print(f"💥 {processor_name}: Erro crítico ao processar {filename} - {e}")
                     logger.error(f"Processador {processor_id}: Erro ao processar {filename}: {e}")
                     failed_processing.append((filename, e))
                     # Registra o erro no cache
@@ -821,9 +817,11 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
                 logger.debug(f"Processador {processor_id} finalizando tarefa para {filename}")
                 processing_queue.task_done()
             except Exception as e:
+                print(f"💥 {processor_name}: Erro na fila de processamento - {e}")
                 logger.error(f"Processador {processor_id}: Erro no processamento da fila: {e}")
                 processing_queue.task_done()
-        
+
+        print(f"🏁 {processor_name} encerrado")
         logger.info(f"Processador {processor_id} encerrado")
 
     # Criar múltiplos processadores para trabalhar em paralelo
@@ -836,6 +834,7 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
 
     # Verificar arquivos já existentes e adicioná-los à fila de processamento
     if path_unzip and path_parquet:
+        print(f"\n📋 Verificando arquivos já baixados para processamento...")
         logger.info("Verificando arquivos já baixados para processamento...")
         for url in urls:
             filename = os.path.basename(url)
@@ -843,21 +842,15 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
             
             # Se o arquivo já existe e não tem erros no cache
             if os.path.exists(file_path):
-                should_process = True
-                
-                # Verificar se tem erros no cache
                 if config.cache.enabled:
                     cache = get_download_cache()
                     if cache.has_file_error(filename):
                         logger.debug(f"Arquivo {filename} tem erros no cache, será baixado novamente")
-                        should_process = False
-                    elif cache.is_file_processed(filename):
-                        logger.debug(f"Arquivo {filename} já foi processado anteriormente")
-                        should_process = False
+                        continue
                 
-                if should_process:
-                    logger.info(f"Adicionando arquivo já existente {filename} à fila de processamento")
-                    await processing_queue.put(file_path)
+                print(f"📁 Adicionando arquivo existente {filename} à fila de processamento")
+                logger.info(f"Adicionando arquivo já existente {filename} à fila de processamento")
+                await processing_queue.put(file_path)
 
     # Criar sessão compartilhada para todos os downloads
     async with aiohttp.ClientSession() as session:
@@ -899,7 +892,9 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
                             logger.info(f"Arquivo {os.path.basename(path)} pulado: {skip_reason}")
                         else:
                             downloaded_files.append(path)
-                            logger.info(f"Adicionando {os.path.basename(path)} à fila de processamento")
+                            filename = os.path.basename(path)
+                            print(f"📥 Download concluído: {filename} → Adicionando à fila de processamento")
+                            logger.info(f"Adicionando {filename} à fila de processamento")
                             # Adicionar à fila de processamento
                             await processing_queue.put(path)
                     else:

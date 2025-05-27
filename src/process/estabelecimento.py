@@ -55,7 +55,7 @@ def detect_file_encoding(file_path: str) -> str:
     return 'latin1'
 
 def process_data_file(data_path: str, chunk_size: int = 1000000, output_dir: str = None, zip_filename_prefix: str = None):
-    """Processa um arquivo de dados usando Polars com processamento em chunks para arquivos grandes. Salva cada chunk individualmente como Parquet."""
+    """Processa um arquivo de dados com processamento em chunks para arquivos grandes. Salva cada chunk individualmente como Parquet."""
     logger = logging.getLogger(__name__)
 
     file_size = os.path.getsize(data_path)

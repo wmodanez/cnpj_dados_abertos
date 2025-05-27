@@ -18,6 +18,7 @@ import tempfile
 import threading
 from queue import Queue, PriorityQueue
 import psutil
+from typing import Optional
 
 from ..config import config
 from ..utils import (
@@ -110,15 +111,15 @@ def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa os dados de sócios."""
     return process_socio_files(path_zip, path_unzip, path_parquet)
 
-def process_data_file(data_path: str):
+def process_data_file(data_file_path: str) -> Optional[pl.DataFrame]:
     """
-    Processa um arquivo de dados usando Polars, seja ele CSV ou outro formato de texto.
+    Processa um arquivo de dados, seja ele CSV ou outro formato de texto.
     
     Args:
-        data_path: Caminho para o arquivo
+        data_file_path: Caminho para o arquivo de dados
         
     Returns:
-        DataFrame Polars ou None em caso de erro
+        DataFrame ou None em caso de erro
     """
     logger = logging.getLogger(__name__)
     
@@ -126,18 +127,18 @@ def process_data_file(data_path: str):
     try:
         # Tentar ler as primeiras linhas para verificar se é um arquivo de texto
         is_text_file = True
-        with open(data_path, 'rb') as f:
+        with open(data_file_path, 'rb') as f:
             sample = f.read(4096)  # Ler os primeiros 4KB
             # Verificar se há caracteres nulos ou muitos bytes não-ASCII
             # o que pode indicar que é um arquivo binário
             if b'\x00' in sample or len([b for b in sample if b > 127]) > len(sample) * 0.3:
-                logger.warning(f"Arquivo {os.path.basename(data_path)} parece ser binário, não texto.")
+                logger.warning(f"Arquivo {os.path.basename(data_file_path)} parece ser binário, não texto.")
                 is_text_file = False
         
         if not is_text_file:
             return None
     except Exception as e:
-        logger.error(f"Erro ao verificar se {os.path.basename(data_path)} é um arquivo de texto: {str(e)}")
+        logger.error(f"Erro ao verificar se {os.path.basename(data_file_path)} é um arquivo de texto: {str(e)}")
         return None
 
     # Usar colunas da config
@@ -146,7 +147,7 @@ def process_data_file(data_path: str):
     # Primeiro, tentar com o separador padrão
     try:
         df = pl.read_csv(
-            data_path,
+            data_file_path,
             separator=config.file.separator,
             encoding=config.file.encoding,
             has_header=False,
@@ -156,10 +157,10 @@ def process_data_file(data_path: str):
             ignore_errors=True  # Ignorar linhas com erros
         )
         if not df.is_empty():
-            logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando separador padrão")
+            logger.info(f"Arquivo {os.path.basename(data_file_path)} processado com sucesso usando separador padrão")
             return df
     except Exception as e:
-        logger.warning(f"Erro ao processar {os.path.basename(data_path)} com separador padrão: {str(e)}")
+        logger.warning(f"Erro ao processar {os.path.basename(data_file_path)} com separador padrão: {str(e)}")
     
     # Se falhar com o separador padrão, tentar detectar o separador
     separators = [';', ',', '|', '\t']
@@ -169,7 +170,7 @@ def process_data_file(data_path: str):
         
         try:
             df = pl.read_csv(
-                data_path,
+                data_file_path,
                 separator=sep,
                 encoding=config.file.encoding,
                 has_header=False,
@@ -179,10 +180,10 @@ def process_data_file(data_path: str):
                 ignore_errors=True
             )
             if not df.is_empty():
-                logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando separador '{sep}'")
+                logger.info(f"Arquivo {os.path.basename(data_file_path)} processado com sucesso usando separador '{sep}'")
                 return df
         except Exception as e:
-            logger.debug(f"Erro ao processar {os.path.basename(data_path)} com separador '{sep}': {str(e)}")
+            logger.debug(f"Erro ao processar {os.path.basename(data_file_path)} com separador '{sep}': {str(e)}")
     
     # Se ainda falhar, tentar com diferentes codificações
     encodings = ['latin1', 'utf-8', 'utf-16', 'cp1252']
@@ -192,7 +193,7 @@ def process_data_file(data_path: str):
         
         try:
             df = pl.read_csv(
-                data_path,
+                data_file_path,
                 separator=config.file.separator,
                 encoding=enc,
                 has_header=False,
@@ -202,17 +203,17 @@ def process_data_file(data_path: str):
                 ignore_errors=True
             )
             if not df.is_empty():
-                logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando codificação '{enc}'")
+                logger.info(f"Arquivo {os.path.basename(data_file_path)} processado com sucesso usando codificação '{enc}'")
                 return df
         except Exception as e:
-            logger.debug(f"Erro ao processar {os.path.basename(data_path)} com codificação '{enc}': {str(e)}")
+            logger.debug(f"Erro ao processar {os.path.basename(data_file_path)} com codificação '{enc}': {str(e)}")
     
     # Se chegamos até aqui, não conseguimos processar o arquivo
-    logger.error(f"Não foi possível processar o arquivo {os.path.basename(data_path)} com nenhuma combinação de separadores e codificações")
+    logger.error(f"Não foi possível processar o arquivo {os.path.basename(data_file_path)} com nenhuma combinação de separadores e codificações")
     return None
 
 def apply_socio_transformations(df: pl.DataFrame) -> pl.DataFrame:
-    """Aplica transformações específicas para Sócios usando Polars."""
+    """Aplica transformações específicas para Sócios."""
     logger.info("Aplicando transformações em Sócios...")
     
     # Renomeação de colunas se necessário
@@ -273,45 +274,43 @@ def apply_socio_transformations(df: pl.DataFrame) -> pl.DataFrame:
     
     return df
 
-def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str, zip_filename_prefix: str, partition_size: int = 500000) -> bool:
+def save_socio_parquet(df: pl.DataFrame, output_path: str, zip_prefix: str) -> bool:
     """
-    Salva DataFrame Polars em arquivos Parquet particionados.
+    Salva DataFrame em arquivos Parquet particionados.
     
     Args:
-        df: DataFrame Polars
-        table_name: Nome da tabela (subpasta)
-        path_parquet: Caminho base para os arquivos parquet
-        zip_filename_prefix: Prefixo derivado do nome do arquivo ZIP original
-        partition_size: Tamanho de cada partição (número de linhas)
+        df: DataFrame
+        output_path: Caminho de saída
+        zip_prefix: Prefixo do arquivo ZIP
         
     Returns:
-        True se sucesso, False caso contrário
+        bool: True se salvou com sucesso
     """
     try:
         # Extrair pasta remota do caminho ou do prefixo do arquivo
         remote_folder = None
         
         # Verificar se podemos extrair uma data no formato YYYY-MM do caminho
-        parts = path_parquet.split(os.path.sep)
+        parts = output_path.split(os.path.sep)
         for part in parts:
             if len(part) == 7 and part[4] == '-':  # Formato AAAA-MM
                 remote_folder = part
                 break
         
-        # Se não conseguimos extrair do caminho, tentar extrair do prefixo do arquivo ou path_parquet
+        # Se não conseguimos extrair do caminho, tentar extrair do prefixo do arquivo ou output_path
         if not remote_folder:
-            # Tentar extrair de path_parquet
-            match = re.search(r'(20\d{2}-\d{2})', path_parquet)
+            # Tentar extrair de output_path
+            match = re.search(r'(20\d{2}-\d{2})', output_path)
             if match:
                 remote_folder = match.group(1)
             else:
                 # Tentar extrair do prefixo do arquivo
-                match = re.search(r'(20\d{2}-\d{2})', zip_filename_prefix)
+                match = re.search(r'(20\d{2}-\d{2})', zip_prefix)
                 if match:
                     remote_folder = match.group(1)
                 else:
-                    # Tentar extrair do diretório pai do path_parquet
-                    parent_dir = os.path.basename(os.path.dirname(path_parquet))
+                    # Tentar extrair do diretório pai do output_path
+                    parent_dir = os.path.basename(os.path.dirname(output_path))
                     if re.match(r'^\d{4}-\d{2}$', parent_dir):
                         remote_folder = parent_dir
                     else:
@@ -324,23 +323,23 @@ def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str, zip_fil
         
         # Forçar a utilização do remote_folder para garantir que não salve na raiz do parquet
         # Usando a função que garante a estrutura correta de pastas
-        output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, table_name)
+        output_dir = ensure_correct_folder_structure(output_path, remote_folder, 'socios')
         
         total_rows = df.height
         if total_rows == 0:
-            logger.warning(f"DataFrame '{table_name}' (Origem: {zip_filename_prefix}) está vazio. Nenhum Parquet será salvo.")
+            logger.warning(f"DataFrame 'socios' (Origem: {zip_prefix}) está vazio. Nenhum Parquet será salvo.")
             return True
         
-        num_partitions = (total_rows + partition_size - 1) // partition_size
+        num_partitions = (total_rows + 500000 - 1) // 500000
         
-        logger.info(f"Salvando DataFrame com {total_rows} linhas em {num_partitions} partições de aproximadamente {partition_size} linhas cada")
+        logger.info(f"Salvando DataFrame com {total_rows} linhas em {num_partitions} partições de aproximadamente 500.000 linhas cada")
         
         for i in range(num_partitions):
-            start_idx = i * partition_size
-            end_idx = min((i + 1) * partition_size, total_rows)
+            start_idx = i * 500000
+            end_idx = min((i + 1) * 500000, total_rows)
             
             partition = df.slice(start_idx, end_idx - start_idx)
-            output_path = os.path.join(output_dir, f"{zip_filename_prefix}_part{i:03d}.parquet")
+            output_path = os.path.join(output_dir, f"{zip_prefix}_part{i:03d}.parquet")
             
             logger.info(f"Salvando partição {i+1}/{num_partitions} com {end_idx-start_idx} linhas para {output_path}")
             
@@ -557,69 +556,77 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
             logger.info(f"[{pid}] Encontrados {len(data_files)} arquivos para processar")
             
             # Processar cada arquivo de dados
-            dataframes = []
+            dataframes_polars = []
             for data_path in data_files:
                 data_file = os.path.basename(data_path)
                 logger.debug(f"[{pid}] Processando arquivo: {data_file}")
                 
                 try:
-                    df = process_data_file(data_path)
-                    if df is not None and not df.is_empty():
-                        logger.info(f"[{pid}] Arquivo {data_file} processado com sucesso: {df.height} linhas")
-                        dataframes.append(df)
-                    elif df is not None and df.is_empty():
-                        logger.warning(f"[{pid}] DataFrame Polars vazio para arquivo: {data_file}")
-                except Exception as e:
-                    logger.error(f"[{pid}] Erro ao processar o arquivo {data_file} com Polars: {str(e)}")
+                    df_polars = process_data_file(data_path)
+                    if df_polars is not None and not df_polars.is_empty():
+                        dataframes_polars.append(df_polars)
+                        logger.info(f"[{pid}] Arquivo {os.path.basename(data_file)} processado com sucesso: {df_polars.height} linhas")
+                    else:
+                        logger.warning(f"[{pid}] DataFrame vazio para arquivo: {data_file}")
+                except Exception as e_data:
+                    logger.error(f"[{pid}] Erro ao processar o arquivo {data_file}: {str(e_data)}")
             
-            if not dataframes:
-                logger.warning(f"[{pid}] Nenhum DataFrame Polars válido gerado a partir do ZIP {zip_file}")
+            if not dataframes_polars:
+                logger.warning(f"[{pid}] Nenhum DataFrame válido gerado a partir do ZIP {zip_file}")
                 return False
             
             # Concatenar DataFrames
-            logger.info(f"[{pid}] Concatenando {len(dataframes)} DataFrames para {zip_file}...")
+            logger.info(f"[{pid}] Concatenando {len(dataframes_polars)} DataFrames para {zip_file}...")
             try:
-                if len(dataframes) > 1:
-                    df_final = pl.concat(dataframes)
+                if len(dataframes_polars) > 1:
+                    df_final = pl.concat(dataframes_polars)
                 else:
-                    df_final = dataframes[0]
+                    df_final = dataframes_polars[0]
                 
                 # Liberar memória dos DataFrames individuais
-                del dataframes
+                del dataframes_polars
                 gc.collect()
                 
                 if df_final.is_empty():
-                    logger.warning(f"[{pid}] DataFrame Polars final vazio após concatenação para o ZIP {zip_file}")
-                    del df_final
-                    gc.collect()
-                    return True
+                    logger.warning(f"[{pid}] DataFrame final vazio após concatenação para o ZIP {zip_file}")
+                    return False
                 
-                logger.info(f"[{pid}] Aplicando transformações em {df_final.height} linhas para {zip_file}...")
+                logger.info(f"[{pid}] Concatenação concluída para {zip_file}. DataFrame final: {df_final.height} linhas")
+                
+                # Aplicar transformações
+                logger.info(f"[{pid}] Aplicando transformações para {zip_file}...")
                 df_transformed = apply_socio_transformations(df_final)
                 
-                # Salvar Parquet
-                main_saved = create_parquet(
-                    df_transformed, 
-                    'socios', 
-                    path_parquet, 
-                    zip_filename_prefix
-                )
-                logger.info(f"[{pid}] Parquet salvo com sucesso para {zip_file}")
-                
-                # Liberar memória
-                del df_transformed
+                # Liberar memória do DataFrame original
                 del df_final
                 gc.collect()
                 
-                success = main_saved
-                return success
+                if df_transformed.is_empty():
+                    logger.warning(f"[{pid}] DataFrame vazio após transformações para {zip_file}")
+                    return False
+                
+                logger.info(f"[{pid}] Transformações aplicadas para {zip_file}. DataFrame transformado: {df_transformed.height} linhas")
+                
+                # Salvar Parquet
+                main_saved = save_socio_parquet(
+                    df_transformed, 
+                    path_parquet, 
+                    zip_filename_prefix
+                )
+                
+                if main_saved:
+                    logger.info(f"[{pid}] Parquet salvo com sucesso para {zip_file}")
+                    return True
+                else:
+                    logger.error(f"[{pid}] Falha ao salvar parquet para {zip_file}")
+                    return False
                 
             except Exception as e:
-                logger.error(f"[{pid}] Erro durante concatenação ou transformação Polars para {zip_file}: {e}")
+                logger.error(f"[{pid}] Erro durante concatenação ou transformação para {zip_file}: {e}")
                 return False
             
         except Exception as e:
-            logger.error(f"[{pid}] Erro processando {zip_file} com Polars: {str(e)}")
+            logger.error(f"[{pid}] Erro processando {zip_file}: {str(e)}")
             return False
         finally:
             # Limpar diretório de extração
@@ -635,7 +642,7 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
         
         return success
     except Exception as e:
-        logger.error(f"[{pid}] Erro processando {zip_file} com Polars: {str(e)}")
+        logger.error(f"[{pid}] Erro processando {zip_file}: {str(e)}")
         return False
 
 def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
