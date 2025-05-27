@@ -27,6 +27,19 @@ import inspect
 logger = logging.getLogger(__name__)
 
 
+def get_system_resources():
+    """Retorna informações sobre os recursos do sistema."""
+    cpu_percent = psutil.cpu_percent(interval=1)
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    
+    return {
+        'cpu_percent': cpu_percent,
+        'memory_percent': memory.percent,
+        'disk_percent': disk.percent
+    }
+
+
 def process_estabelecimento(path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
     """Processa arquivos de estabelecimentos."""
     return process_estabelecimento_files(path_zip, path_unzip, path_parquet, uf_subset)
@@ -840,7 +853,13 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
 
 def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
     """Processa todos os arquivos de estabelecimentos de um diretório."""
-    logger.info("Iniciando processamento de arquivos de estabelecimentos...")
+    start_time = time.time()
+    
+    logger.info('=' * 50)
+    logger.info(f'Iniciando processamento de ESTABELECIMENTOS')
+    if uf_subset:
+        logger.info(f'Subset UF: {uf_subset}')
+    logger.info('=' * 50)
     
     # ===== CONFIGURAÇÕES GLOBAIS DE STREAMING E PERFORMANCE =====
     # Configurar Polars para uso otimizado de memória e streaming
@@ -871,7 +890,6 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
     logger.info(f"  - Processamento em chunks otimizado para RAM disponível")
     
     # ===== INÍCIO DO PROCESSAMENTO =====
-    start_time = time.time()
     
     try:
         zip_files = [f for f in os.listdir(path_zip) 
@@ -880,6 +898,8 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
         if not zip_files:
             logger.warning('Nenhum arquivo ZIP de Estabelecimentos encontrado.')
             return True
+            
+        logger.info(f"Encontrados {len(zip_files)} arquivos ZIP de estabelecimentos para processar")
         
         # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
         remote_folder = os.path.basename(os.path.normpath(path_zip))
@@ -941,19 +961,31 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
             avg_time_per_file = elapsed_time / completed_files if completed_files > 0 else 0
             estimated_remaining = avg_time_per_file * (total_files - completed_files)
             
+            logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Iniciando processamento de {zip_file}")
+            
+            # Mostrar informações detalhadas em modo DEBUG
+            if logger.isEnabledFor(logging.DEBUG):
+                resources = get_system_resources()
+                logger.debug(f"Status do sistema - CPU: {resources['cpu_percent']:.1f}%, "
+                           f"Memória: {resources['memory_percent']:.1f}%, "
+                           f"Disco: {resources['disk_percent']:.1f}%")
+            
             try:
+                file_start_time = time.time()
                 result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, uf_subset)
+                file_elapsed_time = time.time() - file_start_time
+                
                 if result:
                     success = True
-                    logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Arquivo {zip_file} processado com sucesso. "
+                    logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) ✓ {zip_file} processado com sucesso em {file_elapsed_time:.2f}s. "
                                 f"Tempo médio: {avg_time_per_file:.1f}s/arquivo. "
                                 f"Tempo estimado restante: {estimated_remaining:.1f}s")
                 else:
                     arquivos_com_falha.append(zip_file)
-                    logger.warning(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Falha no processamento do arquivo {zip_file}")
+                    logger.warning(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) ✗ Falha no processamento do arquivo {zip_file} após {file_elapsed_time:.2f}s")
             except Exception as e:
                 arquivos_com_falha.append(zip_file)
-                logger.error(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Exceção no processamento do arquivo {zip_file}: {str(e)}")
+                logger.error(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) ✗ Exceção no processamento do arquivo {zip_file}: {str(e)}")
                 logger.error(traceback.format_exc())
         
         # Calcular estatísticas finais
@@ -972,7 +1004,9 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
         logger.info(f"Arquivos processados com sucesso: {completed_files - len(arquivos_com_falha)}/{total_files}")
         logger.info(f"Arquivos com falha: {len(arquivos_com_falha)}/{total_files}")
         logger.info(f"Tempo total de processamento: {format_elapsed_time(total_time)}")
-        logger.info(f"Tempo médio por arquivo: {total_time/completed_files if completed_files > 0 else 0:.2f} segundos")
+        logger.info(f"Tempo médio por arquivo: {total_time/completed_files if completed_files > 0 else 0:.2f}s")
+        if uf_subset:
+            logger.info(f"Subset UF processado: {uf_subset}")
         logger.info("=" * 50)
         
         # Verificar se pelo menos um arquivo foi processado com sucesso

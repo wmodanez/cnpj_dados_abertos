@@ -681,12 +681,24 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
     """
     Downloads multiple files asynchronously with progress bars using Rich.
     Also processes each file immediately after download is completed or identified as already existing.
+    Files are downloaded in order of size (smallest first) for better optimization.
     """
     start_time = time.time()
     
     if not os.path.exists(destination_folder):
         os.makedirs(destination_folder)
         logger.info(f"Diretório criado: {destination_folder}")
+
+    # ===== ORDENAÇÃO POR TAMANHO =====
+    logger.info("🔍 Analisando tamanhos dos arquivos para otimizar ordem de download...")
+    try:
+        url_sizes = await get_file_sizes_and_sort(urls)
+        # Extrair apenas as URLs ordenadas
+        sorted_urls = [url for url, _ in url_sizes]
+        logger.info(f"✅ Arquivos ordenados por tamanho (menor → maior). Iniciando downloads otimizados...")
+    except Exception as e:
+        logger.warning(f"⚠️  Erro ao ordenar arquivos por tamanho: {e}. Usando ordem original.")
+        sorted_urls = urls
 
     semaphore = asyncio.Semaphore(max_concurrent)
     download_tasks = []
@@ -836,7 +848,8 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
     if path_unzip and path_parquet:
         print(f"\n📋 Verificando arquivos já baixados para processamento...")
         logger.info("Verificando arquivos já baixados para processamento...")
-        for url in urls:
+        # Usar a lista ordenada para verificar arquivos existentes
+        for url in sorted_urls:
             filename = os.path.basename(url)
             file_path = os.path.join(destination_folder, filename)
             
@@ -856,9 +869,9 @@ async def download_multiple_files(urls: List[str], destination_folder: str, max_
     async with aiohttp.ClientSession() as session:
         # Configurar barra de progresso
         with Progress(*progress_columns, expand=True) as progress:
-            # Criar tarefas de download
+            # Criar tarefas de download usando URLs ordenadas
             tasks_info = []
-            for url in urls:
+            for url in sorted_urls:
                 filename = os.path.basename(url)
                 destination_path = os.path.join(destination_folder, filename)
                 task_id = progress.add_task(f"[cyan]{filename[:30]}...", total=None)
@@ -984,3 +997,55 @@ async def get_latest_remote_folder(base_url: str) -> str:
     latest_folder = folders[0]  # A lista já está ordenada por data (mais recente primeiro)
     logger.info(f"Pasta remota mais recente: {latest_folder}")
     return latest_folder
+
+
+async def get_file_sizes_and_sort(urls: List[str]) -> List[Tuple[str, int]]:
+    """
+    Obtém os tamanhos dos arquivos remotos e retorna uma lista ordenada por tamanho (menor primeiro).
+    
+    Args:
+        urls: Lista de URLs para verificar
+        
+    Returns:
+        Lista de tuplas (url, tamanho) ordenada por tamanho crescente
+    """
+    logger.info(f"Obtendo tamanhos de {len(urls)} arquivos para ordenação...")
+    
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for url in urls:
+            task = asyncio.create_task(get_remote_file_metadata(session, url))
+            tasks.append((url, task))
+        
+        url_sizes = []
+        for url, task in tasks:
+            try:
+                size, _ = await task
+                if size is not None:
+                    url_sizes.append((url, size))
+                    filename = os.path.basename(url)
+                    size_mb = size / (1024 * 1024)
+                    logger.debug(f"Arquivo {filename}: {size_mb:.1f}MB")
+                else:
+                    logger.warning(f"Não foi possível obter tamanho de {os.path.basename(url)}")
+                    # Adiciona com tamanho 0 para não perder o arquivo
+                    url_sizes.append((url, 0))
+            except Exception as e:
+                logger.error(f"Erro ao obter tamanho de {os.path.basename(url)}: {e}")
+                # Adiciona com tamanho 0 para não perder o arquivo
+                url_sizes.append((url, 0))
+    
+    # Ordenar por tamanho (menor primeiro)
+    url_sizes.sort(key=lambda x: x[1])
+    
+    # Log da ordenação
+    logger.info("Arquivos ordenados por tamanho (menor → maior):")
+    for i, (url, size) in enumerate(url_sizes[:10]):  # Mostrar apenas os 10 primeiros
+        filename = os.path.basename(url)
+        size_mb = size / (1024 * 1024)
+        logger.info(f"  {i+1:2d}. {filename}: {size_mb:.1f}MB")
+    
+    if len(url_sizes) > 10:
+        logger.info(f"  ... e mais {len(url_sizes) - 10} arquivos")
+    
+    return url_sizes

@@ -46,15 +46,15 @@ _process_queue = PriorityQueue()
 CHUNK_SIZE = 500_000  # Tamanho do chunk para processamento
 MAX_MEMORY_GB = 8  # Limite de memória em GB
 
-def configure_worker_logging(log_file):
+def configure_worker_logging(log_file, log_level=logging.INFO):
     """Configura o logging para o processo worker."""
     import logging
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    logger.setLevel(log_level)
     
     # Handler de arquivo
     fh = logging.FileHandler(log_file)
-    fh.setLevel(logging.INFO)
+    fh.setLevel(log_level)
     
     # Formato
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -672,6 +672,7 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
         bool: True se processou com sucesso
     """
     pid = os.getpid()
+    path_extracao = None  # Inicializar para usar no finally
     
     try:
         logger.info(f"[{pid}] Iniciando processamento para: {zip_file} (create_private={create_private})")
@@ -825,13 +826,6 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
                     else:
                         logger.info(f"[{pid}] Criação do subset empresa_privada pulada (create_private=False) para {zip_file}.")
                     
-                    # Limpar diretório de extração específico
-                    try:
-                        logger.info(f"[{pid}] Limpando diretório de extração específico: {path_extracao}")
-                        shutil.rmtree(path_extracao)
-                    except Exception as e_clean:
-                        logger.warning(f"[{pid}] Erro ao limpar diretório de extração {path_extracao}: {e_clean}")
-                    
                     logger.info(f"[{pid}] Processamento para {zip_file} concluído com status final: {success_main}")
                     return success_main
                 else:
@@ -848,6 +842,25 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
     except Exception as e:
         logger.error(f"[{pid}] Erro processando {zip_file}: {str(e)}")
         return False
+    finally:
+        # SEMPRE limpar diretório de extração, independentemente de sucesso ou erro
+        if path_extracao and os.path.exists(path_extracao):
+            try:
+                logger.info(f"[{pid}] Limpando diretório de extração: {path_extracao}")
+                shutil.rmtree(path_extracao)
+                logger.info(f"[{pid}] Diretório de extração {path_extracao} removido com sucesso")
+            except Exception as e_clean:
+                logger.error(f"[{pid}] Erro ao limpar diretório de extração {path_extracao}: {e_clean}")
+                # Tentar forçar a remoção
+                try:
+                    import stat
+                    def handle_remove_readonly(func, path, exc):
+                        os.chmod(path, stat.S_IWRITE)
+                        func(path)
+                    shutil.rmtree(path_extracao, onerror=handle_remove_readonly)
+                    logger.info(f"[{pid}] Diretório de extração {path_extracao} removido com sucesso (segunda tentativa)")
+                except Exception as e_force:
+                    logger.error(f"[{pid}] Falha definitiva ao remover diretório {path_extracao}: {e_force}")
 
 
 def get_system_resources():
@@ -886,31 +899,50 @@ def add_to_process_queue(zip_file: str, priority: int = 1):
 
 def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False):
     """Worker que processa a fila de arquivos."""
+    worker_id = threading.current_thread().name
+    logger.info(f"[WORKER-{worker_id}] Worker iniciado para processamento de empresas")
+    
     while True:
         try:
             if _process_queue.empty():
+                logger.debug(f"[WORKER-{worker_id}] Fila vazia, aguardando 5 segundos...")
                 time.sleep(5)  # Espera 5 segundos se a fila estiver vazia
                 continue
                 
             if not can_start_processing():
+                resources = get_system_resources()
+                logger.debug(f"[WORKER-{worker_id}] Recursos insuficientes - CPU: {resources['cpu_percent']:.1f}%, "
+                           f"Memória: {resources['memory_percent']:.1f}%, "
+                           f"Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
                 time.sleep(10)  # Espera 10 segundos se não puder processar
                 continue
                 
             # Pega o próximo arquivo da fila
             priority, timestamp, zip_file = _process_queue.get()
+            logger.info(f"[WORKER-{worker_id}] Iniciando processamento de {zip_file}")
             
             with _processing_lock:
                 _active_processes.value += 1
+                logger.debug(f"[WORKER-{worker_id}] Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
                 
             try:
                 # Processa o arquivo
-                process_single_zip(zip_file, path_zip, path_unzip, path_parquet, create_private=create_private)
+                start_time = time.time()
+                result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, create_private=create_private)
+                elapsed_time = time.time() - start_time
+                
+                if result:
+                    logger.info(f"[WORKER-{worker_id}] ✓ {zip_file} processado com sucesso em {elapsed_time:.2f}s")
+                else:
+                    logger.error(f"[WORKER-{worker_id}] ✗ Falha ao processar {zip_file} após {elapsed_time:.2f}s")
+                    
             finally:
                 with _processing_lock:
                     _active_processes.value -= 1
+                    logger.debug(f"[WORKER-{worker_id}] Processo finalizado. Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
                     
         except Exception as e:
-            logger.error(f"Erro no worker da fila: {str(e)}")
+            logger.error(f"[WORKER-{worker_id}] Erro no worker da fila: {str(e)}")
             time.sleep(5)
 
 def start_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False):
@@ -935,15 +967,43 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
             logger.warning('Nenhum arquivo ZIP de Empresas encontrado.')
             return True
             
+        logger.info(f"Encontrados {len(zip_files)} arquivos ZIP de empresas para processar")
+        logger.info(f"Máximo de processos concorrentes: {_max_concurrent_processes.value}")
+        
         # Iniciar worker da fila
+        logger.info("Iniciando worker de processamento...")
         worker_thread = start_queue_worker(path_zip, path_unzip, path_parquet, create_private)
         
         # Adicionar arquivos à fila
+        logger.info("Adicionando arquivos à fila de processamento...")
         for zip_file in zip_files:
             add_to_process_queue(zip_file)
             
-        # Aguardar processamento da fila
+        logger.info(f"Todos os {len(zip_files)} arquivos adicionados à fila")
+        
+        # Aguardar processamento da fila com relatórios de progresso
+        last_queue_size = len(zip_files)
+        processed_count = 0
+        
         while not _process_queue.empty() or _active_processes.value > 0:
+            current_queue_size = _process_queue.qsize()
+            current_active = _active_processes.value
+            
+            # Calcular progresso
+            if current_queue_size != last_queue_size:
+                processed_count = len(zip_files) - current_queue_size
+                progress_percent = (processed_count / len(zip_files)) * 100
+                
+                logger.info(f"Progresso: {processed_count}/{len(zip_files)} arquivos processados ({progress_percent:.1f}%) - "
+                           f"Fila: {current_queue_size}, Ativos: {current_active}")
+                last_queue_size = current_queue_size
+            
+            # Mostrar informações detalhadas em modo DEBUG
+            if logger.isEnabledFor(logging.DEBUG):
+                resources = get_system_resources()
+                logger.debug(f"Status detalhado - Fila: {current_queue_size}, Ativos: {current_active}, "
+                           f"CPU: {resources['cpu_percent']:.1f}%, Memória: {resources['memory_percent']:.1f}%")
+            
             time.sleep(5)
             
         # Calcular estatísticas finais
@@ -952,7 +1012,9 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
         logger.info("=" * 50)
         logger.info("RESUMO DO PROCESSAMENTO DE EMPRESAS:")
         logger.info("=" * 50)
+        logger.info(f"Arquivos processados: {len(zip_files)}")
         logger.info(f"Tempo total de processamento: {format_elapsed_time(total_time)}")
+        logger.info(f"Tempo médio por arquivo: {total_time/len(zip_files):.2f}s")
         logger.info("=" * 50)
         
         return True

@@ -457,10 +457,37 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     processing_results = {}
     total_start_time = time.time()
     
+    # Mostrar informações sobre recursos do sistema antes de iniciar
+    import psutil
+    cpu_count = os.cpu_count() or 4
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage(output_parquet_path)
+    
+    logger.info("=" * 60)
+    logger.info("INFORMAÇÕES DO SISTEMA PARA PROCESSAMENTO:")
+    logger.info("=" * 60)
+    logger.info(f"CPUs disponíveis: {cpu_count}")
+    logger.info(f"Memória total: {memory.total / (1024**3):.1f}GB")
+    logger.info(f"Memória disponível: {memory.available / (1024**3):.1f}GB ({memory.percent:.1f}% em uso)")
+    logger.info(f"Espaço em disco disponível: {disk.free / (1024**3):.1f}GB")
+    logger.info(f"Tipos a processar: {', '.join(tipos_a_processar)}")
+    logger.info("=" * 60)
+    
     # Processa Empresas
     if 'empresas' in tipos_a_processar:
         if 'Empresas' in tipos_list or 'empresas' in tipos_list:
+            logger.info("🏢 INICIANDO PROCESSAMENTO DE EMPRESAS")
+            logger.info("=" * 50)
             start_time = time.time()
+            
+            # Mostrar informações sobre arquivos a processar
+            zip_files = [f for f in os.listdir(source_zip_path) if f.startswith('Empr') and f.endswith('.zip')]
+            logger.info(f"Arquivos de empresas encontrados: {len(zip_files)}")
+            for i, zip_file in enumerate(zip_files, 1):
+                file_path = os.path.join(source_zip_path, zip_file)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
+            
             # Agora só usamos polars
             empresas_ok = process_empresa_files(
                 source_zip_path, unzip_path, output_parquet_path, criar_empresa_privada
@@ -472,6 +499,11 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
                 'success': empresas_ok,
                 'time': elapsed_time
             }
+            
+            status_emoji = "✅" if empresas_ok else "❌"
+            logger.info("=" * 50)
+            logger.info(f"{status_emoji} EMPRESAS CONCLUÍDO - Tempo: {format_elapsed_time(elapsed_time)}")
+            logger.info("=" * 50)
                 
             if not empresas_ok:
                 logger.error("Erro no processamento de empresas.")
@@ -480,8 +512,21 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     # Processa Estabelecimentos
     if 'estabelecimentos' in tipos_a_processar:
         if 'Estabelecimentos' in tipos_list or 'estabelecimentos' in tipos_list:
+            logger.info("🏪 INICIANDO PROCESSAMENTO DE ESTABELECIMENTOS")
+            logger.info("=" * 50)
             start_time = time.time()
             uf_subset = None
+            
+            # Mostrar informações sobre arquivos a processar
+            zip_files = [f for f in os.listdir(source_zip_path) if f.startswith('Estabele') and f.endswith('.zip')]
+            logger.info(f"Arquivos de estabelecimentos encontrados: {len(zip_files)}")
+            total_size_mb = 0
+            for i, zip_file in enumerate(zip_files, 1):
+                file_path = os.path.join(source_zip_path, zip_file)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                total_size_mb += file_size_mb
+                logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
+            logger.info(f"Tamanho total dos arquivos: {total_size_mb:.1f}MB ({total_size_mb/1024:.1f}GB)")
             
             # Se criar_subset_uf foi especificado, extrai a sigla da UF
             if criar_subset_uf:
@@ -502,6 +547,11 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
                 'time': elapsed_time
             }
             
+            status_emoji = "✅" if estab_ok else "❌"
+            logger.info("=" * 50)
+            logger.info(f"{status_emoji} ESTABELECIMENTOS CONCLUÍDO - Tempo: {format_elapsed_time(elapsed_time)}")
+            logger.info("=" * 50)
+            
             if not estab_ok:
                 logger.error("Erro no processamento de estabelecimentos.")
                 all_ok = False
@@ -509,7 +559,18 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     # Processa Simples Nacional
     if 'simples' in tipos_a_processar:
         if 'Simples' in tipos_list or 'simples' in tipos_list:
+            logger.info("📋 INICIANDO PROCESSAMENTO DO SIMPLES NACIONAL")
+            logger.info("=" * 50)
             start_time = time.time()
+            
+            # Mostrar informações sobre arquivos a processar
+            zip_files = [f for f in os.listdir(source_zip_path) if f.startswith('Simples') and f.endswith('.zip')]
+            logger.info(f"Arquivos do Simples Nacional encontrados: {len(zip_files)}")
+            for i, zip_file in enumerate(zip_files, 1):
+                file_path = os.path.join(source_zip_path, zip_file)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
+            
             simples_ok = process_simples_files(
                 source_zip_path, unzip_path, output_parquet_path
             )
@@ -521,6 +582,11 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
                 'time': elapsed_time
             }
             
+            status_emoji = "✅" if simples_ok else "❌"
+            logger.info("=" * 50)
+            logger.info(f"{status_emoji} SIMPLES NACIONAL CONCLUÍDO - Tempo: {format_elapsed_time(elapsed_time)}")
+            logger.info("=" * 50)
+            
             if not simples_ok:
                 logger.error("Erro no processamento do simples nacional.")
                 all_ok = False
@@ -528,7 +594,18 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     # Processa Sócios
     if 'socios' in tipos_a_processar:
         if 'Socios' in tipos_list or 'socios' in tipos_list:
+            logger.info("👥 INICIANDO PROCESSAMENTO DE SÓCIOS")
+            logger.info("=" * 50)
             start_time = time.time()
+            
+            # Mostrar informações sobre arquivos a processar
+            zip_files = [f for f in os.listdir(source_zip_path) if f.startswith('Socio') and f.endswith('.zip')]
+            logger.info(f"Arquivos de sócios encontrados: {len(zip_files)}")
+            for i, zip_file in enumerate(zip_files, 1):
+                file_path = os.path.join(source_zip_path, zip_file)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
+            
             socios_ok = process_socio_files(
                 source_zip_path, unzip_path, output_parquet_path
             )
@@ -540,6 +617,11 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
                 'time': elapsed_time
             }
             
+            status_emoji = "✅" if socios_ok else "❌"
+            logger.info("=" * 50)
+            logger.info(f"{status_emoji} SÓCIOS CONCLUÍDO - Tempo: {format_elapsed_time(elapsed_time)}")
+            logger.info("=" * 50)
+            
             if not socios_ok:
                 logger.error("Erro no processamento de sócios.")
                 all_ok = False
@@ -550,17 +632,18 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     processing_results['all_ok'] = all_ok
     
     # Logar resumo de processamento
-    logger.info("=" * 50)
-    logger.info("RESUMO DO PROCESSAMENTO:")
-    logger.info("=" * 50)
+    logger.info("=" * 60)
+    logger.info("📊 RESUMO FINAL DO PROCESSAMENTO:")
+    logger.info("=" * 60)
     for tipo, resultado in processing_results.items():
         if tipo != 'total_time' and tipo != 'all_ok':
-            status = "SUCESSO" if resultado['success'] else "FALHA"
+            status = "✅ SUCESSO" if resultado['success'] else "❌ FALHA"
             logger.info(f"{tipo.upper()}: {status} - Tempo: {format_elapsed_time(resultado['time'])}")
-    logger.info("-" * 50)
-    logger.info(f"TEMPO TOTAL DE PROCESSAMENTO: {format_elapsed_time(total_elapsed_time)}")
-    logger.info(f"STATUS GERAL: {'SUCESSO' if all_ok else 'FALHA'}")
-    logger.info("=" * 50)
+    logger.info("-" * 60)
+    logger.info(f"⏱️  TEMPO TOTAL DE PROCESSAMENTO: {format_elapsed_time(total_elapsed_time)}")
+    status_final = "✅ SUCESSO COMPLETO" if all_ok else "❌ FALHA PARCIAL/TOTAL"
+    logger.info(f"🎯 STATUS GERAL: {status_final}")
+    logger.info("=" * 60)
     
     return processing_results
 
