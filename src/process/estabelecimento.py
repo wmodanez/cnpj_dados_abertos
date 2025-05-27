@@ -706,133 +706,43 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
         
         logger.info(f"[{pid}] Encontrados {len(data_files)} arquivos para processar")
         
-        # Processar cada arquivo de dados
-        dataframes = []
-        chunks_saved = False
-        for data_path in data_files:
-            data_file = os.path.basename(data_path)
-            logger.debug(f"[{pid}] Processando arquivo: {data_file}")
-            
-            # Processar arquivo de dados
-            logger.info(f"Processando arquivo: {data_file}")
-            
-            # Usar chunk_size configurável baseado no tamanho do arquivo
-            file_size_mb = os.path.getsize(data_path) / (1024 * 1024)
-            if file_size_mb > 1000:  # Arquivos >1GB
-                chunk_size = 500000   # Chunks menores para arquivos gigantes
-            elif file_size_mb > 500:  # Arquivos >500MB
-                chunk_size = 1000000  # Chunks médios
-            else:
-                chunk_size = 2000000  # Chunks maiores para arquivos menores
-            
-            logger.info(f"Arquivo {data_file}: {file_size_mb:.1f}MB - usando chunks de {chunk_size:,} linhas")
-            
-            # Passar output_dir e zip_filename_prefix para salvar chunks individualmente
-            df = process_data_file(
-                data_path,
-                chunk_size=chunk_size,
-                output_dir=ensure_correct_folder_structure(path_parquet, remote_folder, 'estabelecimentos'),
-                zip_filename_prefix=zip_filename_prefix
-            )
-            # Se df é True, significa que os chunks foram salvos com sucesso
-            if df is True:
-                logger.info(f"[{pid}] Chunks salvos individualmente para {data_file}, não será necessário salvar Parquet novamente.")
-                chunks_saved = True
-                continue
-            # Se df é False, significa que houve erro no processamento dos chunks
-            elif df is False:
-                logger.error(f"[{pid}] Erro ao processar chunks para {data_file}")
-                return False
-            # Se df é um DataFrame, verificar se está vazio
-            elif df is not None and not df.is_empty():
-                dataframes.append(df)
-            else:
-                logger.error(f"[{pid}] DataFrame vazio ou None gerado para {data_file}")
-                return False
-
-        if not dataframes and not chunks_saved:
-            logger.error(f"[{pid}] Nenhum DataFrame válido gerado e nenhum chunk salvo de {zip_file}")
-            return False
+        # Preparar diretório de saída
+        output_dir = ensure_correct_folder_structure(path_parquet, remote_folder, 'estabelecimentos')
         
-        # Se temos chunks salvos mas não temos DataFrames, consideramos sucesso
-        if chunks_saved and not dataframes:
-            logger.info(f"[{pid}] Processamento concluído com sucesso via chunks para {zip_file}")
-            return True
+        # Processar cada arquivo de dados diretamente em chunks
+        chunk_counter = 0
         
-        # Concatenar DataFrames
-        logger.info(f"[{pid}] Concatenando {len(dataframes)} DataFrames para {zip_file}...")
-        try:
-            if len(dataframes) > 1:
-                df_final = pl.concat(dataframes)
-            else:
-                df_final = dataframes[0]
-            
-            # Liberar memória dos DataFrames individuais
-            del dataframes
-            gc.collect()
-            
-            if df_final.is_empty():
-                logger.warning(f"[{pid}] DataFrame final vazio após concatenação para o ZIP {zip_file}")
-                del df_final
-                gc.collect()
-                return True
-            
-            logger.info(f"[{pid}] Aplicando transformações em {df_final.height} linhas para {zip_file}...")
-            df_transformed = apply_estabelecimento_transformations(df_final)
-            
-            # --- 3. Salvar Parquet (Principal) ---
-            main_saved = False
-            
-            # Usar diretamente path_parquet sem adicionar a pasta remota
-            # A função ensure_correct_folder_structure já adiciona a pasta remota se necessário
-            logger.info(f"[{pid}] Usando path_parquet direto: {path_parquet}")
-            
+        for data_file in data_files:
             try:
-                # Usamos diretamente path_parquet e a função ensure_correct_folder_structure dentro de create_parquet
-                # vai garantir a estrutura correta de pastas
-                main_saved = create_parquet(df_transformed, 'estabelecimentos', path_parquet, zip_filename_prefix)
-                logger.info(f"[{pid}] Parquet principal salvo com sucesso para {zip_file}")
-            except Exception as e_parq_main:
-                logger.error(f"[{pid}] Erro ao salvar Parquet principal para {zip_file}: {e_parq_main}")
-                # Continua para tentar salvar subset se houver
-
-            # --- 4. Salvar Parquet (Subset UF - Condicional) ---
-            subset_saved = True # Assume sucesso se não for criar ou se falhar principal
-            if main_saved and uf_subset and 'uf' in df_transformed.columns:
-                subset_table_name = f"estabelecimentos_{uf_subset.lower()}"
-                logger.info(f"[{pid}] Criando subset {subset_table_name}...")
-                df_subset = df_transformed.filter(pl.col('uf') == uf_subset)
+                logger.debug(f"[{pid}] Processando arquivo {os.path.basename(data_file)}")
                 
-                # Apenas tentamos salvar se o subset não estiver vazio
-                if not df_subset.is_empty():
-                    try:
-                        # Usamos diretamente path_parquet aqui também
-                        subset_saved = create_parquet(df_subset, subset_table_name, path_parquet, zip_filename_prefix)
-                        logger.info(f"[{pid}] Subset {subset_table_name} salvo com sucesso para {zip_file}")
-                    except Exception as e_parq_subset:
-                        logger.error(f"[{pid}] Falha ao salvar subset {subset_table_name} para {zip_file}: {e_parq_subset}")
-                        subset_saved = False
+                # Processar arquivo em chunks diretamente
+                file_chunk_counter = process_data_file_in_chunks(
+                    data_file, 
+                    output_dir, 
+                    zip_filename_prefix, 
+                    chunk_counter,
+                    uf_subset
+                )
+                
+                if file_chunk_counter > 0:
+                    chunk_counter += file_chunk_counter
+                    logger.info(f"[{pid}] Arquivo {os.path.basename(data_file)} processado: {file_chunk_counter} chunks salvos")
                 else:
-                    logger.warning(f"[{pid}] Subset para UF {uf_subset} está vazio. Pulando.")
+                    logger.warning(f"[{pid}] Nenhum chunk gerado para arquivo: {os.path.basename(data_file)}")
                     
-                # Liberar memória
-                del df_subset
-                gc.collect()
-            elif main_saved and uf_subset:
-                logger.warning(f"[{pid}] Coluna 'uf' não encontrada, não é possível criar subset para UF {uf_subset}.")
-                
-            # Liberar memória
-            del df_transformed
-            del df_final
-            gc.collect()
-            
-            success = main_saved and subset_saved
-            return success
-            
-        except Exception as e_concat_transform:
-            logger.error(f"[{pid}] Erro durante concatenação ou transformação para {zip_file}: {e_concat_transform}")
+            except Exception as e_data:
+                logger.error(f"[{pid}] Erro ao processar arquivo {os.path.basename(data_file)}: {e_data}")
+                continue
+        
+        # Se não temos chunks válidos, encerramos
+        if chunk_counter == 0:
+            logger.warning(f"[{pid}] Nenhum chunk válido gerado. Encerrando processamento de {zip_file}")
             return False
-            
+        
+        logger.info(f"[{pid}] Processamento para {zip_file} concluído: {chunk_counter} chunks salvos")
+        return True
+        
     except Exception as e:
         logger.error(f"[{pid}] Erro processando {zip_file}: {str(e)}")
         return False
@@ -1015,3 +925,125 @@ def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: 
         logger.error(f'Erro no processamento principal de Estabelecimentos: {str(e)}')
         traceback.print_exc()
         return False
+
+def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix: str, start_chunk_counter: int = 0, uf_subset: str = None) -> int:
+    """
+    Processa um arquivo de dados diretamente em chunks, salvando cada chunk como Parquet.
+    
+    Args:
+        data_file_path: Caminho do arquivo de dados
+        output_dir: Diretório de saída
+        zip_prefix: Prefixo do arquivo ZIP
+        start_chunk_counter: Contador inicial de chunks
+        uf_subset: UF para filtrar (opcional)
+        
+    Returns:
+        int: Número de chunks processados
+    """
+    chunk_counter = 0
+    chunk_size = 500000  # 500k linhas por chunk
+    
+    try:
+        logger.info(f"Processando arquivo {os.path.basename(data_file_path)} em chunks de {chunk_size} linhas")
+        
+        # Detectar separador lendo primeira linha
+        with open(data_file_path, 'r', encoding='latin-1') as file:
+            first_line = file.readline().strip()
+            if not first_line:
+                logger.warning(f"Arquivo {os.path.basename(data_file_path)} está vazio")
+                return 0
+            
+            separator = ';' if ';' in first_line else ','
+            logger.debug(f"Separador detectado: '{separator}'")
+        
+        # Usar scan_csv do Polars para leitura eficiente em chunks
+        try:
+            # Primeiro, verificar quantas linhas tem o arquivo
+            total_lines = 0
+            with open(data_file_path, 'r', encoding='latin-1') as f:
+                for _ in f:
+                    total_lines += 1
+            
+            if total_lines == 0:
+                logger.warning(f"Arquivo {os.path.basename(data_file_path)} não tem linhas")
+                return 0
+            
+            logger.info(f"Arquivo tem {total_lines} linhas, processando em chunks de {chunk_size}")
+            
+            # Processar em chunks usando skip_rows e n_rows
+            rows_processed = 0
+            
+            while rows_processed < total_lines:
+                try:
+                    # Calcular quantas linhas ler neste chunk
+                    rows_to_read = min(chunk_size, total_lines - rows_processed)
+                    
+                    if rows_to_read <= 0:
+                        break
+                    
+                    logger.debug(f"Lendo chunk {chunk_counter + 1}: linhas {rows_processed} a {rows_processed + rows_to_read - 1}")
+                    
+                    # Ler chunk específico
+                    df_chunk = pl.read_csv(
+                        data_file_path,
+                        separator=separator,
+                        encoding='latin-1',
+                        skip_rows=rows_processed,
+                        n_rows=rows_to_read,
+                        has_header=False,  # Sempre False pois estamos pulando linhas
+                        new_columns=config.estabelecimento_columns,
+                        infer_schema_length=0,
+                        dtypes={col: pl.Utf8 for col in config.estabelecimento_columns},
+                        ignore_errors=True,
+                        truncate_ragged_lines=True
+                    )
+                    
+                    if df_chunk.is_empty():
+                        logger.debug(f"Chunk {chunk_counter + 1} está vazio, avançando...")
+                        rows_processed += rows_to_read
+                        continue
+                    
+                    # Aplicar transformações
+                    df_transformed = apply_estabelecimento_transformations(df_chunk)
+                    
+                    # Aplicar filtro de UF se especificado
+                    if uf_subset and 'uf' in df_transformed.columns:
+                        df_transformed = df_transformed.filter(pl.col('uf') == uf_subset.upper())
+                        if df_transformed.is_empty():
+                            logger.debug(f"Chunk {chunk_counter + 1} vazio após filtro UF {uf_subset}")
+                            rows_processed += rows_to_read
+                            continue
+                    
+                    if not df_transformed.is_empty():
+                        # Salvar chunk como Parquet
+                        chunk_filename = f"{zip_prefix}_chunk{start_chunk_counter + chunk_counter + 1:03d}.parquet"
+                        chunk_path = os.path.join(output_dir, chunk_filename)
+                        
+                        df_transformed.write_parquet(chunk_path, compression="snappy")
+                        
+                        logger.info(f"Chunk {chunk_counter + 1} salvo: {df_transformed.height} linhas em {chunk_filename}")
+                        chunk_counter += 1
+                    
+                    # Liberar memória
+                    del df_chunk, df_transformed
+                    gc.collect()
+                    
+                    # Avançar para próximo chunk
+                    rows_processed += rows_to_read
+                    
+                except Exception as e:
+                    logger.error(f"Erro ao processar chunk {chunk_counter + 1}: {str(e)}")
+                    # Avançar mesmo com erro para evitar loop infinito
+                    rows_processed += chunk_size
+                    break
+            
+            logger.info(f"Arquivo {os.path.basename(data_file_path)} processado: {chunk_counter} chunks salvos de {total_lines} linhas")
+            return chunk_counter
+            
+        except Exception as e:
+            logger.error(f"Erro na leitura do arquivo {data_file_path}: {str(e)}")
+            return 0
+        
+    except Exception as e:
+        logger.error(f"Erro ao processar arquivo {data_file_path} em chunks: {str(e)}")
+        return 0

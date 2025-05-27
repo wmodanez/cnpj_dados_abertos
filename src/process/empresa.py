@@ -69,7 +69,7 @@ def configure_worker_logging(log_file, log_level=logging.INFO):
 
 
 def process_empresa(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
-    """Processa arquivos de empresa."""
+    """Processa os dados de empresas."""
     return process_empresa_files(path_zip, path_unzip, path_parquet, create_private)
 
 
@@ -745,100 +745,48 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
         # --- FASE 2: LEITURA E PROCESSAMENTO ---
         logger.info(f"[{pid}] Fase 2: Iniciando leitura e processamento de arquivos de dados..." )
         
-        # Processar cada arquivo de dados
-        logger.info(f"[{pid}] Processando {len(data_files)} arquivos de dados...")
-        dataframes = []
+        logger.info(f"[{pid}] Encontrados {len(data_files)} arquivos para processar")
+        
+        # Preparar diretório de saída
+        output_empresas_path = ensure_correct_folder_structure(
+            path_parquet, 
+            remote_folder,
+            "empresas"
+        )
+        
+        # Processar cada arquivo de dados diretamente em chunks
+        chunk_counter = 0
         
         for data_file in data_files:
             try:
                 logger.debug(f"[{pid}] Processando arquivo {os.path.basename(data_file)}")
                 
-                df = process_data_file(data_file)
-                if df is not None and not df.is_empty():
-                    dataframes.append(df)
-                    logger.info(f"[{pid}] Arquivo {os.path.basename(data_file)} processado com sucesso: {df.height} linhas")
+                # Processar arquivo em chunks diretamente
+                file_chunk_counter = process_data_file_in_chunks(
+                    data_file, 
+                    output_empresas_path, 
+                    zip_prefix, 
+                    chunk_counter,
+                    create_private
+                )
+                
+                if file_chunk_counter > 0:
+                    chunk_counter += file_chunk_counter
+                    logger.info(f"[{pid}] Arquivo {os.path.basename(data_file)} processado: {file_chunk_counter} chunks salvos")
+                else:
+                    logger.warning(f"[{pid}] Nenhum chunk gerado para arquivo: {os.path.basename(data_file)}")
+                    
             except Exception as e_data:
                 logger.error(f"[{pid}] Erro ao processar arquivo {os.path.basename(data_file)}: {e_data}")
                 continue
         
-        # Se não temos DataFrames válidos, encerramos
-        if not dataframes:
-            logger.warning(f"[{pid}] Nenhum DataFrame válido gerado. Encerrando processamento de {zip_file}")
+        # Se não temos chunks válidos, encerramos
+        if chunk_counter == 0:
+            logger.warning(f"[{pid}] Nenhum chunk válido gerado. Encerrando processamento de {zip_file}")
             return False
         
-        # Concatenar DataFrames se houver mais de um
-        if len(dataframes) > 1:
-            logger.info(f"[{pid}] Concatenando {len(dataframes)} DataFrames...")
-            try:
-                df_final = pl.concat(dataframes)
-                # Limpar memória
-                for df in dataframes:
-                    del df
-                dataframes = []
-            except Exception as e_concat:
-                logger.error(f"[{pid}] Erro ao concatenar DataFrames: {e_concat}")
-                return False
-        else:
-            df_final = dataframes[0]
-            dataframes = []
-        
-        # Verificar se DataFrame final é válido
-        if df_final is not None and not df_final.is_empty():
-            # Aplicar transformações
-            logger.info(f"[{pid}] Aplicando transformações em DataFrame com {df_final.height} linhas...")
-            try:
-                df_final = apply_empresa_transformations(df_final)
-                
-                if df_final.is_empty():
-                    logger.warning(f"[{pid}] DataFrame vazio após transformações para {zip_file}")
-                    return False
-                
-                logger.info(f"[{pid}] Transformações aplicadas com sucesso para {zip_file}")
-                
-                # --- FASE 3: SALVAMENTO ---
-                logger.info(f"[{pid}] Fase 3: Salvando Parquet principal para {zip_file}...")
-                
-                # Determinar caminho de saída usando ensure_correct_folder_structure
-                logger.info(f"[{pid}] Salvando empresas usando ensure_correct_folder_structure")
-                output_empresas_path = ensure_correct_folder_structure(
-                    path_parquet, 
-                    remote_folder,
-                    "empresas"
-                )
-                
-                # Salvar DataFrame principal
-                success_main = save_empresa_parquet(df_final, output_empresas_path, zip_prefix)
-                
-                if success_main:
-                    logger.info(f"[{pid}] Parquet principal salvo para {zip_file}.")
-                    
-                    # Criar subset de empresas privadas se solicitado
-                    if create_private:
-                        logger.info(f"[{pid}] Criando subset empresa_privada para {zip_file}...")
-                        success_private = create_empresa_privada_subset(
-                            df_final, 
-                            output_empresas_path, 
-                            zip_prefix
-                        )
-                        if success_private:
-                            logger.info(f"[{pid}] Subset empresa_privada criado para {zip_file}.")
-                        else:
-                            logger.warning(f"[{pid}] Falha ao criar subset empresa_privada para {zip_file}.")
-                    else:
-                        logger.info(f"[{pid}] Criação do subset empresa_privada pulada (create_private=False) para {zip_file}.")
-                    
-                    logger.info(f"[{pid}] Processamento para {zip_file} concluído com status final: {success_main}")
-                    return success_main
-                else:
-                    logger.error(f"[{pid}] Falha ao salvar parquet principal para {zip_file}")
-                    return False
-                    
-            except Exception as e_transform:
-                logger.error(f"[{pid}] Erro durante transformações para {zip_file}: {e_transform}")
-                return False
-        else:
-            logger.warning(f"[{pid}] DataFrame final inválido ou vazio para {zip_file}")
-            return False
+        logger.info(f"[{pid}] Processamento para {zip_file} concluído: {chunk_counter} chunks salvos")
+        return True
             
     except Exception as e:
         logger.error(f"[{pid}] Erro processando {zip_file}: {str(e)}")
@@ -1095,3 +1043,136 @@ def process_empresa_files(path_zip: str, path_unzip: str, path_parquet: str, cre
     finally:
         # Garantir que workers parem
         _workers_should_stop.value = True
+
+def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix: str, start_chunk_counter: int = 0, create_private: bool = False) -> int:
+    """
+    Processa um arquivo de dados diretamente em chunks, salvando cada chunk como Parquet.
+    
+    Args:
+        data_file_path: Caminho do arquivo de dados
+        output_dir: Diretório de saída
+        zip_prefix: Prefixo do arquivo ZIP
+        start_chunk_counter: Contador inicial de chunks
+        create_private: Se deve criar subset de empresas privadas
+        
+    Returns:
+        int: Número de chunks processados
+    """
+    chunk_counter = 0
+    chunk_size = 500000  # 500k linhas por chunk
+    
+    try:
+        logger.info(f"Processando arquivo {os.path.basename(data_file_path)} em chunks de {chunk_size} linhas")
+        
+        # Detectar separador lendo primeira linha
+        with open(data_file_path, 'r', encoding='latin-1') as file:
+            first_line = file.readline().strip()
+            if not first_line:
+                logger.warning(f"Arquivo {os.path.basename(data_file_path)} está vazio")
+                return 0
+            
+            separator = ';' if ';' in first_line else ','
+            logger.debug(f"Separador detectado: '{separator}'")
+        
+        # Usar scan_csv do Polars para leitura eficiente em chunks
+        try:
+            # Primeiro, verificar quantas linhas tem o arquivo
+            total_lines = 0
+            with open(data_file_path, 'r', encoding='latin-1') as f:
+                for _ in f:
+                    total_lines += 1
+            
+            if total_lines == 0:
+                logger.warning(f"Arquivo {os.path.basename(data_file_path)} não tem linhas")
+                return 0
+            
+            logger.info(f"Arquivo tem {total_lines} linhas, processando em chunks de {chunk_size}")
+            
+            # Processar em chunks usando skip_rows e n_rows
+            rows_processed = 0
+            
+            while rows_processed < total_lines:
+                try:
+                    # Calcular quantas linhas ler neste chunk
+                    rows_to_read = min(chunk_size, total_lines - rows_processed)
+                    
+                    if rows_to_read <= 0:
+                        break
+                    
+                    logger.debug(f"Lendo chunk {chunk_counter + 1}: linhas {rows_processed} a {rows_processed + rows_to_read - 1}")
+                    
+                    # Ler chunk específico
+                    df_chunk = pl.read_csv(
+                        data_file_path,
+                        separator=separator,
+                        encoding='latin-1',
+                        skip_rows=rows_processed,
+                        n_rows=rows_to_read,
+                        has_header=False,  # Sempre False pois estamos pulando linhas
+                        new_columns=config.empresa_columns,
+                        infer_schema_length=0,
+                        dtypes={col: pl.Utf8 for col in config.empresa_columns},
+                        ignore_errors=True,
+                        truncate_ragged_lines=True
+                    )
+                    
+                    if df_chunk.is_empty():
+                        logger.debug(f"Chunk {chunk_counter + 1} está vazio, avançando...")
+                        rows_processed += rows_to_read
+                        continue
+                    
+                    # Aplicar transformações
+                    df_transformed = apply_empresa_transformations(df_chunk)
+                    
+                    if not df_transformed.is_empty():
+                        # Salvar chunk principal como Parquet
+                        chunk_filename = f"{zip_prefix}_chunk{start_chunk_counter + chunk_counter + 1:03d}.parquet"
+                        chunk_path = os.path.join(output_dir, chunk_filename)
+                        
+                        df_transformed.write_parquet(chunk_path, compression="snappy")
+                        
+                        logger.info(f"Chunk {chunk_counter + 1} salvo: {df_transformed.height} linhas em {chunk_filename}")
+                        
+                        # Criar subset de empresas privadas se solicitado
+                        if create_private:
+                            try:
+                                private_df = df_transformed.filter(
+                                    pl.col("natureza_juridica").is_in([
+                                        "206-2", "213-4", "224-0", "230-4", "231-2", "234-7"
+                                    ])
+                                )
+                                if not private_df.is_empty():
+                                    private_filename = f"{zip_prefix}_privada_chunk{start_chunk_counter + chunk_counter + 1:03d}.parquet"
+                                    private_path = os.path.join(output_dir, "empresa_privada", private_filename)
+                                    os.makedirs(os.path.dirname(private_path), exist_ok=True)
+                                    private_df.write_parquet(private_path, compression="snappy")
+                                    logger.info(f"Chunk privado {chunk_counter + 1} salvo: {private_df.height} linhas")
+                                del private_df
+                            except Exception as e:
+                                logger.warning(f"Erro ao criar subset privado para chunk {chunk_counter + 1}: {e}")
+                        
+                        chunk_counter += 1
+                    
+                    # Liberar memória
+                    del df_chunk, df_transformed
+                    gc.collect()
+                    
+                    # Avançar para próximo chunk
+                    rows_processed += rows_to_read
+                    
+                except Exception as e:
+                    logger.error(f"Erro ao processar chunk {chunk_counter + 1}: {str(e)}")
+                    # Avançar mesmo com erro para evitar loop infinito
+                    rows_processed += chunk_size
+                    break
+            
+            logger.info(f"Arquivo {os.path.basename(data_file_path)} processado: {chunk_counter} chunks salvos de {total_lines} linhas")
+            return chunk_counter
+            
+        except Exception as e:
+            logger.error(f"Erro na leitura do arquivo {data_file_path}: {str(e)}")
+            return 0
+        
+    except Exception as e:
+        logger.error(f"Erro ao processar arquivo {data_file_path} em chunks: {str(e)}")
+        return 0
