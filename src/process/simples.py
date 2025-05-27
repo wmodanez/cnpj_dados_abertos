@@ -157,6 +157,7 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
     """
     chunk_counter = 0
     chunk_size = 500000  # 500k linhas por chunk
+    compiled_transformations = None
     
     try:
         logger.info(f"Processando arquivo {os.path.basename(data_file_path)} em chunks de {chunk_size} linhas")
@@ -218,8 +219,17 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
                         rows_processed += rows_to_read
                         continue
                     
-                    # Aplicar transformações
-                    df_transformed = apply_simples_transformations(df_chunk)
+                    # Compilar transformações apenas no primeiro chunk
+                    if compiled_transformations is None:
+                        logger.info("Compilando transformações do Simples Nacional (uma única vez)...")
+                        compiled_transformations = compile_simples_transformations(df_chunk)
+                        if compiled_transformations['has_transformations']:
+                            logger.info("✅ Transformações compiladas com sucesso")
+                        else:
+                            logger.info("ℹ️ Nenhuma transformação necessária para este arquivo")
+                    
+                    # Aplicar transformações otimizadas
+                    df_transformed = apply_simples_transformations_optimized(df_chunk, compiled_transformations)
                     
                     if not df_transformed.is_empty():
                         # Salvar chunk como Parquet
@@ -414,6 +424,92 @@ def apply_simples_transformations(df: pl.DataFrame) -> pl.DataFrame:
     
     if bool_expressions:
         df = df.with_columns(bool_expressions)
+    
+    return df
+
+def compile_simples_transformations(sample_df: pl.DataFrame) -> dict:
+    """
+    Compila as transformações do Simples Nacional uma única vez baseado em um DataFrame de amostra.
+    Retorna um dicionário com as transformações pré-compiladas.
+    """
+    transformations = {
+        'rename_mapping': {},
+        'date_expressions': [],
+        'bool_expressions': [],
+        'has_transformations': False
+    }
+    
+    # Renomeação de colunas se necessário
+    rename_mapping = {
+        'cnpj_basico': 'cnpj_basico',
+        'opcao_pelo_simples': 'opcao_pelo_simples',
+        'data_opcao_pelo_simples': 'data_opcao_pelo_simples',
+        'data_exclusao_do_simples': 'data_exclusao_do_simples',
+        'opcao_pelo_mei': 'opcao_pelo_mei',
+        'data_opcao_pelo_mei': 'data_opcao_pelo_mei',
+        'data_exclusao_do_mei': 'data_exclusao_do_mei'
+    }
+    
+    # Filtrar para manter apenas colunas que existem no DataFrame
+    transformations['rename_mapping'] = {k: v for k, v in rename_mapping.items() if k in sample_df.columns}
+    
+    # Converter colunas de data
+    date_cols = ['data_opcao_pelo_simples', 'data_exclusao_do_simples', 
+                 'data_opcao_pelo_mei', 'data_exclusao_do_mei']
+    
+    for col in date_cols:
+        if col in sample_df.columns:
+            transformations['date_expressions'].append(
+                pl.when(
+                    pl.col(col).is_in(['0', '00000000', '']) | 
+                    pl.col(col).is_null()
+                )
+                .then(None)
+                .otherwise(pl.col(col))
+                .str.strptime(pl.Date, format="%Y%m%d", strict=False)
+                .alias(col)
+            )
+    
+    # Converter campos de opção (S/N para booleanos)
+    bool_cols = ['opcao_pelo_simples', 'opcao_pelo_mei']
+    
+    for col in bool_cols:
+        if col in sample_df.columns:
+            transformations['bool_expressions'].append(
+                pl.when(pl.col(col) == "S")
+                .then(True)
+                .otherwise(False)
+                .alias(col)
+            )
+    
+    # Verificar se há transformações para aplicar
+    transformations['has_transformations'] = (
+        bool(transformations['rename_mapping']) or 
+        bool(transformations['date_expressions']) or 
+        bool(transformations['bool_expressions'])
+    )
+    
+    return transformations
+
+def apply_simples_transformations_optimized(df: pl.DataFrame, compiled_transformations: dict) -> pl.DataFrame:
+    """
+    Aplica transformações pré-compiladas do Simples Nacional de forma otimizada.
+    Não faz logs repetitivos nem recompilação de expressões.
+    """
+    if not compiled_transformations['has_transformations']:
+        return df
+    
+    # Aplicar renomeação se houver colunas para renomear
+    if compiled_transformations['rename_mapping']:
+        df = df.rename(compiled_transformations['rename_mapping'])
+    
+    # Aplicar transformações de data
+    if compiled_transformations['date_expressions']:
+        df = df.with_columns(compiled_transformations['date_expressions'])
+    
+    # Aplicar transformações booleanas
+    if compiled_transformations['bool_expressions']:
+        df = df.with_columns(compiled_transformations['bool_expressions'])
     
     return df
 

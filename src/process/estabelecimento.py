@@ -369,6 +369,144 @@ def apply_estabelecimento_transformations(df: pl.DataFrame) -> pl.DataFrame:
             logger.error(f"Erro também no fallback: {str(e2)}")
             return df
 
+def compile_estabelecimento_transformations(sample_df: pl.DataFrame) -> dict:
+    """
+    Compila as transformações de Estabelecimentos uma única vez baseado em um DataFrame de amostra.
+    Retorna um dicionário com as transformações pré-compiladas.
+    """
+    transformations = {
+        'cnpj_columns': ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv'],
+        'cnpj_expression': None,
+        'type_conversions': [],
+        'date_conversions': [],
+        'columns_to_drop': [],
+        'has_transformations': False
+    }
+    
+    # Verificar se pode criar CNPJ completo
+    if all(col in sample_df.columns for col in transformations['cnpj_columns']):
+        transformations['cnpj_expression'] = (
+            pl.col('cnpj_basico').cast(pl.Utf8).str.pad_start(8, '0') + 
+            pl.col('cnpj_ordem').cast(pl.Utf8).str.pad_start(4, '0') + 
+            pl.col('cnpj_dv').cast(pl.Utf8).str.pad_start(2, '0')
+        ).alias('cnpj')
+        transformations['has_transformations'] = True
+    
+    # Preparar conversões de tipos
+    type_mappings = [
+        ("matriz_filial", pl.Int8),
+        ("codigo_situacao_cadastral", pl.Int8),
+        ("codigo_motivo_situacao_cadastral", pl.Int16),
+        ("codigo_municipio", pl.Int32),
+        ("codigo_cnae", pl.Int32)
+    ]
+    
+    for col_name, col_type in type_mappings:
+        if col_name in sample_df.columns:
+            transformations['type_conversions'].append((col_name, col_type))
+            transformations['has_transformations'] = True
+    
+    # Preparar conversão de CEP
+    if "cep" in sample_df.columns:
+        transformations['type_conversions'].append(("cep", "cep_clean"))
+        transformations['has_transformations'] = True
+    
+    # Preparar conversões de data
+    date_columns = ["data_situacao_cadastral", "data_inicio_atividades"]
+    for date_col in date_columns:
+        if date_col in sample_df.columns:
+            transformations['date_conversions'].append(date_col)
+            transformations['has_transformations'] = True
+    
+    # Preparar colunas para remoção
+    columns_to_drop = [
+        'cnpj_ordem', 'cnpj_dv', 'tipo_logradouro', 'logradouro', 'numero', 
+        'complemento', 'bairro', 'ddd1', 'telefone1', 'ddd2', 'telefone2', 
+        'ddd_fax', 'fax', 'pais', 'correio_eletronico', 'situacao_especial',
+        'data_situacao_especial', 'nome_cidade_exterior'
+    ]
+    
+    transformations['columns_to_drop'] = [col for col in columns_to_drop if col in sample_df.columns]
+    if transformations['columns_to_drop']:
+        transformations['has_transformations'] = True
+    
+    return transformations
+
+def apply_estabelecimento_transformations_optimized(df: pl.DataFrame, compiled_transformations: dict) -> pl.DataFrame:
+    """
+    Aplica transformações pré-compiladas de Estabelecimentos de forma otimizada.
+    Não faz logs repetitivos nem recompilação de expressões.
+    """
+    if not compiled_transformations['has_transformations']:
+        return df
+    
+    try:
+        # Usar lazy evaluation para otimização
+        df_lazy = df.lazy()
+        
+        # 1. Criar CNPJ completo
+        if compiled_transformations['cnpj_expression'] is not None:
+            df_lazy = df_lazy.with_columns([compiled_transformations['cnpj_expression']])
+        
+        # 2. Aplicar conversões de tipos e CEP
+        type_expressions = []
+        for col_name, col_type in compiled_transformations['type_conversions']:
+            if col_type == "cep_clean":
+                type_expressions.append(
+                    pl.col(col_name).str.replace_all(r"[^\d]", "", literal=False)
+                )
+            else:
+                type_expressions.append(
+                    pl.col(col_name).cast(col_type, strict=False)
+                )
+        
+        if type_expressions:
+            df_lazy = df_lazy.with_columns(type_expressions)
+        
+        # 3. Aplicar conversões de data
+        date_expressions = []
+        for date_col in compiled_transformations['date_conversions']:
+            date_expressions.append(
+                pl.when(
+                    pl.col(date_col).is_in(['0', '00000000', '']) | 
+                    pl.col(date_col).is_null()
+                )
+                .then(None)
+                .otherwise(pl.col(date_col))
+                .str.strptime(pl.Date, "%Y%m%d", strict=False)
+                .alias(date_col)
+            )
+        
+        if date_expressions:
+            df_lazy = df_lazy.with_columns(date_expressions)
+        
+        # 4. Remover colunas desnecessárias
+        if compiled_transformations['columns_to_drop']:
+            df_lazy = df_lazy.drop(compiled_transformations['columns_to_drop'])
+        
+        # 5. Coletar resultado com streaming
+        df_transformed = df_lazy.collect(streaming=True)
+        return df_transformed
+        
+    except Exception as e:
+        logger.warning(f"Erro com transformações otimizadas: {str(e)}, usando fallback simples")
+        
+        # Fallback simples
+        try:
+            # Criar CNPJ completo
+            if compiled_transformations['cnpj_expression'] is not None:
+                df = df.with_columns([compiled_transformations['cnpj_expression']])
+            
+            # Remover colunas desnecessárias
+            if compiled_transformations['columns_to_drop']:
+                df = df.drop(compiled_transformations['columns_to_drop'])
+            
+            return df
+            
+        except Exception as e2:
+            logger.error(f"Erro também no fallback: {str(e2)}")
+            return df
+
 
 def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str, zip_filename_prefix: str, partition_size: int = 2000000) -> bool:
     """
@@ -942,6 +1080,7 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
     """
     chunk_counter = 0
     chunk_size = 500000  # 500k linhas por chunk
+    compiled_transformations = None
     
     try:
         logger.info(f"Processando arquivo {os.path.basename(data_file_path)} em chunks de {chunk_size} linhas")
@@ -1003,8 +1142,17 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
                         rows_processed += rows_to_read
                         continue
                     
-                    # Aplicar transformações
-                    df_transformed = apply_estabelecimento_transformations(df_chunk)
+                    # Compilar transformações apenas no primeiro chunk
+                    if compiled_transformations is None:
+                        logger.info("Compilando transformações de Estabelecimentos (uma única vez)...")
+                        compiled_transformations = compile_estabelecimento_transformations(df_chunk)
+                        if compiled_transformations['has_transformations']:
+                            logger.info("✅ Transformações de Estabelecimentos compiladas com sucesso")
+                        else:
+                            logger.info("ℹ️ Nenhuma transformação necessária para este arquivo")
+                    
+                    # Aplicar transformações otimizadas
+                    df_transformed = apply_estabelecimento_transformations_optimized(df_chunk, compiled_transformations)
                     
                     # Aplicar filtro de UF se especificado
                     if uf_subset and 'uf' in df_transformed.columns:

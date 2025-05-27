@@ -281,6 +281,113 @@ def apply_empresa_transformations(df: pl.DataFrame, chunk_size: int = 1_000_000)
     
     return df
 
+def compile_empresa_transformations(sample_df: pl.DataFrame) -> dict:
+    """
+    Compila as transformações de Empresas uma única vez baseado em um DataFrame de amostra.
+    Retorna um dicionário com as transformações pré-compiladas.
+    """
+    transformations = {
+        'column_mapping': [],
+        'cpf_pattern': r'(\d{11})',
+        'invalid_cpfs': [
+            "00000000000", "11111111111", "22222222222", "33333333333",
+            "44444444444", "55555555555", "66666666666", "77777777777",
+            "88888888888", "99999999999"
+        ],
+        'type_conversions': [],
+        'has_transformations': True  # Empresas sempre tem transformações
+    }
+    
+    # Definir nomes das colunas conforme layout da Receita Federal
+    column_names = [
+        "cnpj_basico",
+        "razao_social", 
+        "natureza_juridica",
+        "qualificacao_responsavel",
+        "capital_social",
+        "porte_empresa",
+        "ente_federativo_responsavel"
+    ]
+    
+    # Preparar mapeamento de colunas
+    transformations['column_mapping'] = [
+        (f"column_{i+1}", name) for i, name in enumerate(column_names)
+        if f"column_{i+1}" in sample_df.columns
+    ]
+    
+    # Preparar conversões de tipo (sempre as mesmas para empresas)
+    transformations['type_conversions'] = [
+        ("cnpj_basico", pl.Utf8),
+        ("capital_social", "float_with_comma"),  # Tratamento especial
+        ("natureza_juridica", pl.Int32),
+        ("qualificacao_responsavel", pl.Int32),
+        ("porte_empresa", pl.Int32)
+    ]
+    
+    return transformations
+
+def apply_empresa_transformations_optimized(df: pl.DataFrame, compiled_transformations: dict) -> pl.DataFrame:
+    """
+    Aplica transformações pré-compiladas de Empresas de forma otimizada.
+    Não faz logs repetitivos nem recompilação de expressões.
+    """
+    if not compiled_transformations['has_transformations']:
+        return df
+    
+    # Renomear colunas
+    if compiled_transformations['column_mapping']:
+        select_expressions = []
+        for old_col, new_col in compiled_transformations['column_mapping']:
+            if old_col in df.columns:
+                select_expressions.append(pl.col(old_col).alias(new_col))
+        
+        if select_expressions:
+            df = df.select(select_expressions)
+    
+    # Extração de CPF da razao_social
+    if "razao_social" in df.columns:
+        cpf_pattern = compiled_transformations['cpf_pattern']
+        invalid_cpfs = compiled_transformations['invalid_cpfs']
+        
+        df = df.with_columns([
+            pl.col("razao_social")
+            .str.extract(cpf_pattern, 1)
+            .alias("cpf_extraido")
+        ])
+        
+        # Validar CPFs extraídos
+        df = df.with_columns([
+            pl.when(pl.col("cpf_extraido").is_in(invalid_cpfs))
+            .then(None)
+            .otherwise(pl.col("cpf_extraido"))
+            .alias("cpf_extraido")
+        ])
+        
+        # Remover CPF da razao_social
+        df = df.with_columns([
+            pl.col("razao_social")
+            .str.replace_all(cpf_pattern, "")
+            .str.strip_chars()
+            .alias("razao_social")
+        ])
+    
+    # Converter tipos de dados
+    type_expressions = []
+    for col_name, col_type in compiled_transformations['type_conversions']:
+        if col_name in df.columns:
+            if col_type == "float_with_comma":
+                type_expressions.append(
+                    pl.col(col_name).str.replace(",", ".").cast(pl.Float64, strict=False)
+                )
+            else:
+                type_expressions.append(
+                    pl.col(col_name).cast(col_type, strict=False)
+                )
+    
+    if type_expressions:
+        df = df.with_columns(type_expressions)
+    
+    return df
 
 def create_parquet(df: pl.DataFrame, table_name: str, path_parquet: str, 
                          zip_filename_prefix: str, partition_size: int = 500_000) -> bool:
@@ -1060,6 +1167,7 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
     """
     chunk_counter = 0
     chunk_size = 500000  # 500k linhas por chunk
+    compiled_transformations = None
     
     try:
         logger.info(f"Processando arquivo {os.path.basename(data_file_path)} em chunks de {chunk_size} linhas")
@@ -1121,8 +1229,14 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
                         rows_processed += rows_to_read
                         continue
                     
-                    # Aplicar transformações
-                    df_transformed = apply_empresa_transformations(df_chunk)
+                    # Compilar transformações apenas no primeiro chunk
+                    if compiled_transformations is None:
+                        logger.info("Compilando transformações de Empresas (uma única vez)...")
+                        compiled_transformations = compile_empresa_transformations(df_chunk)
+                        logger.info("✅ Transformações de Empresas compiladas com sucesso")
+                    
+                    # Aplicar transformações otimizadas
+                    df_transformed = apply_empresa_transformations_optimized(df_chunk, compiled_transformations)
                     
                     if not df_transformed.is_empty():
                         # Salvar chunk principal como Parquet

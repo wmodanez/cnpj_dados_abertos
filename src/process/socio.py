@@ -178,6 +178,7 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
     """
     chunk_counter = 0
     chunk_size = 500000  # 500k linhas por chunk
+    compiled_transformations = None
     
     try:
         logger.info(f"Processando arquivo {os.path.basename(data_file_path)} em chunks de {chunk_size} linhas")
@@ -239,8 +240,17 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
                         rows_processed += rows_to_read
                         continue
                     
-                    # Aplicar transformações
-                    df_transformed = apply_socio_transformations(df_chunk)
+                    # Compilar transformações apenas no primeiro chunk
+                    if compiled_transformations is None:
+                        logger.info("Compilando transformações de Sócios (uma única vez)...")
+                        compiled_transformations = compile_socio_transformations(df_chunk)
+                        if compiled_transformations['has_transformations']:
+                            logger.info("✅ Transformações compiladas com sucesso")
+                        else:
+                            logger.info("ℹ️ Nenhuma transformação necessária para este arquivo")
+                    
+                    # Aplicar transformações otimizadas
+                    df_transformed = apply_socio_transformations_optimized(df_chunk, compiled_transformations)
                     
                     if not df_transformed.is_empty():
                         # Salvar chunk como Parquet
@@ -436,6 +446,93 @@ def apply_socio_transformations(df: pl.DataFrame) -> pl.DataFrame:
     
     if date_expressions:
         df = df.with_columns(date_expressions)
+    
+    return df
+
+def compile_socio_transformations(sample_df: pl.DataFrame) -> dict:
+    """
+    Compila as transformações de Sócios uma única vez baseado em um DataFrame de amostra.
+    Retorna um dicionário com as transformações pré-compiladas.
+    """
+    transformations = {
+        'rename_mapping': {},
+        'int_expressions': [],
+        'date_expressions': [],
+        'has_transformations': False
+    }
+    
+    # Renomeação de colunas se necessário
+    rename_mapping = {
+        'cnpj_basico': 'cnpj_basico',
+        'identificador_de_socio': 'identificador_socio',
+        'nome_do_socio_ou_razao_social': 'nome_socio',
+        'cnpj_ou_cpf_do_socio': 'cpf_cnpj_socio',
+        'qualificacao_do_socio': 'qualificacao_socio',
+        'data_de_entrada_sociedade': 'data_entrada_sociedade',
+        'pais': 'codigo_pais',
+        'representante_legal': 'nome_representante_legal',
+        'nome_do_representante': 'nome_representante_legal',
+        'qualificacao_do_representante_legal': 'qualificacao_representante',
+        'faixa_etaria': 'faixa_etaria'
+    }
+    
+    # Filtrar para manter apenas colunas que existem no DataFrame
+    transformations['rename_mapping'] = {k: v for k, v in rename_mapping.items() if k in sample_df.columns}
+    
+    # Conversão de colunas numéricas
+    int_cols = ['identificador_socio', 'qualificacao_socio', 
+                'codigo_pais', 'qualificacao_representante', 'faixa_etaria']
+    
+    for col in int_cols:
+        if col in sample_df.columns:
+            transformations['int_expressions'].append(
+                pl.col(col).cast(pl.Int64, strict=False)
+            )
+    
+    # Conversão de datas
+    date_cols = ['data_entrada_sociedade']
+    
+    for col in date_cols:
+        if col in sample_df.columns:
+            transformations['date_expressions'].append(
+                pl.when(
+                    pl.col(col).is_in(['0', '00000000', '']) | 
+                    pl.col(col).is_null()
+                )
+                .then(None)
+                .otherwise(pl.col(col))
+                .str.strptime(pl.Date, format="%Y%m%d", strict=False)
+                .alias(col)
+            )
+    
+    # Verificar se há transformações para aplicar
+    transformations['has_transformations'] = (
+        bool(transformations['rename_mapping']) or 
+        bool(transformations['int_expressions']) or 
+        bool(transformations['date_expressions'])
+    )
+    
+    return transformations
+
+def apply_socio_transformations_optimized(df: pl.DataFrame, compiled_transformations: dict) -> pl.DataFrame:
+    """
+    Aplica transformações pré-compiladas de Sócios de forma otimizada.
+    Não faz logs repetitivos nem recompilação de expressões.
+    """
+    if not compiled_transformations['has_transformations']:
+        return df
+    
+    # Aplicar renomeação se houver colunas para renomear
+    if compiled_transformations['rename_mapping']:
+        df = df.rename(compiled_transformations['rename_mapping'])
+    
+    # Aplicar transformações de inteiros
+    if compiled_transformations['int_expressions']:
+        df = df.with_columns(compiled_transformations['int_expressions'])
+    
+    # Aplicar transformações de data
+    if compiled_transformations['date_expressions']:
+        df = df.with_columns(compiled_transformations['date_expressions'])
     
     return df
 
