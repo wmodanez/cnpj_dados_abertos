@@ -1449,7 +1449,8 @@ async def download_multiple_files(
     force_download: bool = False,
     max_concurrent_downloads: int = 6,
     max_concurrent_processing: int = None,
-    show_progress_bar: bool = False
+    show_progress_bar: bool = False,
+    show_pending_files: bool = False
 ) -> Tuple[List[str], List[Tuple[str, Exception]]]:
     """
     Baixa múltiplos arquivos de forma assíncrona com pipeline otimizado e controle de falhas.
@@ -1463,6 +1464,7 @@ async def download_multiple_files(
         max_concurrent_downloads: Número máximo de downloads simultâneos
         max_concurrent_processing: Número máximo de processamentos simultâneos
         show_progress_bar: Se True, exibe barras de progresso visuais (padrão: False)
+        show_pending_files: Se True, exibe lista de arquivos pendentes/em progresso (padrão: False)
         
     Returns:
         Tupla com (lista_arquivos_baixados, lista_falhas)
@@ -1603,13 +1605,13 @@ async def download_multiple_files(
     print(f"✅ Validação de integridade: ativada")
     print(f"🌐 Conectividade: verificada")
     print(f"📊 Barra de progresso: {'✅ ativada' if show_progress_bar else '❌ desativada'}")
+    print(f"📋 Lista de arquivos pendentes: {'✅ ativada' if show_pending_files else '❌ desativada'}")
     
-    # Criar objeto Progress do rich para downloads (apenas se solicitado)
+    # Criar instância da lista de arquivos pendentes (se solicitado)
+    pending_files_list = PendingFilesList(sorted_urls) if show_pending_files else None
+    
+    # Criar objeto Progress do rich para downloads (se solicitado)
     if show_progress_bar:
-        # Criar instância da lista de arquivos pendentes
-        pending_files_list = PendingFilesList(sorted_urls)
-        
-        # Criar Progress para downloads
         progress = Progress(
             TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
             BarColumn(bar_width=None),
@@ -1623,21 +1625,8 @@ async def download_multiple_files(
             console=console,
             expand=True,
         )
-        
-        # Criar layout com Progress e lista de arquivos pendentes
-        layout = Layout()
-        layout.split_column(
-            Layout(progress, name="progress", size=len(sorted_urls) + 2),
-            Layout(pending_files_list.create_pending_panel(), name="pending", size=15)
-        )
-        
-        # Criar Live display
-        live_display = Live(layout, console=console, refresh_per_second=2)
     else:
         # Criar um objeto Progress "dummy" que não exibe nada
-        pending_files_list = None
-        live_display = None
-        
         class DummyProgress:
             def __init__(self):
                 self._task_counter = 0
@@ -1676,7 +1665,26 @@ async def download_multiple_files(
                 pass
         
         progress = DummyProgress()
-
+    
+    # Configurar layout e live display baseado nas opções ativadas
+    live_display = None
+    layout = None  # Definir layout no escopo correto
+    if show_progress_bar or show_pending_files:
+        if show_progress_bar and show_pending_files:
+            # Ambos ativados: layout dividido
+            layout = Layout()
+            layout.split_column(
+                Layout(progress, name="progress", size=len(sorted_urls) + 2),
+                Layout(pending_files_list.create_pending_panel(), name="pending", size=15)
+            )
+            live_display = Live(layout, console=console, refresh_per_second=2)
+        elif show_progress_bar:
+            # Apenas barra de progresso
+            live_display = Live(progress, console=console, refresh_per_second=2)
+        elif show_pending_files:
+            # Apenas lista de arquivos pendentes
+            live_display = Live(pending_files_list.create_pending_panel(), console=console, refresh_per_second=2)
+    
     print(f"\n🔄 Executando {len(sorted_urls)} downloads e {max_concurrent_processing} processadores...")
 
     # Função que processa os arquivos da fila em paralelo
@@ -1791,8 +1799,12 @@ async def download_multiple_files(
         if pending_files_list:
             pending_files_list.start_file(filename)
             # Atualizar o layout se estiver usando live display
-            if live_display:
+            if live_display and show_progress_bar and show_pending_files:
+                # Layout dividido: atualizar seção pending
                 layout["pending"].update(pending_files_list.create_pending_panel())
+            elif live_display and show_pending_files and not show_progress_bar:
+                # Apenas lista de pendentes: atualizar display completo
+                live_display.update(pending_files_list.create_pending_panel())
         
         # Registrar início do download no rastreador de progresso
         progress_tracker.start_file("downloads", filename, "downloader")
@@ -1830,8 +1842,12 @@ async def download_multiple_files(
                         # Atualizar lista de arquivos pendentes (marcar como falha)
                         if pending_files_list:
                             pending_files_list.complete_file(filename, success=False)
-                            if live_display:
+                            if live_display and show_progress_bar and show_pending_files:
+                                # Layout dividido: atualizar seção pending
                                 layout["pending"].update(pending_files_list.create_pending_panel())
+                            elif live_display and show_pending_files and not show_progress_bar:
+                                # Apenas lista de pendentes: atualizar display completo
+                                live_display.update(pending_files_list.create_pending_panel())
                         
                         # Marcar task como completa com erro
                         progress.update(task_id, description=f"[red]{filename} (ERRO)", completed=100)
@@ -1854,8 +1870,12 @@ async def download_multiple_files(
                         # Atualizar lista de arquivos pendentes (marcar como sucesso)
                         if pending_files_list:
                             pending_files_list.complete_file(filename, success=True)
-                            if live_display:
+                            if live_display and show_progress_bar and show_pending_files:
+                                # Layout dividido: atualizar seção pending
                                 layout["pending"].update(pending_files_list.create_pending_panel())
+                            elif live_display and show_pending_files and not show_progress_bar:
+                                # Apenas lista de pendentes: atualizar display completo
+                                live_display.update(pending_files_list.create_pending_panel())
                         
                         # Marcar task como completa com sucesso
                         progress.update(task_id, description=f"[green]{filename} (OK)", completed=100)

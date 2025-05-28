@@ -89,7 +89,8 @@ class PipelineConfig:
     cpu_threshold_percent: int = 90     # Pausar processamento se CPU > 90%
     
     # Configurações de interface
-    show_progress_bar: bool = False  # Exibir barras de progresso visuais (padrão: False)
+    show_progress_bar: bool = True  # Exibir barras de progresso visuais (padrão: True)
+    show_pending_files: bool = True  # Exibir lista de arquivos pendentes/em progresso (padrão: True)
     
     # Configurações de otimização específicas por tipo
     empresa_chunk_size: int = 500000

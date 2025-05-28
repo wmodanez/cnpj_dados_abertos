@@ -445,7 +445,8 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                         max_concurrent_downloads=max_concurrent_downloads,
                         # Deixar que a função calcule automaticamente baseado no hardware
                         max_concurrent_processing=None,
-                        show_progress_bar=config.pipeline.show_progress_bar
+                        show_progress_bar=config.pipeline.show_progress_bar,
+                        show_pending_files=config.pipeline.show_pending_files
                     )
                     
                     downloaded_files_count += len(processed)
@@ -618,7 +619,8 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                     max_concurrent_downloads=max_concurrent_downloads,
                     # Deixar que a função calcule automaticamente baseado no hardware
                     max_concurrent_processing=None,
-                    show_progress_bar=config.pipeline.show_progress_bar
+                    show_progress_bar=config.pipeline.show_progress_bar,
+                    show_pending_files=config.pipeline.show_pending_files
                 )
                 
                 downloaded_files_count = len(processed)
