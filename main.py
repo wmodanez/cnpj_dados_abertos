@@ -4,7 +4,7 @@ Exemplos de uso:
 1. Execução padrão (Baixa todos os tipos na pasta mais recente, processa todos com Polars, salva em subpasta com nome da data baixada):
    python main.py
 
-2. Baixa e processa apenas Empresas e Sócios com Polars (salva em subpasta com nome da data baixada):
+2. Baixa e processa apenas Empresas e Sócios (salva em subpasta com nome da data baixada):
    python main.py --tipos empresas socios
 
 3. Baixa e processa todos os tipos (salva em subpasta com nome da data baixada):
@@ -444,7 +444,8 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                         force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
                         max_concurrent_downloads=max_concurrent_downloads,
                         # Deixar que a função calcule automaticamente baseado no hardware
-                        max_concurrent_processing=None
+                        max_concurrent_processing=None,
+                        show_progress_bar=config.pipeline.show_progress_bar
                     )
                     
                     downloaded_files_count += len(processed)
@@ -616,7 +617,8 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                     force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
                     max_concurrent_downloads=max_concurrent_downloads,
                     # Deixar que a função calcule automaticamente baseado no hardware
-                    max_concurrent_processing=None
+                    max_concurrent_processing=None,
+                    show_progress_bar=config.pipeline.show_progress_bar
                 )
                 
                 downloaded_files_count = len(processed)

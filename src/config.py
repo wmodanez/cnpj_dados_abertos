@@ -88,6 +88,9 @@ class PipelineConfig:
     memory_threshold_percent: int = 85  # Pausar processamento se memória > 85%
     cpu_threshold_percent: int = 90     # Pausar processamento se CPU > 90%
     
+    # Configurações de interface
+    show_progress_bar: bool = False  # Exibir barras de progresso visuais (padrão: False)
+    
     # Configurações de otimização específicas por tipo
     empresa_chunk_size: int = 500000
     estabelecimento_chunk_size: int = 1000000  # Arquivos maiores

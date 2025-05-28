@@ -97,7 +97,12 @@ def process_csv_file(csv_path):
             has_header=False,
             encoding='latin1',
             ignore_errors=True,
-            truncate_ragged_lines=True
+            truncate_ragged_lines=True,
+            # Parâmetros adicionais para lidar com campos mal formatados
+            quote_char=None,  # Desabilitar processamento de aspas
+            null_values=["", "NULL", "null", "00000000", '"00000000', '"00000000"'],  # Valores nulos comuns
+            missing_utf8_is_empty_string=True,  # Tratar UTF-8 inválido como string vazia
+            try_parse_dates=False  # Não tentar parsear datas automaticamente
         )
         
         logger.debug(f"Arquivo {os.path.basename(csv_path)} carregado com {df.height} linhas")
@@ -151,7 +156,13 @@ def process_data_file(data_path: str):
             new_columns=original_column_names,
             infer_schema_length=0,  # Não inferir schema
             dtypes={col: pl.Utf8 for col in original_column_names},  # Inicialmente lê tudo como string
-            ignore_errors=True  # Ignorar linhas com erros
+            ignore_errors=True,  # Ignorar linhas com erros
+            # Parâmetros adicionais para lidar com campos mal formatados
+            quote_char=None,  # Desabilitar processamento de aspas
+            null_values=["", "NULL", "null", "00000000", '"00000000', '"00000000"'],  # Valores nulos comuns
+            missing_utf8_is_empty_string=True,  # Tratar UTF-8 inválido como string vazia
+            try_parse_dates=False,  # Não tentar parsear datas automaticamente
+            truncate_ragged_lines=True  # Truncar linhas com colunas extras
         )
         if not df.is_empty():
             logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando separador padrão")
@@ -174,7 +185,13 @@ def process_data_file(data_path: str):
                 new_columns=original_column_names,
                 infer_schema_length=0,
                 dtypes={col: pl.Utf8 for col in original_column_names},
-                ignore_errors=True
+                ignore_errors=True,
+                # Parâmetros adicionais para lidar com campos mal formatados
+                quote_char=None,  # Desabilitar processamento de aspas
+                null_values=["", "NULL", "null", "00000000", '"00000000', '"00000000"'],  # Valores nulos comuns
+                missing_utf8_is_empty_string=True,  # Tratar UTF-8 inválido como string vazia
+                try_parse_dates=False,  # Não tentar parsear datas automaticamente
+                truncate_ragged_lines=True  # Truncar linhas com colunas extras
             )
             if not df.is_empty():
                 logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando separador '{sep}'")
@@ -197,7 +214,13 @@ def process_data_file(data_path: str):
                 new_columns=original_column_names,
                 infer_schema_length=0,
                 dtypes={col: pl.Utf8 for col in original_column_names},
-                ignore_errors=True
+                ignore_errors=True,
+                # Parâmetros adicionais para lidar com campos mal formatados
+                quote_char=None,  # Desabilitar processamento de aspas
+                null_values=["", "NULL", "null", "00000000", '"00000000', '"00000000"'],  # Valores nulos comuns
+                missing_utf8_is_empty_string=True,  # Tratar UTF-8 inválido como string vazia
+                try_parse_dates=False,  # Não tentar parsear datas automaticamente
+                truncate_ragged_lines=True  # Truncar linhas com colunas extras
             )
             if not df.is_empty():
                 logger.info(f"Arquivo {os.path.basename(data_path)} processado com sucesso usando codificação '{enc}'")
@@ -1269,7 +1292,12 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
                         infer_schema_length=0,
                         dtypes={col: pl.Utf8 for col in config.empresa_columns},
                         ignore_errors=True,
-                        truncate_ragged_lines=True
+                        truncate_ragged_lines=True,
+                        # Parâmetros adicionais para lidar com campos mal formatados
+                        quote_char=None,  # Desabilitar processamento de aspas
+                        null_values=["", "NULL", "null", "00000000", '"00000000', '"00000000"'],  # Valores nulos comuns
+                        missing_utf8_is_empty_string=True,  # Tratar UTF-8 inválido como string vazia
+                        try_parse_dates=False  # Não tentar parsear datas automaticamente
                     )
                     
                     if df_chunk.is_empty():

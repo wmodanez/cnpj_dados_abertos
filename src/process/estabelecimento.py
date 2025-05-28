@@ -244,7 +244,12 @@ def process_data_file(data_path: str, chunk_size: int = 1000000, output_dir: str
                     new_columns=config.estabelecimento_columns,
                     dtypes=config.estabelecimento_dtypes,
                     ignore_errors=True,
-                    rechunk=True
+                    rechunk=True,
+                    quote_char=None,
+                    null_values=["", "NULL", "null", "00000000", '"00000000', '"00000000"'],
+                    missing_utf8_is_empty_string=True,
+                    try_parse_dates=False,
+                    truncate_ragged_lines=True
                 )
                 logger.warning(f"Arquivo {os.path.basename(data_path)} lido com ignore_errors=True ({df.height} linhas)")
                 return df
@@ -1174,7 +1179,7 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
                     df_chunk = pl.read_csv(
                         data_file_path,
                         separator=separator,
-                        encoding='latin-1',
+                        encoding='latin1',
                         skip_rows=rows_processed,
                         n_rows=rows_to_read,
                         has_header=False,  # Sempre False pois estamos pulando linhas
@@ -1182,7 +1187,11 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
                         infer_schema_length=0,
                         dtypes={col: pl.Utf8 for col in config.estabelecimento_columns},
                         ignore_errors=True,
-                        truncate_ragged_lines=True
+                        truncate_ragged_lines=True,
+                        quote_char=None,
+                        null_values=["", "NULL", "null", "00000000", '"00000000', '"00000000"'],
+                        missing_utf8_is_empty_string=True,
+                        try_parse_dates=False
                     )
                     
                     if df_chunk.is_empty():
