@@ -43,6 +43,7 @@ logs/
 download/
 unzip/
 parquet/
+!parquet/base/
 benchmark_temp/
 .env.local
 *.duckdb
