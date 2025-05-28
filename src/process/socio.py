@@ -18,7 +18,8 @@ import tempfile
 import threading
 from queue import Queue, PriorityQueue
 import psutil
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Optional
 
 from ..config import config
 from ..utils import (
@@ -27,9 +28,10 @@ from ..utils import (
     create_parquet_filename
 )
 from ..utils.folders import get_output_path, ensure_correct_folder_structure
-import inspect
 from ..utils.time_utils import format_elapsed_time
 from ..utils.statistics import global_stats
+from ..utils.progress_tracker import progress_tracker
+import inspect
 
 logger = logging.getLogger(__name__)
 
@@ -108,90 +110,136 @@ def add_to_process_queue(zip_file: str, priority: int = 1):
     _process_queue.put((priority, time.time(), zip_file))
     logger.info(f"Arquivo {zip_file} adicionado à fila de processamento")
 
-def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str):
+def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False):
     """Worker que processa a fila de arquivos."""
     worker_id = threading.current_thread().name
     logger.info(f"[WORKER-{worker_id}] Worker iniciado para processamento de sócios")
     
+    # Registrar início do worker no rastreador de progresso
+    progress_tracker.start_worker("socios", worker_id)
+    
     consecutive_empty_checks = 0
     max_empty_checks = 6  # Máximo de 6 verificações vazias (30 segundos) antes de parar
     
-    while not _workers_should_stop.value:
-        try:
-            if _process_queue.empty():
-                consecutive_empty_checks += 1
-                if consecutive_empty_checks >= max_empty_checks:
-                    logger.info(f"[WORKER-{worker_id}] Fila vazia por {max_empty_checks * 5}s. Finalizando worker.")
-                    break
-                
-                logger.debug(f"[WORKER-{worker_id}] Fila vazia, aguardando 5 segundos... ({consecutive_empty_checks}/{max_empty_checks})")
-                time.sleep(5)
-                continue
-            
-            # Reset contador se encontrou trabalho
-            consecutive_empty_checks = 0
-                
-            if not can_start_processing():
-                resources = get_system_resources()
-                logger.debug(f"[WORKER-{worker_id}] Recursos insuficientes - CPU: {resources['cpu_percent']:.1f}%, "
-                           f"Memória: {resources['memory_percent']:.1f}%, "
-                           f"Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
-                time.sleep(10)  # Espera 10 segundos se não puder processar
-                continue
-                
-            # Pega o próximo arquivo da fila
+    try:
+        while not _workers_should_stop.value:
             try:
-                priority, timestamp, zip_file = _process_queue.get_nowait()
-            except:
-                # Fila ficou vazia entre a verificação e o get
-                continue
-                
-            logger.info(f"[WORKER-{worker_id}] Iniciando processamento de {zip_file}")
-            
-            with _processing_lock:
-                _active_processes.value += 1
-                logger.debug(f"[WORKER-{worker_id}] Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
-                
-            try:
-                # Processa o arquivo
-                start_time = time.time()
-                
-                # Extrair pasta remota do caminho zip
-                remote_folder = os.path.basename(os.path.normpath(path_zip))
-                # Verificar se o formato é AAAA-MM
-                if not re.match(r'^\d{4}-\d{2}$', remote_folder):
-                    # Se não for uma pasta no formato esperado, tentar extrair do caminho
-                    match = re.search(r'(20\d{2}-\d{2})', path_zip)
-                    if match:
-                        remote_folder = match.group(1)
-                    else:
-                        # Último recurso: usar um valor padrão
-                        remote_folder = "dados"
-                
-                result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, remote_folder)
-                elapsed_time = time.time() - start_time
-                
-                if result:
-                    logger.info(f"[WORKER-{worker_id}] ✓ {zip_file} processado com sucesso em {elapsed_time:.2f}s")
-                else:
-                    logger.error(f"[WORKER-{worker_id}] ✗ Falha ao processar {zip_file} após {elapsed_time:.2f}s")
+                if _process_queue.empty():
+                    consecutive_empty_checks += 1
+                    if consecutive_empty_checks >= max_empty_checks:
+                        logger.info(f"[WORKER-{worker_id}] Fila vazia por {max_empty_checks * 5}s. Finalizando worker.")
+                        break
                     
-            finally:
+                    logger.debug(f"[WORKER-{worker_id}] Fila vazia, aguardando 5 segundos... ({consecutive_empty_checks}/{max_empty_checks})")
+                    time.sleep(5)
+                    continue
+                
+                # Reset contador se encontrou trabalho
+                consecutive_empty_checks = 0
+                    
+                if not can_start_processing():
+                    resources = get_system_resources()
+                    logger.debug(f"[WORKER-{worker_id}] Recursos insuficientes - CPU: {resources['cpu_percent']:.1f}%, "
+                               f"Memória: {resources['memory_percent']:.1f}%, "
+                               f"Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
+                    time.sleep(10)  # Espera 10 segundos se não puder processar
+                    continue
+                    
+                # Pega o próximo arquivo da fila
+                try:
+                    priority, timestamp, zip_file = _process_queue.get_nowait()
+                except:
+                    # Fila ficou vazia entre a verificação e o get
+                    continue
+                    
+                logger.info(f"[WORKER-{worker_id}] Iniciando processamento de {zip_file}")
+                
+                # Registrar início do processamento do arquivo
+                progress_tracker.start_file("socios", zip_file, worker_id)
+                
                 with _processing_lock:
-                    _active_processes.value -= 1
-                    logger.debug(f"[WORKER-{worker_id}] Processo finalizado. Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
+                    _active_processes.value += 1
+                    logger.debug(f"[WORKER-{worker_id}] Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
                     
-        except Exception as e:
-            logger.error(f"[WORKER-{worker_id}] Erro no worker da fila: {str(e)}")
-            time.sleep(5)
+                try:
+                    # Obter tamanho do arquivo para estatísticas
+                    zip_path = os.path.join(path_zip, zip_file)
+                    file_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
+                    
+                    # Processa o arquivo
+                    start_time = time.time()
+                    result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, create_private=create_private)
+                    elapsed_time = time.time() - start_time
+                    
+                    # Registrar conclusão do arquivo no rastreador de progresso
+                    progress_tracker.complete_file("socios", zip_file, result, worker_id, elapsed_time)
+                    
+                    # Registrar estatística de processamento
+                    global_stats.add_processing_stat(
+                        filename=zip_file,
+                        file_type="socios",
+                        size_bytes=file_size,
+                        start_time=start_time,
+                        end_time=time.time(),
+                        success=result,
+                        error=None if result else "Processamento falhou"
+                    )
+                    
+                    if result:
+                        logger.info(f"[WORKER-{worker_id}] ✓ {zip_file} processado com sucesso em {elapsed_time:.2f}s")
+                    else:
+                        logger.error(f"[WORKER-{worker_id}] ✗ Falha ao processar {zip_file} após {elapsed_time:.2f}s")
+                        
+                finally:
+                    with _processing_lock:
+                        _active_processes.value -= 1
+                        logger.debug(f"[WORKER-{worker_id}] Processo finalizado. Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
+                        
+            except Exception as e:
+                logger.error(f"[WORKER-{worker_id}] Erro no worker da fila: {str(e)}")
+                # Registrar estatística de erro
+                try:
+                    # Registrar falha no arquivo se estava sendo processado
+                    if 'zip_file' in locals():
+                        progress_tracker.complete_file("socios", zip_file, False, worker_id)
+                    
+                    global_stats.add_processing_stat(
+                        filename=zip_file if 'zip_file' in locals() else "unknown",
+                        file_type="socios",
+                        size_bytes=0,
+                        start_time=start_time if 'start_time' in locals() else time.time(),
+                        end_time=time.time(),
+                        success=False,
+                        error=str(e)
+                    )
+                except:
+                    pass  # Evitar erro duplo
+                time.sleep(5)
     
-    logger.info(f"[WORKER-{worker_id}] Worker finalizado")
+    finally:
+        # Registrar finalização do worker no rastreador de progresso
+        progress_tracker.stop_worker("socios", worker_id)
+        logger.info(f"[WORKER-{worker_id}] Worker finalizado")
 
-def start_queue_worker(path_zip: str, path_unzip: str, path_parquet: str):
-    """Inicia o worker da fila em uma thread separada."""
-    worker_thread = threading.Thread(target=process_queue_worker, args=(path_zip, path_unzip, path_parquet), daemon=True)
-    worker_thread.start()
-    return worker_thread
+def start_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False):
+    """Inicia múltiplos workers da fila em threads separadas."""
+    worker_threads = []
+    num_workers = _max_concurrent_processes.value
+    
+    logger.info(f"Iniciando {num_workers} workers para processamento paralelo...")
+    
+    for i in range(num_workers):
+        worker_thread = threading.Thread(
+            target=process_queue_worker, 
+            args=(path_zip, path_unzip, path_parquet, create_private), 
+            daemon=True,
+            name=f"Worker-{i+1}"
+        )
+        worker_thread.start()
+        worker_threads.append(worker_thread)
+        logger.debug(f"Worker {i+1}/{num_workers} iniciado")
+    
+    return worker_threads
 
 def process_socio(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
     """Processa os dados de sócios."""
@@ -696,7 +744,7 @@ def extract_large_zip(zip_path: str, extract_dir: str, chunk_size: int = 1000000
     except Exception as e:
         logger.error(f"Erro na extração do ZIP: {str(e)}")
 
-def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, remote_folder: str = None) -> bool:
+def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, remote_folder: str = None, create_private: bool = False) -> bool:
     """Processa um único arquivo ZIP usando chunks diretos."""
     pid = os.getpid()
     logger.info(f"[{pid}] Iniciando processamento para: {zip_file}")
@@ -830,7 +878,7 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
         logger.error(f"[{pid}] Erro processando {zip_file}: {str(e)}")
         return False
 
-def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
+def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
     """
     Processa todos os arquivos de sócio encontrados no diretório ZIP.
     """
@@ -843,19 +891,15 @@ def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bo
     if not os.path.exists(path_zip):
         logger.error(f"Diretório não encontrado: {path_zip}")
         return False
-
-    start_time = time.time()
     
-    logger.info('=' * 50)
-    logger.info(f'Iniciando processamento de SÓCIOS')
-    logger.info('=' * 50)
+    start_time = time.time()
     
     try:
         # Reset flag de parada
         _workers_should_stop.value = False
         
         zip_files = [f for f in os.listdir(path_zip)
-                     if f.startswith('Socio') and f.endswith('.zip')]
+                     if f.startswith('Soci') and f.endswith('.zip')]
         
         if not zip_files:
             logger.warning('Nenhum arquivo ZIP de Sócios encontrado.')
@@ -864,9 +908,12 @@ def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bo
         logger.info(f"Encontrados {len(zip_files)} arquivos ZIP de sócios para processar")
         logger.info(f"Máximo de processos concorrentes: {_max_concurrent_processes.value}")
         
+        # Registrar módulo no rastreador de progresso
+        progress_tracker.register_module("socios", len(zip_files), _max_concurrent_processes.value)
+        
         # Iniciar worker da fila
         logger.info("Iniciando worker de processamento...")
-        worker_thread = start_queue_worker(path_zip, path_unzip, path_parquet)
+        worker_threads = start_queue_worker(path_zip, path_unzip, path_parquet, create_private)
         
         # Adicionar arquivos à fila
         logger.info("Adicionando arquivos à fila de processamento...")
@@ -889,7 +936,9 @@ def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bo
                 processed_count = len(zip_files) - current_queue_size
                 progress_percent = (processed_count / len(zip_files)) * 100
                 
-                logger.info(f"Progresso: {processed_count}/{len(zip_files)} arquivos processados ({progress_percent:.1f}%) - "
+                # O rastreador de progresso já está logando as atualizações detalhadas
+                # Manter apenas log básico aqui para compatibilidade
+                logger.debug(f"Progresso básico: {processed_count}/{len(zip_files)} arquivos processados ({progress_percent:.1f}%) - "
                            f"Fila: {current_queue_size}, Ativos: {current_active}")
                 last_queue_size = current_queue_size
                 no_progress_count = 0
@@ -913,22 +962,22 @@ def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bo
         _workers_should_stop.value = True
         
         # Aguardar worker finalizar (máximo 30 segundos)
-        if worker_thread.is_alive():
-            logger.info("Aguardando worker finalizar...")
-            worker_thread.join(timeout=30)
+        for worker_thread in worker_threads:
             if worker_thread.is_alive():
-                logger.warning("Worker não finalizou no tempo esperado")
+                logger.info(f"Aguardando worker {worker_thread.name} finalizar...")
+                worker_thread.join(timeout=30)
+                if worker_thread.is_alive():
+                    logger.warning(f"Worker {worker_thread.name} não finalizou no tempo esperado")
             
         # Calcular estatísticas finais
         total_time = time.time() - start_time
         
-        logger.info("=" * 50)
-        logger.info("RESUMO DO PROCESSAMENTO DE SÓCIOS:")
-        logger.info("=" * 50)
-        logger.info(f"Arquivos processados: {len(zip_files)}")
+        # Usar o resumo final do rastreador de progresso
+        progress_tracker.print_final_summary("socios")
+        
+        # Log adicional com informações específicas
         logger.info(f"Tempo total de processamento: {format_elapsed_time(total_time)}")
         logger.info(f"Tempo médio por arquivo: {total_time/len(zip_files):.2f}s")
-        logger.info("=" * 50)
         
         return True
         
@@ -939,3 +988,5 @@ def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bo
     finally:
         # Garantir que workers parem
         _workers_should_stop.value = True
+        # Limpar dados de progresso do módulo
+        progress_tracker.cleanup("socios")

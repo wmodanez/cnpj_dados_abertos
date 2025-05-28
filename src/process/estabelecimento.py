@@ -15,22 +15,34 @@ from multiprocessing import Pool
 import datetime
 import psutil
 import threading
-from queue import Queue
+from queue import Queue, PriorityQueue
 import tempfile
+import logging.handlers
+from rich.progress import track
+from multiprocessing import Lock, Value
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..config import config
-from ..utils import file_delete, check_disk_space, verify_csv_integrity
+from ..utils import (
+    file_delete, check_disk_space, estimate_zip_extracted_size,
+    process_csv_files_parallel, verify_csv_integrity, 
+    create_parquet_filename
+)
 from ..utils.folders import get_output_path, ensure_correct_folder_structure
 from ..utils.time_utils import format_elapsed_time
+from ..utils.statistics import global_stats
+from ..utils.progress_tracker import progress_tracker
 import inspect
 
 logger = logging.getLogger(__name__)
 
 # Variáveis globais para controle de recursos
-_processing_lock = threading.Lock()
-_active_processes = threading.local()
+_processing_lock = Lock()
+_active_processes = Value('i', 0)
 # Usar pelo menos metade dos núcleos do processador
-_max_concurrent_processes = max(2, (os.cpu_count() or 4) // 2)
+_max_concurrent_processes = Value('i', max(2, (os.cpu_count() or 4) // 2))
+_process_queue = PriorityQueue()
+_workers_should_stop = Value('b', False)  # Flag para parar workers
 
 def log_system_resources_estabelecimento():
     """Log detalhado dos recursos do sistema para processamento de estabelecimentos."""
@@ -40,7 +52,7 @@ def log_system_resources_estabelecimento():
     memory_available_gb = memory_info.available / (1024**3)
     memory_percent = memory_info.percent
     
-    max_workers = _max_concurrent_processes
+    max_workers = _max_concurrent_processes.value
     
     logger.info("=" * 50)
     logger.info("🏪 MÓDULO ESTABELECIMENTO - CONFIGURAÇÃO DE RECURSOS")
@@ -987,173 +999,118 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
     return success
 
 
-def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
-    """Processa todos os arquivos de estabelecimentos de um diretório."""
+def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
+    """
+    Processa todos os arquivos de estabelecimento encontrados no diretório ZIP.
+    """
     # Log detalhado dos recursos do sistema
     log_system_resources_estabelecimento()
     
+    logger.info(f"Iniciando processamento de arquivos de estabelecimento em {path_zip}")
+    
+    # Verificar se o diretório existe
+    if not os.path.exists(path_zip):
+        logger.error(f"Diretório não encontrado: {path_zip}")
+        return False
+    
     start_time = time.time()
     
-    logger.info('=' * 50)
-    logger.info(f'Iniciando processamento de ESTABELECIMENTOS')
-    if uf_subset:
-        logger.info(f'Subset UF: {uf_subset}')
-    logger.info('=' * 50)
-    
-    # ===== CONFIGURAÇÕES GLOBAIS DE STREAMING E PERFORMANCE =====
-    # Configurar Polars para uso otimizado de memória e streaming
-    
-    # 1. STREAMING: Permite processar datasets maiores que a RAM
-    # Aumentar chunk size para melhor performance com arquivos grandes
-    pl.Config.set_streaming_chunk_size(1000000)  # 1M linhas por chunk
-    
-    # 2. PARALELISMO: Usar 80% dos CPUs para permitir uso em paralelo
-    available_cpus = os.cpu_count() or 4
-    max_threads = max(1, int(available_cpus * 0.80))
-    
-    # 3. MEMÓRIA: Configurações para otimizar uso de memória
-    pl.Config.set_tbl_rows(20)  # Limitar linhas mostradas em prints
-    pl.Config.set_tbl_cols(10)  # Limitar colunas mostradas em prints
-    
-    # 4. CACHE: Configurar cache para operações repetitivas
-    pl.Config.set_auto_structify(True)  # Otimizar estruturas automaticamente
-    
-    # 5. PERFORMANCE: Configurações adicionais para melhor performance
-    pl.Config.set_fmt_str_lengths(100)  # Limitar tamanho de strings em logs
-    pl.Config.set_fmt_float("full")     # Formato completo para números
-    
-    logger.info(f"Configurações de streaming aplicadas:")
-    logger.info(f"  - Chunk size: 1.000.000 linhas")
-    logger.info(f"  - CPUs disponíveis: {available_cpus} (usando {max_threads} threads)")
-    logger.info(f"  - Streaming habilitado para arquivos grandes")
-    logger.info(f"  - Processamento em chunks otimizado para RAM disponível")
-    
-    # ===== INÍCIO DO PROCESSAMENTO =====
-    
     try:
-        zip_files = [f for f in os.listdir(path_zip) 
-                     if f.startswith('Estabele') and f.endswith('.zip')]
+        # Reset flag de parada
+        _workers_should_stop.value = False
+        
+        zip_files = [f for f in os.listdir(path_zip)
+                     if f.startswith('Estabelecimentos') and f.endswith('.zip')]
         
         if not zip_files:
             logger.warning('Nenhum arquivo ZIP de Estabelecimentos encontrado.')
             return True
             
         logger.info(f"Encontrados {len(zip_files)} arquivos ZIP de estabelecimentos para processar")
+        logger.info(f"Máximo de processos concorrentes: {_max_concurrent_processes.value}")
         
-        # Extrair pasta remota do caminho zip (geralmente algo como 2025-05)
-        remote_folder = os.path.basename(os.path.normpath(path_zip))
-        # Verificar se o formato é AAAA-MM
-        if not re.match(r'^\d{4}-\d{2}$', remote_folder):
-            # Se não for uma pasta no formato esperado, tentar extrair do caminho
-            match = re.search(r'(20\d{2}-\d{2})', path_zip)
-            if match:
-                remote_folder = match.group(1)
-            else:
-                # Último recurso: usar um valor padrão
-                remote_folder = "dados"
+        # Registrar módulo no rastreador de progresso
+        progress_tracker.register_module("estabelecimentos", len(zip_files), _max_concurrent_processes.value)
         
-        logger.info(f"Pasta remota identificada: {remote_folder}")
+        # Iniciar worker da fila
+        logger.info("Iniciando worker de processamento...")
+        worker_threads = start_queue_worker(path_zip, path_unzip, path_parquet, create_private)
         
-        # Usar ensure_correct_folder_structure para criar o caminho correto
-        output_dir_main = ensure_correct_folder_structure(path_parquet, remote_folder, 'estabelecimentos')
-            
-        # LIMPEZA PRÉVIA do diretório de saída principal
-        try:
-            file_delete(output_dir_main)
-            logger.info(f'Diretório {output_dir_main} limpo antes do processamento.')
-        except Exception as e:
-            logger.warning(f'Não foi possível limpar diretório de saída {output_dir_main}: {str(e)}')
-        
-        # Limpar também o diretório de subset de UF se especificado
-        if uf_subset:
-            uf_subset = uf_subset.upper()  # Garante caixa alta
-            subset_table_name = f"estabelecimentos_{uf_subset.lower()}"
-            subset_dir = ensure_correct_folder_structure(path_parquet, remote_folder, subset_table_name)
-            try:
-                file_delete(subset_dir)
-                logger.info(f'Diretório de subset {subset_dir} limpo antes do processamento.')
-            except Exception as e:
-                logger.warning(f'Não foi possível limpar diretório de subset {subset_dir}: {str(e)}')
-        
-        # Criar diretórios se não existirem
-        os.makedirs(output_dir_main, exist_ok=True)
-        if uf_subset:
-            os.makedirs(subset_dir, exist_ok=True)
-        
-        # Forçar coleta de lixo antes de iniciar o processamento
-        gc.collect()
-        
-        # Processar arquivos sequencialmente para evitar problemas de memória
-        success = False
-        arquivos_com_falha = []
-        total_files = len(zip_files)
-        completed_files = 0
-        
-        logger.info(f"Processando {total_files} arquivos de estabelecimentos sequencialmente...")
-        
+        # Adicionar arquivos à fila
+        logger.info("Adicionando arquivos à fila de processamento...")
         for zip_file in zip_files:
-            completed_files += 1
-            elapsed_time = time.time() - start_time
+            add_to_process_queue(zip_file)
             
-            # Calcular métricas de progresso
-            progress_pct = (completed_files / total_files) * 100
-            avg_time_per_file = elapsed_time / completed_files if completed_files > 0 else 0
-            estimated_remaining = avg_time_per_file * (total_files - completed_files)
+        logger.info(f"Todos os {len(zip_files)} arquivos adicionados à fila")
+        
+        # Aguardar processamento da fila com relatórios de progresso
+        last_queue_size = len(zip_files)
+        processed_count = 0
+        no_progress_count = 0
+        
+        while not _process_queue.empty() or _active_processes.value > 0:
+            current_queue_size = _process_queue.qsize()
+            current_active = _active_processes.value
             
-            logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) Iniciando processamento de {zip_file}")
+            # Calcular progresso
+            if current_queue_size != last_queue_size:
+                processed_count = len(zip_files) - current_queue_size
+                progress_percent = (processed_count / len(zip_files)) * 100
+                
+                # O rastreador de progresso já está logando as atualizações detalhadas
+                # Manter apenas log básico aqui para compatibilidade
+                logger.debug(f"Progresso básico: {processed_count}/{len(zip_files)} arquivos processados ({progress_percent:.1f}%) - "
+                           f"Fila: {current_queue_size}, Ativos: {current_active}")
+                last_queue_size = current_queue_size
+                no_progress_count = 0
+            else:
+                no_progress_count += 1
+                
+                # Se não há progresso por muito tempo e não há processos ativos, sair
+                if no_progress_count > 12 and current_active == 0:  # 60 segundos sem progresso
+                    logger.warning("Sem progresso por 60 segundos e nenhum processo ativo. Finalizando...")
+                    break
             
             # Mostrar informações detalhadas em modo DEBUG
             if logger.isEnabledFor(logging.DEBUG):
                 resources = get_system_resources()
-                logger.debug(f"Status do sistema - CPU: {resources['cpu_percent']:.1f}%, "
-                           f"Memória: {resources['memory_percent']:.1f}%, "
-                           f"Disco: {resources['disk_percent']:.1f}%")
+                logger.debug(f"Status detalhado - Fila: {current_queue_size}, Ativos: {current_active}, "
+                           f"CPU: {resources['cpu_percent']:.1f}%, Memória: {resources['memory_percent']:.1f}%")
             
-            try:
-                file_start_time = time.time()
-                result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, remote_folder, uf_subset)
-                file_elapsed_time = time.time() - file_start_time
-                
-                if result:
-                    success = True
-                    logger.info(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) ✓ {zip_file} processado com sucesso em {file_elapsed_time:.2f}s. "
-                                f"Tempo médio: {avg_time_per_file:.1f}s/arquivo. "
-                                f"Tempo estimado restante: {estimated_remaining:.1f}s")
-                else:
-                    arquivos_com_falha.append(zip_file)
-                    logger.warning(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) ✗ Falha no processamento do arquivo {zip_file} após {file_elapsed_time:.2f}s")
-            except Exception as e:
-                arquivos_com_falha.append(zip_file)
-                logger.error(f"[{completed_files}/{total_files}] ({progress_pct:.1f}%) ✗ Exceção no processamento do arquivo {zip_file}: {str(e)}")
-                logger.error(traceback.format_exc())
+            time.sleep(5)
+        
+        # Sinalizar workers para parar
+        _workers_should_stop.value = True
+        
+        # Aguardar workers finalizarem (máximo 30 segundos)
+        for worker_thread in worker_threads:
+            if worker_thread.is_alive():
+                logger.info(f"Aguardando worker {worker_thread.name} finalizar...")
+                worker_thread.join(timeout=30)
+                if worker_thread.is_alive():
+                    logger.warning(f"Worker {worker_thread.name} não finalizou no tempo esperado")
         
         # Calcular estatísticas finais
         total_time = time.time() - start_time
         
-        if not success:
-            logger.warning('Nenhum arquivo ZIP de Estabelecimentos foi processado com sucesso.')
-            
-        if arquivos_com_falha:
-            logger.warning(f'Os seguintes arquivos falharam no processamento: {", ".join(arquivos_com_falha)}')
+        # Usar o resumo final do rastreador de progresso
+        progress_tracker.print_final_summary("estabelecimentos")
         
-        # Logar resumo completo
-        logger.info("=" * 50)
-        logger.info("RESUMO DO PROCESSAMENTO DE ESTABELECIMENTOS:")
-        logger.info("=" * 50)
-        logger.info(f"Arquivos processados com sucesso: {completed_files - len(arquivos_com_falha)}/{total_files}")
-        logger.info(f"Arquivos com falha: {len(arquivos_com_falha)}/{total_files}")
+        # Log adicional com informações específicas
         logger.info(f"Tempo total de processamento: {format_elapsed_time(total_time)}")
-        logger.info(f"Tempo médio por arquivo: {total_time/completed_files if completed_files > 0 else 0:.2f}s")
-        if uf_subset:
-            logger.info(f"Subset UF processado: {uf_subset}")
-        logger.info("=" * 50)
+        logger.info(f"Tempo médio por arquivo: {total_time/len(zip_files):.2f}s")
         
-        # Verificar se pelo menos um arquivo foi processado com sucesso
-        return success
+        return True
+        
     except Exception as e:
         logger.error(f'Erro no processamento principal de Estabelecimentos: {str(e)}')
         traceback.print_exc()
         return False
+    finally:
+        # Garantir que workers parem
+        _workers_should_stop.value = True
+        # Limpar dados de progresso do módulo
+        progress_tracker.cleanup("estabelecimentos")
 
 def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix: str, start_chunk_counter: int = 0, uf_subset: str = None) -> int:
     """
@@ -1286,3 +1243,175 @@ def process_data_file_in_chunks(data_file_path: str, output_dir: str, zip_prefix
     except Exception as e:
         logger.error(f"Erro ao processar arquivo {data_file_path} em chunks: {str(e)}")
         return 0
+
+def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False):
+    """Worker que processa a fila de arquivos."""
+    worker_id = threading.current_thread().name
+    logger.info(f"[WORKER-{worker_id}] Worker iniciado para processamento de estabelecimentos")
+    
+    # Registrar início do worker no rastreador de progresso
+    progress_tracker.start_worker("estabelecimentos", worker_id)
+    
+    consecutive_empty_checks = 0
+    max_empty_checks = 6  # Máximo de 6 verificações vazias (30 segundos) antes de parar
+    
+    try:
+        while not _workers_should_stop.value:
+            try:
+                if _process_queue.empty():
+                    consecutive_empty_checks += 1
+                    if consecutive_empty_checks >= max_empty_checks:
+                        logger.info(f"[WORKER-{worker_id}] Fila vazia por {max_empty_checks * 5}s. Finalizando worker.")
+                        break
+                    
+                    logger.debug(f"[WORKER-{worker_id}] Fila vazia, aguardando 5 segundos... ({consecutive_empty_checks}/{max_empty_checks})")
+                    time.sleep(5)
+                    continue
+                
+                # Reset contador se encontrou trabalho
+                consecutive_empty_checks = 0
+                    
+                if not can_start_processing():
+                    resources = get_system_resources()
+                    logger.debug(f"[WORKER-{worker_id}] Recursos insuficientes - CPU: {resources['cpu_percent']:.1f}%, "
+                               f"Memória: {resources['memory_percent']:.1f}%, "
+                               f"Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
+                    time.sleep(10)  # Espera 10 segundos se não puder processar
+                    continue
+                    
+                # Pega o próximo arquivo da fila
+                try:
+                    priority, timestamp, zip_file = _process_queue.get_nowait()
+                except:
+                    # Fila ficou vazia entre a verificação e o get
+                    continue
+                    
+                logger.info(f"[WORKER-{worker_id}] Iniciando processamento de {zip_file}")
+                
+                # Registrar início do processamento do arquivo
+                progress_tracker.start_file("estabelecimentos", zip_file, worker_id)
+                
+                with _processing_lock:
+                    _active_processes.value += 1
+                    logger.debug(f"[WORKER-{worker_id}] Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
+                    
+                try:
+                    # Obter tamanho do arquivo para estatísticas
+                    zip_path = os.path.join(path_zip, zip_file)
+                    file_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
+                    
+                    # Processa o arquivo
+                    start_time = time.time()
+                    result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, create_private=create_private)
+                    elapsed_time = time.time() - start_time
+                    
+                    # Registrar conclusão do arquivo no rastreador de progresso
+                    progress_tracker.complete_file("estabelecimentos", zip_file, result, worker_id, elapsed_time)
+                    
+                    # Registrar estatística de processamento
+                    global_stats.add_processing_stat(
+                        filename=zip_file,
+                        file_type="estabelecimentos",
+                        size_bytes=file_size,
+                        start_time=start_time,
+                        end_time=time.time(),
+                        success=result,
+                        error=None if result else "Processamento falhou"
+                    )
+                    
+                    if result:
+                        logger.info(f"[WORKER-{worker_id}] ✓ {zip_file} processado com sucesso em {elapsed_time:.2f}s")
+                    else:
+                        logger.error(f"[WORKER-{worker_id}] ✗ Falha ao processar {zip_file} após {elapsed_time:.2f}s")
+                        
+                finally:
+                    with _processing_lock:
+                        _active_processes.value -= 1
+                        logger.debug(f"[WORKER-{worker_id}] Processo finalizado. Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
+                        
+            except Exception as e:
+                logger.error(f"[WORKER-{worker_id}] Erro no worker da fila: {str(e)}")
+                # Registrar estatística de erro
+                try:
+                    # Registrar falha no arquivo se estava sendo processado
+                    if 'zip_file' in locals():
+                        progress_tracker.complete_file("estabelecimentos", zip_file, False, worker_id)
+                    
+                    global_stats.add_processing_stat(
+                        filename=zip_file if 'zip_file' in locals() else "unknown",
+                        file_type="estabelecimentos",
+                        size_bytes=0,
+                        start_time=start_time if 'start_time' in locals() else time.time(),
+                        end_time=time.time(),
+                        success=False,
+                        error=str(e)
+                    )
+                except:
+                    pass  # Evitar erro duplo
+                time.sleep(5)
+    
+    finally:
+        # Registrar finalização do worker no rastreador de progresso
+        progress_tracker.stop_worker("estabelecimentos", worker_id)
+        logger.info(f"[WORKER-{worker_id}] Worker finalizado")
+
+def add_to_process_queue(zip_file: str, priority: int = 1):
+    """Adiciona um arquivo à fila de processamento com prioridade."""
+    timestamp = time.time()
+    _process_queue.put((priority, timestamp, zip_file))
+    logger.info(f"Arquivo {zip_file} adicionado à fila de processamento")
+
+def start_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False):
+    """Inicia múltiplos workers da fila em threads separadas."""
+    worker_threads = []
+    num_workers = _max_concurrent_processes.value
+    
+    logger.info(f"Iniciando {num_workers} workers para processamento paralelo...")
+    
+    for i in range(num_workers):
+        worker_thread = threading.Thread(
+            target=process_queue_worker, 
+            args=(path_zip, path_unzip, path_parquet, create_private), 
+            daemon=True,
+            name=f"Worker-{i+1}"
+        )
+        worker_thread.start()
+        worker_threads.append(worker_thread)
+        logger.debug(f"Worker {i+1}/{num_workers} iniciado")
+    
+    return worker_threads
+
+def can_start_processing() -> bool:
+    """Verifica se é possível iniciar um novo processamento baseado nos recursos."""
+    try:
+        # Verificar se já atingiu o limite de processos
+        if _active_processes.value >= _max_concurrent_processes.value:
+            return False
+            
+        # Verificar recursos do sistema
+        resources = get_system_resources()
+        
+        # Limites mais conservadores para estabelecimentos (arquivos grandes)
+        if resources['cpu_percent'] > 85:  # CPU muito alta
+            return False
+        if resources['memory_percent'] > 80:  # Memória muito alta
+            return False
+            
+        return True
+    except Exception as e:
+        logger.warning(f"Erro ao verificar recursos: {e}")
+        return _active_processes.value < _max_concurrent_processes.value
+
+def get_system_resources() -> dict:
+    """Obtém informações atuais dos recursos do sistema."""
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        return {
+            'cpu_percent': cpu_percent,
+            'memory_percent': memory.percent,
+            'memory_available_gb': memory.available / (1024**3)
+        }
+    except Exception as e:
+        logger.warning(f"Erro ao obter recursos do sistema: {e}")
+        return {'cpu_percent': 0, 'memory_percent': 0, 'memory_available_gb': 0}

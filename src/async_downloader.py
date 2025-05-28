@@ -28,6 +28,7 @@ import psutil  # Adicionar import do psutil
 # Importações locais do projeto
 from src.config import config
 from src.utils.statistics import global_stats
+from src.utils.progress_tracker import progress_tracker
 from .process.empresa import process_single_zip as process_empresa_zip
 from .process.estabelecimento import process_single_zip as process_estabelecimento_zip
 from .process.simples import process_single_zip as process_simples_zip
@@ -1253,6 +1254,9 @@ async def download_multiple_files(
         
         logger.info(f"🧮 Processamento automático: {max_concurrent_processing} workers (CPU: {cpu_count}, RAM: {memory_gb:.1f}GB)")
     
+    # Registrar módulo de downloads no rastreador de progresso
+    progress_tracker.register_module("downloads", len(urls), max_concurrent_downloads)
+    
     # Exibir análise detalhada dos recursos do sistema
     logger.info("🔍 Executando análise detalhada dos recursos do sistema...")
     optimal_downloads, optimal_processing = get_optimal_concurrency()
@@ -1408,6 +1412,9 @@ async def download_multiple_files(
                 filename = os.path.basename(file_path)
                 logger.debug(f"Processador {processor_id} aguardando arquivo...")
                 
+                # Registrar início do processamento no rastreador de progresso
+                progress_tracker.start_file("downloads", filename, f"processor-{processor_name}")
+                
                 try:
                     # Usar o semáforo adaptativo para limitar processamento paralelo
                     logger.debug(f"Processador {processor_id} aguardando semáforo para {filename}")
@@ -1416,26 +1423,25 @@ async def download_multiple_files(
                         logger.info(f"Processador {processor_id} obteve semáforo para {filename}")
                         
                         # Usar o novo sistema de processamento streaming
+                        start_time = time.time()
                         result, error = await streaming_processor.process_with_streaming(
                             file_path, filename, path_unzip, path_parquet
                         )
+                        elapsed_time = time.time() - start_time
                         
                         if error is None:
                             processed_files.append(result)
                             consecutive_failures = 0  # Reset contador de falhas consecutivas
-                            print(f"✅ {processor_name}: {filename} processado com sucesso via streaming!")
-                            logger.info(f"Processador {processor_id} concluiu processamento streaming de {filename}")
+                            print(f"✅ {processor_name}: Processamento de {filename} concluído em {elapsed_time:.2f}s")
+                            logger.info(f"Processador {processor_id} processou {filename} com sucesso em {elapsed_time:.2f}s")
+                            progress_tracker.complete_file("downloads", filename, True, f"processor-{processor_name}", elapsed_time)
                         else:
-                            failed_processing.append((result, error))
+                            failed_processing.append((filename, error))
                             consecutive_failures += 1
                             total_failures += 1
-                            print(f"❌ {processor_name}: Falha no processamento streaming de {filename} - {error}")
-                            logger.warning(f"Processador {processor_id}: Falha no processamento streaming de {filename}: {error}")
-                            
-                            # Log de alerta se muitas falhas
-                            if consecutive_failures >= 3:
-                                logger.warning(f"⚠️ {consecutive_failures} falhas consecutivas detectadas. Sistema pode estar instável.")
-                                
+                            print(f"❌ {processor_name}: Falha no processamento de {filename}: {error}")
+                            logger.error(f"Processador {processor_id} falhou ao processar {filename}: {error}")
+                            progress_tracker.complete_file("downloads", filename, False, f"processor-{processor_name}", elapsed_time)
                 except Exception as e:
                     consecutive_failures += 1
                     total_failures += 1
@@ -1459,96 +1465,72 @@ async def download_multiple_files(
         nonlocal consecutive_failures, total_failures
         
         filename = os.path.basename(url)
+        destination_path = os.path.join(path_zip, filename)
+        
+        # Registrar início do download no rastreador de progresso
+        progress_tracker.start_file("downloads", filename, "downloader")
         
         try:
             async with download_semaphore:
-                # Verificar se devemos parar por falhas críticas
-                if consecutive_failures >= max_consecutive_failures:
-                    logger.error(f"🛑 Parando download de {filename} devido a falhas críticas")
-                    return
-                
-                print(f"⬇️  Iniciando download otimizado: {filename}")
-                
-                # Criar caminho de destino
-                destination_path = os.path.join(path_zip, filename)
-                
-                # Configurar sessão HTTP robusta
-                connector = aiohttp.TCPConnector(
-                    limit=100,
-                    limit_per_host=10,
-                    ttl_dns_cache=300,
-                    use_dns_cache=True,
-                    keepalive_timeout=60,
-                    enable_cleanup_closed=True
-                )
-                
-                # Aplicar multiplicador de timeout baseado na qualidade da rede
-                base_timeout = 1200  # 20 minutos base
-                adjusted_timeout = int(base_timeout * timeout_multiplier)
-                
-                timeout = aiohttp.ClientTimeout(
-                    total=adjusted_timeout,  # Timeout total ajustado
-                    connect=min(60, int(60 * timeout_multiplier)),  # Timeout de conexão ajustado
-                    sock_read=int(900 * timeout_multiplier)  # Timeout de leitura ajustado
-                )
-                
+                # Usar sessão HTTP compartilhada
                 async with aiohttp.ClientSession(
-                    connector=connector,
-                    timeout=timeout,
-                    headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': '*/*',
-                        'Accept-Encoding': 'gzip, deflate',
-                        'Connection': 'keep-alive'
-                    }
+                    timeout=aiohttp.ClientTimeout(
+                        total=3600 * timeout_multiplier, 
+                        connect=30 * timeout_multiplier
+                    ),
+                    connector=aiohttp.TCPConnector(limit=100, limit_per_host=20)
                 ) as session:
-                    # Usar Progress simples sem display para evitar conflitos
-                    progress = Progress(console=None, disable=True)  # Progress desabilitado
-                    task_id = progress.add_task(f"Downloading {filename}", total=100)
                     
-                    # Chamar download_file com todos os argumentos necessários
-                    file_path, error, skip_reason = await download_file(
-                        session, url, destination_path, download_semaphore, progress, task_id, force_download_param
+                    start_time = time.time()
+                    result_filename, error, status = await download_file(
+                        session, url, destination_path, download_semaphore, 
+                        progress, task_id, force_download_param
                     )
-                
-                if error is None:
-                    downloaded_files.append(file_path)
-                    consecutive_failures = 0  # Reset contador de falhas consecutivas
-                    # Adicionar à fila de processamento imediatamente
-                    await processing_queue.put(file_path)
-                    print(f"✅ Download concluído e enfileirado: {filename}")
-                    logger.info(f"Arquivo {filename} baixado e adicionado à fila de processamento")
-                else:
-                    failed_downloads.append((filename, error))
-                    consecutive_failures += 1
-                    total_failures += 1
-                    print(f"❌ Falha no download: {filename} - {error}")
-                    logger.error(f"Falha no download de {filename}: {error}")
+                    elapsed_time = time.time() - start_time
                     
-                    # Log de alerta se muitas falhas
-                    if consecutive_failures >= 3:
-                        logger.warning(f"⚠️ {consecutive_failures} falhas consecutivas de download detectadas.")
+                    if error:
+                        consecutive_failures += 1
+                        total_failures += 1
+                        logger.error(f"❌ Erro no download de {filename}: {error}")
+                        progress_tracker.complete_file("downloads", filename, False, "downloader", elapsed_time)
+                        failed_downloads.append((filename, error))
                         
-        except aiohttp.ClientError as e:
-            failed_downloads.append((filename, e))
-            consecutive_failures += 1
-            total_failures += 1
-            print(f"💥 Erro de rede no download: {filename} - {e}")
-            logger.error(f"Erro de rede no download de {filename}: {e}")
-            
-        except asyncio.TimeoutError as e:
-            failed_downloads.append((filename, e))
-            consecutive_failures += 1
-            total_failures += 1
-            print(f"⏰ Timeout no download: {filename} - {e}")
-            logger.error(f"Timeout no download de {filename}: {e}")
-            
+                        # Verificar se devemos parar por falhas críticas
+                        if consecutive_failures >= max_consecutive_failures:
+                            logger.error(f"🛑 Parando downloads devido a {consecutive_failures} falhas consecutivas")
+                            return
+                        
+                        failure_rate = total_failures / max(1, len(downloaded_files) + total_failures)
+                        if failure_rate > max_failure_rate and len(downloaded_files) > 5:
+                            logger.error(f"🛑 Parando downloads devido a alta taxa de falhas ({failure_rate*100:.1f}%)")
+                            return
+                    else:
+                        consecutive_failures = 0  # Reset contador de falhas consecutivas
+                        downloaded_files.append(result_filename)
+                        logger.info(f"✅ Download de {filename} concluído em {elapsed_time:.2f}s")
+                        progress_tracker.complete_file("downloads", filename, True, "downloader", elapsed_time)
+                        
+                        # Adicionar à fila de processamento
+                        await processing_queue.put(destination_path)
+                        
+                        # Registrar estatística de download
+                        file_size = os.path.getsize(destination_path) if os.path.exists(destination_path) else 0
+                        global_stats.add_download_stat(
+                            filename=filename,
+                            url=url,
+                            size_bytes=file_size,
+                            start_time=start_time,
+                            end_time=time.time(),
+                            success=(error is None),
+                            error=str(error) if error else None
+                        )
+                        
         except Exception as e:
-            failed_downloads.append((filename, e))
             consecutive_failures += 1
             total_failures += 1
-            print(f"💥 Erro crítico no download: {filename} - {e}")
-            logger.error(f"Erro crítico no download de {filename}: {e}")
+            logger.error(f"❌ Erro inesperado no download de {filename}: {e}")
+            progress_tracker.complete_file("downloads", filename, False, "downloader")
+            failed_downloads.append((filename, e))
 
     try:
         # Inicializar processador streaming
@@ -1571,6 +1553,7 @@ async def download_multiple_files(
         # Aguardar todos os downloads terminarem
         await asyncio.gather(*download_tasks, return_exceptions=True)
         print("📥 Todos os downloads finalizados")
+        logger.info("📥 Todos os downloads finalizados")
         
         # Verificar se devemos continuar processamento
         if consecutive_failures >= max_consecutive_failures:
@@ -1583,6 +1566,7 @@ async def download_multiple_files(
             # Aguardar a fila de processamento esvaziar
             await processing_queue.join()
             print("🔄 Todos os processamentos finalizados")
+            logger.info("🔄 Todos os processamentos finalizados")
         
         # Sinalizar para os workers de processamento pararem
         for _ in processing_tasks:
@@ -1591,6 +1575,7 @@ async def download_multiple_files(
         # Aguardar workers de processamento terminarem
         await asyncio.gather(*processing_tasks, return_exceptions=True)
         print("🏁 Todos os workers finalizados")
+        logger.info("🏁 Todos os workers finalizados")
         
         # === FASE DE RECUPERAÇÃO AUTOMÁTICA ===
         if failed_downloads and len(failed_downloads) <= 10:  # Só tentar recuperar se não há muitas falhas
@@ -1668,420 +1653,47 @@ async def download_multiple_files(
         
         # Relatório final otimizado
         print(f"\n📊 === RELATÓRIO FINAL DO PIPELINE OTIMIZADO ===")
+        logger.info("📊 === RELATÓRIO FINAL DO PIPELINE OTIMIZADO ===")
         print(f"⏱️  Tempo total: {format_elapsed_time(total_time)}")
+        logger.info(f"⏱️  Tempo total: {format_elapsed_time(total_time)}")
         print(f"📥 Downloads: {len(downloaded_files)} sucessos, {len(failed_downloads)} falhas")
+        logger.info(f"📥 Downloads: {len(downloaded_files)} sucessos, {len(failed_downloads)} falhas")
         print(f"🔄 Processamentos: {len(processed_files)} sucessos, {len(failed_processing)} falhas")
+        logger.info(f"🔄 Processamentos: {len(processed_files)} sucessos, {len(failed_processing)} falhas")
         
         # Status de falhas críticas
         if consecutive_failures >= max_consecutive_failures:
             print(f"🛑 Pipeline interrompido por {consecutive_failures} falhas consecutivas")
+            logger.warning(f"🛑 Pipeline interrompido por {consecutive_failures} falhas consecutivas")
         elif total_failures / max(1, len(sorted_urls)) > max_failure_rate:
             print(f"🛑 Pipeline interrompido por alta taxa de falhas ({total_failures}/{len(sorted_urls)})")
+            logger.warning(f"🛑 Pipeline interrompido por alta taxa de falhas ({total_failures}/{len(sorted_urls)})")
         else:
             print(f"✅ Pipeline concluído sem falhas críticas")
+            logger.info(f"✅ Pipeline concluído sem falhas críticas")
         
         if isinstance(resource_stats, dict):
             print(f"💻 CPU médio: {resource_stats['avg_cpu']:.1f}% (máx: {resource_stats['peak_cpu']:.1f}%)")
+            logger.info(f"💻 CPU médio: {resource_stats['avg_cpu']:.1f}% (máx: {resource_stats['peak_cpu']:.1f}%)")
             print(f"🧠 Memória média: {resource_stats['avg_memory']:.1f}% (máx: {resource_stats['peak_memory']:.1f}%)")
+            logger.info(f"🧠 Memória média: {resource_stats['avg_memory']:.1f}% (máx: {resource_stats['peak_memory']:.1f}%)")
         
         # Estatísticas globais
         stats_summary = global_stats.get_summary()
         if stats_summary['total_files'] > 0:
             print(f"📈 Throughput: {stats_summary['total_files'] / total_time:.2f} arquivos/segundo")
+            logger.info(f"📈 Throughput: {stats_summary['total_files'] / total_time:.2f} arquivos/segundo")
             print(f"💾 Dados processados: {stats_summary['total_size_mb']:.1f} MB")
+            logger.info(f"💾 Dados processados: {stats_summary['total_size_mb']:.1f} MB")
         
         print("=" * 50)
+        logger.info("=" * 50)
+    
+    # Usar o resumo final do rastreador de progresso
+    progress_tracker.print_final_summary("downloads")
+    
+    # Limpar dados de progresso do módulo
+    progress_tracker.cleanup("downloads")
     
     return processed_files, failed_downloads + failed_processing
 
-
-def get_remote_folders(base_url: str) -> List[str]:
-    """Busca todas as pastas remotas disponíveis no formato AAAA-MM.
-    
-    Args:
-        base_url: URL base para buscar diretórios
-        
-    Returns:
-        List[str]: Lista de nomes de pastas no formato AAAA-MM
-    """
-    year_month_folders = []
-    
-    # Buscar e encontrar links de diretórios na URL base
-    logger.info(f"Buscando diretórios em: {base_url}")
-    base_soup = _fetch_and_parse(base_url)
-    if not base_soup:
-        return []
-    
-    directory_links = _find_links(base_soup, base_url, ends_with=None)
-    
-    # Filtrar diretórios AAAA-MM
-    for dir_url in directory_links:
-        folder_name = dir_url.strip('/').split('/')[-1]
-        if re.fullmatch(r'(\d{4})-(\d{2})', folder_name):
-            year_month_folders.append(folder_name)
-            logger.debug(f"Encontrado diretório AAAA-MM: {folder_name}")
-    
-    # Ordenar pastas por data (mais recente primeiro)
-    year_month_folders.sort(reverse=True)
-    
-    logger.info(f"Total de {len(year_month_folders)} pastas remotas encontradas")
-    return year_month_folders
-
-
-async def get_latest_remote_folder(base_url: str) -> str:
-    """Busca a pasta remota mais recente no formato AAAA-MM.
-    
-    Args:
-        base_url: URL base para buscar diretórios
-        
-    Returns:
-        str: Nome da pasta mais recente no formato AAAA-MM
-    """
-    folders = get_remote_folders(base_url)
-    if not folders:
-        logger.error("Nenhuma pasta remota encontrada")
-        return ""
-    
-    latest_folder = folders[0]
-    return latest_folder
-
-
-async def get_file_sizes_and_sort(urls: List[str]) -> List[Tuple[str, int]]:
-    """
-    Obtém os tamanhos dos arquivos remotos e retorna uma lista ordenada por tamanho (menor primeiro).
-    
-    Args:
-        urls: Lista de URLs para verificar
-        
-    Returns:
-        Lista de tuplas (url, tamanho) ordenada por tamanho crescente
-    """
-    logger.info(f"Obtendo tamanhos de {len(urls)} arquivos para ordenação...")
-    
-    async with aiohttp.ClientSession() as session:
-        tasks = []
-        for url in urls:
-            task = asyncio.create_task(get_remote_file_metadata(session, url))
-            tasks.append((url, task))
-        
-        url_sizes = []
-        for url, task in tasks:
-            try:
-                size, _ = await task
-                if size is not None:
-                    url_sizes.append((url, size))
-                    filename = os.path.basename(url)
-                    size_mb = size / (1024 * 1024)
-                    logger.debug(f"Arquivo {filename}: {size_mb:.1f}MB")
-                else:
-                    logger.warning(f"Não foi possível obter tamanho de {os.path.basename(url)}")
-                    # Adiciona com tamanho 0 para não perder o arquivo
-                    url_sizes.append((url, 0))
-            except Exception as e:
-                logger.error(f"Erro ao obter tamanho de {os.path.basename(url)}: {e}")
-                # Adiciona com tamanho 0 para não perder o arquivo
-                url_sizes.append((url, 0))
-    
-    # Ordenar por tamanho (menor primeiro)
-    url_sizes.sort(key=lambda x: x[1])
-    
-    # Log da ordenação
-    logger.info("Arquivos ordenados por tamanho (menor → maior):")
-    for i, (url, size) in enumerate(url_sizes[:10]):  # Mostrar apenas os 10 primeiros
-        filename = os.path.basename(url)
-        size_mb = size / (1024 * 1024)
-        logger.info(f"  {i+1:2d}. {filename}: {size_mb:.1f}MB")
-    
-    if len(url_sizes) > 10:
-        logger.info(f"  ... e mais {len(url_sizes) - 10} arquivos")
-    
-    return url_sizes
-
-
-async def _attempt_recovery_downloads(failed_downloads: List[Tuple[str, Exception]], 
-                                    original_urls: List[str],
-                                    path_zip: str, 
-                                    max_concurrent_downloads: int,
-                                    force_download: bool = True) -> Tuple[List[str], List[Tuple[str, Exception]]]:
-    """
-    Tenta recuperar downloads que falharam usando estratégias específicas para cada tipo de erro.
-    
-    Args:
-        failed_downloads: Lista de downloads que falharam (filename, error)
-        original_urls: Lista das URLs originais para reconstruir URLs dos arquivos que falharam
-        path_zip: Diretório onde salvar os arquivos
-        max_concurrent_downloads: Número máximo de downloads simultâneos
-        force_download: Forçar download mesmo se arquivo existir
-        
-    Returns:
-        Tupla com (arquivos_recuperados, falhas_restantes)
-    """
-    if not failed_downloads:
-        return [], []
-    
-    logger.info(f"🔄 Iniciando recuperação automática de {len(failed_downloads)} downloads falhados...")
-    print(f"🔄 Tentando recuperar {len(failed_downloads)} downloads que falharam...")
-    
-    recovered_files = []
-    remaining_failures = []
-    
-    # Criar mapeamento de filename para URL
-    url_map = {}
-    for url in original_urls:
-        filename = os.path.basename(url)
-        url_map[filename] = url
-    
-    # Categorizar falhas por tipo
-    timeout_failures = []
-    network_failures = []
-    disk_failures = []
-    other_failures = []
-    
-    for filename, error in failed_downloads:
-        error_str = str(error).lower()
-        if 'timeout' in error_str or 'timed out' in error_str:
-            timeout_failures.append((filename, error))
-        elif any(keyword in error_str for keyword in ['connection', 'network', 'dns', 'resolve']):
-            network_failures.append((filename, error))
-        elif any(keyword in error_str for keyword in ['espaço', 'disk', 'space', 'i/o']):
-            disk_failures.append((filename, error))
-        else:
-            other_failures.append((filename, error))
-    
-    logger.info(f"Categorização de falhas: {len(timeout_failures)} timeouts, {len(network_failures)} rede, {len(disk_failures)} disco, {len(other_failures)} outros")
-    
-    # Estratégia 0: Verificar problemas de espaço em disco primeiro
-    if disk_failures:
-        logger.warning(f"💾 Detectadas {len(disk_failures)} falhas de disco. Verificando espaço disponível...")
-        try:
-            free_space = psutil.disk_usage(path_zip).free
-            free_space_gb = free_space / (1024**3)
-            
-            if free_space_gb < 5:  # Menos de 5GB
-                logger.error(f"Espaço em disco criticamente baixo: {free_space_gb:.1f}GB. Não é possível recuperar falhas de disco.")
-                print(f"❌ Espaço em disco insuficiente: {free_space_gb:.1f}GB")
-                # Adicionar todas as falhas de disco às falhas restantes
-                remaining_failures.extend(disk_failures)
-                disk_failures = []  # Limpar para não tentar recuperar
-            else:
-                logger.info(f"Espaço em disco disponível: {free_space_gb:.1f}GB. Tentando recuperar falhas de disco...")
-                print(f"💾 Espaço disponível: {free_space_gb:.1f}GB - tentando recuperar...")
-        except Exception as e:
-            logger.error(f"Erro ao verificar espaço em disco: {e}")
-            remaining_failures.extend(disk_failures)
-            disk_failures = []
-    
-    # Estratégia 1: Recuperar falhas de timeout com configurações mais conservadoras
-    if timeout_failures:
-        logger.info(f"🕐 Recuperando {len(timeout_failures)} falhas de timeout com configurações conservadoras...")
-        print(f"🕐 Recuperando falhas de timeout...")
-        
-        for filename, original_error in timeout_failures:
-            if filename not in url_map:
-                logger.warning(f"URL não encontrada para {filename}, pulando recuperação")
-                remaining_failures.append((filename, original_error))
-                continue
-                
-            try:
-                url = url_map[filename]
-                destination_path = os.path.join(path_zip, filename)
-                
-                # Configuração ultra-conservadora para timeouts
-                connector = aiohttp.TCPConnector(
-                    limit=5,
-                    limit_per_host=1,
-                    ttl_dns_cache=600,
-                    use_dns_cache=True,
-                    keepalive_timeout=180,
-                    enable_cleanup_closed=True
-                )
-                
-                timeout = aiohttp.ClientTimeout(
-                    total=3600,  # 1 hora total
-                    connect=180,  # 3 minutos para conectar
-                    sock_read=2400  # 40 minutos para leitura
-                )
-                
-                async with aiohttp.ClientSession(
-                    connector=connector,
-                    timeout=timeout,
-                    headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': '*/*',
-                        'Connection': 'keep-alive'
-                    }
-                ) as session:
-                    
-                    semaphore = asyncio.Semaphore(1)  # Um por vez para timeouts
-                    progress = Progress(console=None, disable=True)
-                    task_id = progress.add_task(f"Recovering {filename}", total=100)
-                    
-                    file_path, error, skip_reason = await download_file(
-                        session, url, destination_path, semaphore, progress, task_id, force_download
-                    )
-                    
-                    if error is None:
-                        recovered_files.append(file_path)
-                        logger.info(f"✅ Recuperado com sucesso: {filename}")
-                        print(f"✅ Recuperado: {filename}")
-                    else:
-                        remaining_failures.append((filename, error))
-                        logger.warning(f"❌ Falha na recuperação de timeout: {filename} - {error}")
-                        
-            except Exception as e:
-                remaining_failures.append((filename, e))
-                logger.error(f"❌ Erro na recuperação de timeout: {filename} - {e}")
-    
-    # Estratégia 2: Aguardar e tentar falhas de rede
-    if network_failures:
-        logger.info(f"🌐 Aguardando 30s antes de tentar recuperar {len(network_failures)} falhas de rede...")
-        print(f"🌐 Aguardando para recuperar falhas de rede...")
-        await asyncio.sleep(30)  # Aguardar para problemas de rede se resolverem
-        
-        for filename, original_error in network_failures:
-            if filename not in url_map:
-                logger.warning(f"URL não encontrada para {filename}, pulando recuperação")
-                remaining_failures.append((filename, original_error))
-                continue
-                
-            try:
-                # Verificar conectividade antes de tentar
-                try:
-                    from .utils.network import check_internet_connection
-                    is_connected, _ = check_internet_connection()
-                    if not is_connected:
-                        logger.warning(f"Sem conectividade para recuperar {filename}")
-                        remaining_failures.append((filename, Exception("Sem conectividade de rede")))
-                        continue
-                except:
-                    pass
-                
-                url = url_map[filename]
-                destination_path = os.path.join(path_zip, filename)
-                
-                # Configuração robusta para problemas de rede
-                connector = aiohttp.TCPConnector(
-                    limit=20,
-                    limit_per_host=3,
-                    ttl_dns_cache=300,
-                    use_dns_cache=True,
-                    keepalive_timeout=90,
-                    enable_cleanup_closed=True
-                )
-                
-                timeout = aiohttp.ClientTimeout(
-                    total=2400,  # 40 minutos
-                    connect=120,  # 2 minutos para conectar
-                    sock_read=1800  # 30 minutos para leitura
-                )
-                
-                async with aiohttp.ClientSession(
-                    connector=connector,
-                    timeout=timeout,
-                    headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': '*/*',
-                        'Connection': 'keep-alive'
-                    }
-                ) as session:
-                    
-                    semaphore = asyncio.Semaphore(2)  # Baixa concorrência para problemas de rede
-                    progress = Progress(console=None, disable=True)
-                    task_id = progress.add_task(f"Recovering {filename}", total=100)
-                    
-                    file_path, error, skip_reason = await download_file(
-                        session, url, destination_path, semaphore, progress, task_id, force_download
-                    )
-                    
-                    if error is None:
-                        recovered_files.append(file_path)
-                        logger.info(f"✅ Recuperado com sucesso: {filename}")
-                        print(f"✅ Recuperado: {filename}")
-                    else:
-                        remaining_failures.append((filename, error))
-                        logger.warning(f"❌ Falha na recuperação de rede: {filename} - {error}")
-                        
-            except Exception as e:
-                remaining_failures.append((filename, e))
-                logger.error(f"❌ Erro na recuperação de rede: {filename} - {e}")
-    
-    # Estratégia 3: Tentar falhas de disco com configuração padrão (se espaço disponível)
-    if disk_failures:
-        logger.info(f"💾 Tentando recuperar {len(disk_failures)} falhas de disco...")
-        print(f"💾 Recuperando falhas de disco...")
-        
-        for filename, original_error in disk_failures:
-            if filename not in url_map:
-                logger.warning(f"URL não encontrada para {filename}, pulando recuperação")
-                remaining_failures.append((filename, original_error))
-                continue
-                
-            try:
-                url = url_map[filename]
-                destination_path = os.path.join(path_zip, filename)
-                
-                # Configuração padrão para falhas de disco
-                async with aiohttp.ClientSession() as session:
-                    semaphore = asyncio.Semaphore(max_concurrent_downloads)
-                    progress = Progress(console=None, disable=True)
-                    task_id = progress.add_task(f"Recovering {filename}", total=100)
-                    
-                    file_path, error, skip_reason = await download_file(
-                        session, url, destination_path, semaphore, progress, task_id, force_download
-                    )
-                    
-                    if error is None:
-                        recovered_files.append(file_path)
-                        logger.info(f"✅ Recuperado com sucesso: {filename}")
-                        print(f"✅ Recuperado: {filename}")
-                    else:
-                        remaining_failures.append((filename, error))
-                        logger.warning(f"❌ Falha na recuperação de disco: {filename} - {error}")
-                        
-            except Exception as e:
-                remaining_failures.append((filename, e))
-                logger.error(f"❌ Erro na recuperação de disco: {filename} - {e}")
-    
-    # Estratégia 4: Tentar outros tipos de falha com configuração padrão
-    if other_failures:
-        logger.info(f"🔧 Tentando recuperar {len(other_failures)} outras falhas...")
-        print(f"🔧 Recuperando outras falhas...")
-        
-        for filename, original_error in other_failures:
-            if filename not in url_map:
-                logger.warning(f"URL não encontrada para {filename}, pulando recuperação")
-                remaining_failures.append((filename, original_error))
-                continue
-                
-            try:
-                url = url_map[filename]
-                destination_path = os.path.join(path_zip, filename)
-                
-                # Configuração padrão
-                async with aiohttp.ClientSession() as session:
-                    semaphore = asyncio.Semaphore(max_concurrent_downloads)
-                    progress = Progress(console=None, disable=True)
-                    task_id = progress.add_task(f"Recovering {filename}", total=100)
-                    
-                    file_path, error, skip_reason = await download_file(
-                        session, url, destination_path, semaphore, progress, task_id, force_download
-                    )
-                    
-                    if error is None:
-                        recovered_files.append(file_path)
-                        logger.info(f"✅ Recuperado com sucesso: {filename}")
-                        print(f"✅ Recuperado: {filename}")
-                    else:
-                        remaining_failures.append((filename, error))
-                        logger.warning(f"❌ Falha na recuperação: {filename} - {error}")
-                        
-            except Exception as e:
-                remaining_failures.append((filename, e))
-                logger.error(f"❌ Erro na recuperação: {filename} - {e}")
-    
-    recovery_rate = len(recovered_files) / len(failed_downloads) * 100 if failed_downloads else 0
-    
-    logger.info(f"🎯 Recuperação concluída: {len(recovered_files)}/{len(failed_downloads)} arquivos recuperados ({recovery_rate:.1f}%)")
-    print(f"🎯 Recuperação: {len(recovered_files)}/{len(failed_downloads)} arquivos recuperados ({recovery_rate:.1f}%)")
-    
-    return recovered_files, remaining_failures

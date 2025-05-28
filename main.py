@@ -187,26 +187,38 @@ def print_header(text: str):
     print(f"\n{'=' * 50}")
     print(f"{text}")
     print(f"{'=' * 50}\n")
+    # Também logar
+    logger.info("=" * 50)
+    logger.info(text)
+    logger.info("=" * 50)
 
 
 def print_section(text: str):
     """Imprime uma seção formatada."""
     print(f"\n▶ {text}")
+    # Também logar
+    logger.info(f"▶ {text}")
 
 
 def print_success(text: str):
     """Imprime uma mensagem de sucesso formatada."""
     print(f"✓ {text}")
+    # Também logar
+    logger.info(f"✓ {text}")
 
 
 def print_warning(text: str):
     """Imprime uma mensagem de aviso formatada."""
     print(f"⚠ {text}")
+    # Também logar
+    logger.warning(f"⚠ {text}")
 
 
 def print_error(text: str):
     """Imprime uma mensagem de erro formatada."""
     print(f"✗ {text}")
+    # Também logar
+    logger.error(f"✗ {text}")
 
 
 async def run_download_process(tipos_desejados: list[str] | None = None, remote_folder: str | None = None, all_folders: bool = False):
@@ -693,6 +705,10 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     logger.info(f"Tipos a processar: {', '.join(tipos_a_processar)}")
     logger.info("=" * 60)
     
+    # Contador de estatísticas antes do processamento
+    stats_before = len(global_stats.processing_stats)
+    logger.info(f"Estatísticas de processamento antes: {stats_before} registros")
+    
     # Processa Empresas
     if 'empresas' in tipos_a_processar:
         if 'Empresas' in tipos_list or 'empresas' in tipos_list:
@@ -850,6 +866,12 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     total_elapsed_time = time.time() - total_start_time
     processing_results['total_time'] = total_elapsed_time
     processing_results['all_ok'] = all_ok
+    
+    # Verificar estatísticas coletadas
+    stats_after = len(global_stats.processing_stats)
+    stats_collected = stats_after - stats_before
+    logger.info(f"Estatísticas de processamento coletadas: {stats_collected} novos registros")
+    logger.info(f"Total de estatísticas de processamento: {stats_after} registros")
     
     # Logar resumo de processamento
     logger.info("=" * 60)
@@ -1225,6 +1247,7 @@ def main():
         os.makedirs("logs", exist_ok=True)
         global_stats.save_to_json(stats_path)
         print(f"\n📄 Estatísticas detalhadas salvas em: {stats_path}")
+        logger.info(f"📄 Estatísticas detalhadas salvas em: {stats_path}")
     except Exception as e:
         logger.error(f"Erro ao salvar estatísticas: {e}")
     
