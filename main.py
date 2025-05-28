@@ -62,6 +62,7 @@ import datetime
 import logging
 import os
 from multiprocessing import freeze_support
+import psutil
 import re
 import time
 import socket
@@ -217,6 +218,19 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
         all_folders: Se True, baixa de todas as pastas remotas disponíveis
     """
     try:
+        # Importar e executar teste de rede adaptativo
+        from src.utils.network import adaptive_network_test
+        try:
+            network_results = await adaptive_network_test()
+            if network_results and network_results.get("connected"):
+                logger.info(f"✅ Teste de rede concluído: {network_results['quality']['connection_quality']} "
+                           f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
+            else:
+                logger.warning("⚠️ Teste de rede indicou problemas de conectividade")
+        except Exception as e:
+            logger.warning(f"⚠️ Erro no teste de rede adaptativo: {e}. Continuando sem otimizações de rede.")
+            network_results = None
+        
         # Se nenhum tipo foi especificado, usar a lista padrão
         if tipos_desejados is None:
             tipos_desejados = ['Empresas', 'Estabelecimentos', 'Simples', 'Socios']
@@ -356,7 +370,6 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                     logger.info(f"   • Downloads simultâneos: {max_concurrent_downloads}")
                     logger.info(f"   • Processamento automático: ativado (será calculado dinamicamente)")
                     logger.info(f"   • Força download: {os.getenv('FORCE_DOWNLOAD', '').lower() == 'true'}")
-                    logger.info(f"   • Tipos de arquivo: {', '.join(config.tipos_arquivo)}")
                     logger.info(f"   • Pasta remota: {remote_folder if remote_folder else 'mais recente'}")
                     
                     # Estimativas de capacidade
@@ -529,7 +542,6 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                 logger.info(f"   • Downloads simultâneos: {max_concurrent_downloads}")
                 logger.info(f"   • Processamento automático: ativado (será calculado dinamicamente)")
                 logger.info(f"   • Força download: {os.getenv('FORCE_DOWNLOAD', '').lower() == 'true'}")
-                logger.info(f"   • Tipos de arquivo: {', '.join(config.tipos_arquivo)}")
                 logger.info(f"   • Pasta remota: {remote_folder if remote_folder else 'mais recente'}")
                 
                 # Estimativas de capacidade
@@ -667,7 +679,6 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     total_start_time = time.time()
     
     # Mostrar informações sobre recursos do sistema antes de iniciar
-    import psutil
     cpu_count = os.cpu_count() or 4
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(output_parquet_path)
