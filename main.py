@@ -313,6 +313,103 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                 try:
                     max_concurrent_downloads = config.n_workers
                     
+                    # Aplicar configurações de rede se disponíveis
+                    if network_results and network_results.get("connected"):
+                        recommendations = network_results["recommendations"]
+                        max_concurrent_downloads = min(max_concurrent_downloads, recommendations["max_concurrent_downloads"])
+                        logger.info(f"🌐 Configurações ajustadas pela qualidade da rede: {max_concurrent_downloads} downloads simultâneos")
+                    
+                    # Log detalhado dos recursos do sistema e configurações do pipeline
+                    cpu_count = os.cpu_count() or 4
+                    memory_info = psutil.virtual_memory()
+                    memory_total_gb = memory_info.total / (1024**3)
+                    memory_available_gb = memory_info.available / (1024**3)
+                    memory_percent = memory_info.percent
+                    
+                    # Informações de disco
+                    try:
+                        if os.name == 'nt':  # Windows
+                            disk_path = os.path.splitdrive(os.getcwd())[0] + '\\'
+                        else:  # Unix/Linux
+                            disk_path = '/'
+                        
+                        disk_info = psutil.disk_usage(disk_path)
+                        disk_total_gb = disk_info.total / (1024**3)
+                        disk_free_gb = disk_info.free / (1024**3)
+                        disk_percent = (disk_info.used / disk_info.total) * 100
+                    except Exception as e:
+                        logger.warning(f"Erro ao obter informações de disco: {e}")
+                        disk_total_gb = disk_free_gb = disk_percent = 0
+                    
+                    logger.info("=" * 70)
+                    logger.info("🚀 INICIANDO PIPELINE PRINCIPAL DE CNPJ")
+                    logger.info("=" * 70)
+                    
+                    # Recursos do sistema
+                    logger.info(f"🖥️  RECURSOS DO SISTEMA:")
+                    logger.info(f"   • CPU: {cpu_count} núcleos disponíveis")
+                    logger.info(f"   • Memória: {memory_total_gb:.2f}GB total | {memory_available_gb:.2f}GB disponível ({100-memory_percent:.1f}%)")
+                    logger.info(f"   • Disco: {disk_total_gb:.2f}GB total | {disk_free_gb:.2f}GB livres ({100-disk_percent:.1f}%)")
+                    
+                    # Configurações do pipeline
+                    logger.info(f"⚙️  CONFIGURAÇÕES DO PIPELINE:")
+                    logger.info(f"   • Downloads simultâneos: {max_concurrent_downloads}")
+                    logger.info(f"   • Processamento automático: ativado (será calculado dinamicamente)")
+                    logger.info(f"   • Força download: {os.getenv('FORCE_DOWNLOAD', '').lower() == 'true'}")
+                    logger.info(f"   • Tipos de arquivo: {', '.join(config.tipos_arquivo)}")
+                    logger.info(f"   • Pasta remota: {remote_folder if remote_folder else 'mais recente'}")
+                    
+                    # Estimativas de capacidade
+                    min_process_workers = max(2, cpu_count // 2)
+                    if memory_total_gb >= 16:
+                        estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 3 // 4))
+                        system_category = "ALTO DESEMPENHO"
+                    elif memory_total_gb >= 8:
+                        estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 2 // 3))
+                        system_category = "DESEMPENHO MODERADO"
+                    else:
+                        estimated_process_workers = max(min_process_workers, cpu_count // 2)
+                        system_category = "CONSERVADOR"
+                    
+                    estimated_throughput = estimated_process_workers * 8  # Estimativa de arquivos por hora
+                    estimated_memory_per_worker = memory_available_gb / estimated_process_workers if estimated_process_workers > 0 else 0
+                    
+                    logger.info(f"📊 ESTIMATIVAS DE PERFORMANCE:")
+                    logger.info(f"   • Categoria do sistema: {system_category}")
+                    logger.info(f"   • Workers de processamento estimados: {estimated_process_workers}")
+                    logger.info(f"   • Throughput estimado: ~{estimated_throughput} arquivos/hora")
+                    logger.info(f"   • Memória por worker: ~{estimated_memory_per_worker:.1f}GB")
+                    logger.info(f"   • Eficiência de CPU estimada: {(estimated_process_workers/cpu_count)*100:.1f}%")
+                    
+                    # Alertas e recomendações
+                    logger.info(f"⚠️  ALERTAS E RECOMENDAÇÕES:")
+                    alerts_count = 0
+                    if memory_percent > 80:
+                        logger.warning(f"   • ATENÇÃO: Uso de memória alto ({memory_percent:.1f}%) - considere fechar outros programas")
+                        alerts_count += 1
+                    if disk_percent > 90:
+                        logger.warning(f"   • ATENÇÃO: Disco quase cheio ({disk_percent:.1f}%) - libere espaço antes de continuar")
+                        alerts_count += 1
+                    if cpu_count < 4:
+                        logger.warning(f"   • ATENÇÃO: Poucos núcleos de CPU ({cpu_count}) - performance pode ser limitada")
+                        alerts_count += 1
+                    if memory_total_gb < 4:
+                        logger.warning(f"   • ATENÇÃO: Pouca RAM ({memory_total_gb:.1f}GB) - considere aumentar memória virtual")
+                        alerts_count += 1
+                    
+                    if alerts_count == 0:
+                        logger.info(f"   • ✅ Sistema sem alertas críticos detectados")
+                    
+                    # Recomendações de otimização
+                    if memory_total_gb >= 16 and cpu_count >= 8:
+                        logger.info(f"   • ✅ Sistema otimizado para processamento intensivo de dados CNPJ")
+                    elif memory_total_gb >= 8 and cpu_count >= 4:
+                        logger.info(f"   • ✅ Sistema adequado para processamento de dados CNPJ")
+                    else:
+                        logger.info(f"   • ⚠️ Sistema básico - considere upgrade de hardware para melhor performance")
+                    
+                    logger.info("=" * 70)
+                    
                     # Usar a nova função otimizada com pipeline completo
                     processed, failed = await download_multiple_files(
                         zip_urls,
@@ -321,7 +418,8 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                         PATH_PARQUET,         # path_parquet
                         force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
                         max_concurrent_downloads=max_concurrent_downloads,
-                        max_concurrent_processing=min(2, config.n_workers // 2)
+                        # Deixar que a função calcule automaticamente baseado no hardware
+                        max_concurrent_processing=None
                     )
                     
                     downloaded_files_count += len(processed)
@@ -388,6 +486,103 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
             try:
                 max_concurrent_downloads = config.n_workers
                 
+                # Aplicar configurações de rede se disponíveis
+                if network_results and network_results.get("connected"):
+                    recommendations = network_results["recommendations"]
+                    max_concurrent_downloads = min(max_concurrent_downloads, recommendations["max_concurrent_downloads"])
+                    logger.info(f"🌐 Configurações ajustadas pela qualidade da rede: {max_concurrent_downloads} downloads simultâneos")
+                
+                # Log detalhado dos recursos do sistema e configurações do pipeline
+                cpu_count = os.cpu_count() or 4
+                memory_info = psutil.virtual_memory()
+                memory_total_gb = memory_info.total / (1024**3)
+                memory_available_gb = memory_info.available / (1024**3)
+                memory_percent = memory_info.percent
+                
+                # Informações de disco
+                try:
+                    if os.name == 'nt':  # Windows
+                        disk_path = os.path.splitdrive(os.getcwd())[0] + '\\'
+                    else:  # Unix/Linux
+                        disk_path = '/'
+                    
+                    disk_info = psutil.disk_usage(disk_path)
+                    disk_total_gb = disk_info.total / (1024**3)
+                    disk_free_gb = disk_info.free / (1024**3)
+                    disk_percent = (disk_info.used / disk_info.total) * 100
+                except Exception as e:
+                    logger.warning(f"Erro ao obter informações de disco: {e}")
+                    disk_total_gb = disk_free_gb = disk_percent = 0
+                
+                logger.info("=" * 70)
+                logger.info("🚀 INICIANDO PIPELINE PRINCIPAL DE CNPJ")
+                logger.info("=" * 70)
+                
+                # Recursos do sistema
+                logger.info(f"🖥️  RECURSOS DO SISTEMA:")
+                logger.info(f"   • CPU: {cpu_count} núcleos disponíveis")
+                logger.info(f"   • Memória: {memory_total_gb:.2f}GB total | {memory_available_gb:.2f}GB disponível ({100-memory_percent:.1f}%)")
+                logger.info(f"   • Disco: {disk_total_gb:.2f}GB total | {disk_free_gb:.2f}GB livres ({100-disk_percent:.1f}%)")
+                
+                # Configurações do pipeline
+                logger.info(f"⚙️  CONFIGURAÇÕES DO PIPELINE:")
+                logger.info(f"   • Downloads simultâneos: {max_concurrent_downloads}")
+                logger.info(f"   • Processamento automático: ativado (será calculado dinamicamente)")
+                logger.info(f"   • Força download: {os.getenv('FORCE_DOWNLOAD', '').lower() == 'true'}")
+                logger.info(f"   • Tipos de arquivo: {', '.join(config.tipos_arquivo)}")
+                logger.info(f"   • Pasta remota: {remote_folder if remote_folder else 'mais recente'}")
+                
+                # Estimativas de capacidade
+                min_process_workers = max(2, cpu_count // 2)
+                if memory_total_gb >= 16:
+                    estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 3 // 4))
+                    system_category = "ALTO DESEMPENHO"
+                elif memory_total_gb >= 8:
+                    estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 2 // 3))
+                    system_category = "DESEMPENHO MODERADO"
+                else:
+                    estimated_process_workers = max(min_process_workers, cpu_count // 2)
+                    system_category = "CONSERVADOR"
+                
+                estimated_throughput = estimated_process_workers * 8  # Estimativa de arquivos por hora
+                estimated_memory_per_worker = memory_available_gb / estimated_process_workers if estimated_process_workers > 0 else 0
+                
+                logger.info(f"📊 ESTIMATIVAS DE PERFORMANCE:")
+                logger.info(f"   • Categoria do sistema: {system_category}")
+                logger.info(f"   • Workers de processamento estimados: {estimated_process_workers}")
+                logger.info(f"   • Throughput estimado: ~{estimated_throughput} arquivos/hora")
+                logger.info(f"   • Memória por worker: ~{estimated_memory_per_worker:.1f}GB")
+                logger.info(f"   • Eficiência de CPU estimada: {(estimated_process_workers/cpu_count)*100:.1f}%")
+                
+                # Alertas e recomendações
+                logger.info(f"⚠️  ALERTAS E RECOMENDAÇÕES:")
+                alerts_count = 0
+                if memory_percent > 80:
+                    logger.warning(f"   • ATENÇÃO: Uso de memória alto ({memory_percent:.1f}%) - considere fechar outros programas")
+                    alerts_count += 1
+                if disk_percent > 90:
+                    logger.warning(f"   • ATENÇÃO: Disco quase cheio ({disk_percent:.1f}%) - libere espaço antes de continuar")
+                    alerts_count += 1
+                if cpu_count < 4:
+                    logger.warning(f"   • ATENÇÃO: Poucos núcleos de CPU ({cpu_count}) - performance pode ser limitada")
+                    alerts_count += 1
+                if memory_total_gb < 4:
+                    logger.warning(f"   • ATENÇÃO: Pouca RAM ({memory_total_gb:.1f}GB) - considere aumentar memória virtual")
+                    alerts_count += 1
+                
+                if alerts_count == 0:
+                    logger.info(f"   • ✅ Sistema sem alertas críticos detectados")
+                
+                # Recomendações de otimização
+                if memory_total_gb >= 16 and cpu_count >= 8:
+                    logger.info(f"   • ✅ Sistema otimizado para processamento intensivo de dados CNPJ")
+                elif memory_total_gb >= 8 and cpu_count >= 4:
+                    logger.info(f"   • ✅ Sistema adequado para processamento de dados CNPJ")
+                else:
+                    logger.info(f"   • ⚠️ Sistema básico - considere upgrade de hardware para melhor performance")
+                
+                logger.info("=" * 70)
+                
                 # Usar a nova função otimizada com pipeline completo
                 processed, failed = await download_multiple_files(
                     zip_urls,
@@ -396,7 +591,8 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                     PATH_PARQUET,         # path_parquet
                     force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
                     max_concurrent_downloads=max_concurrent_downloads,
-                    max_concurrent_processing=min(2, config.n_workers // 2)
+                    # Deixar que a função calcule automaticamente baseado no hardware
+                    max_concurrent_processing=None
                 )
                 
                 downloaded_files_count = len(processed)

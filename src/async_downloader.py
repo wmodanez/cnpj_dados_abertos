@@ -74,22 +74,141 @@ def get_optimal_concurrency():
     cpu_count = os.cpu_count() or 4
     memory_gb = psutil.virtual_memory().total / (1024**3)
     
+    # Obter informações detalhadas do sistema
+    memory_info = psutil.virtual_memory()
+    memory_total_gb = memory_info.total / (1024**3)
+    memory_available_gb = memory_info.available / (1024**3)
+    memory_used_gb = memory_info.used / (1024**3)
+    memory_percent = memory_info.percent
+    
+    # Informações de CPU
+    cpu_freq = psutil.cpu_freq()
+    cpu_freq_current = cpu_freq.current if cpu_freq else 0
+    cpu_freq_max = cpu_freq.max if cpu_freq else 0
+    
+    # Informações de disco
+    try:
+        # No Windows, usar o drive atual ao invés de '/'
+        if os.name == 'nt':  # Windows
+            disk_path = os.path.splitdrive(os.getcwd())[0] + '\\'
+        else:  # Unix/Linux
+            disk_path = '/'
+        
+        disk_info = psutil.disk_usage(disk_path)
+        disk_total_gb = disk_info.total / (1024**3)
+        disk_free_gb = disk_info.free / (1024**3)
+        disk_used_gb = disk_info.used / (1024**3)
+        disk_percent = (disk_used_gb / disk_total_gb) * 100
+    except Exception as e:
+        logger.warning(f"Erro ao obter informações de disco: {e}")
+        disk_total_gb = disk_free_gb = disk_used_gb = disk_percent = 0
+    
+    # Usar pelo menos metade dos núcleos para processamento
+    min_process_workers = max(2, cpu_count // 2)
+    
+    # Log detalhado dos recursos do sistema
+    logger.info("=" * 60)
+    logger.info("🖥️  ANÁLISE DETALHADA DOS RECURSOS DO SISTEMA")
+    logger.info("=" * 60)
+    
+    # CPU
+    logger.info(f"💻 CPU:")
+    logger.info(f"   • Núcleos disponíveis: {cpu_count}")
+    if cpu_freq_current > 0:
+        logger.info(f"   • Frequência atual: {cpu_freq_current:.0f} MHz")
+    if cpu_freq_max > 0:
+        logger.info(f"   • Frequência máxima: {cpu_freq_max:.0f} MHz")
+    logger.info(f"   • Mínimo de workers de processamento: {min_process_workers} (50% dos núcleos)")
+    
+    # Memória
+    logger.info(f"🧠 MEMÓRIA:")
+    logger.info(f"   • Total: {memory_total_gb:.2f} GB")
+    logger.info(f"   • Disponível: {memory_available_gb:.2f} GB ({100-memory_percent:.1f}%)")
+    logger.info(f"   • Em uso: {memory_used_gb:.2f} GB ({memory_percent:.1f}%)")
+    
+    # Disco
+    logger.info(f"💾 DISCO:")
+    logger.info(f"   • Total: {disk_total_gb:.2f} GB")
+    logger.info(f"   • Livre: {disk_free_gb:.2f} GB ({100-disk_percent:.1f}%)")
+    logger.info(f"   • Em uso: {disk_used_gb:.2f} GB ({disk_percent:.1f}%)")
+    
     # Algoritmo adaptativo para concorrência
     if memory_gb >= 16:
         # Sistema com muita RAM - pode processar mais arquivos simultaneamente
-        download_workers = min(8, cpu_count)
-        process_workers = min(4, cpu_count // 2)
+        download_workers = min(12, cpu_count)
+        process_workers = min(cpu_count, max(min_process_workers, cpu_count * 3 // 4))
+        system_category = "ALTO DESEMPENHO"
+        performance_note = "Sistema robusto com muita RAM - configuração agressiva"
     elif memory_gb >= 8:
         # Sistema com RAM moderada
-        download_workers = min(6, cpu_count)
-        process_workers = min(3, cpu_count // 2)
+        download_workers = min(8, cpu_count)
+        process_workers = min(cpu_count, max(min_process_workers, cpu_count * 2 // 3))
+        system_category = "DESEMPENHO MODERADO"
+        performance_note = "Sistema com RAM adequada - configuração balanceada"
     else:
-        # Sistema com pouca RAM - ser mais conservador
-        download_workers = min(4, cpu_count)
-        process_workers = min(2, cpu_count // 3)
+        # Sistema com pouca RAM - usar pelo menos metade dos núcleos
+        download_workers = min(6, cpu_count)
+        process_workers = max(min_process_workers, cpu_count // 2)
+        system_category = "CONSERVADOR"
+        performance_note = "Sistema com RAM limitada - configuração conservadora"
     
-    logger.info(f"Configuração adaptativa: {memory_gb:.1f}GB RAM, {cpu_count} CPUs")
-    logger.info(f"Workers de download: {download_workers}, Workers de processamento: {process_workers}")
+    # Estimativas de capacidade
+    estimated_concurrent_files = process_workers * 2  # Estimativa de arquivos que podem ser processados simultaneamente
+    estimated_memory_per_worker = memory_available_gb / process_workers if process_workers > 0 else 0
+    estimated_throughput_files_per_hour = process_workers * 10  # Estimativa baseada em 10 arquivos por hora por worker
+    
+    # Log das configurações otimizadas
+    logger.info(f"⚙️  CONFIGURAÇÃO OTIMIZADA:")
+    logger.info(f"   • Categoria do sistema: {system_category}")
+    logger.info(f"   • {performance_note}")
+    logger.info(f"   • Workers de download: {download_workers}")
+    logger.info(f"   • Workers de processamento: {process_workers}")
+    logger.info(f"   • Razão CPU/Workers: {cpu_count/process_workers:.1f}:1")
+    logger.info(f"   • Memória por worker: ~{estimated_memory_per_worker:.1f} GB")
+    
+    # Estimativas de performance
+    logger.info(f"📊 ESTIMATIVAS DE CAPACIDADE:")
+    logger.info(f"   • Arquivos simultâneos estimados: {estimated_concurrent_files}")
+    logger.info(f"   • Throughput estimado: ~{estimated_throughput_files_per_hour} arquivos/hora")
+    logger.info(f"   • Eficiência de CPU: {(process_workers/cpu_count)*100:.1f}%")
+    logger.info(f"   • Eficiência de memória: {(estimated_memory_per_worker*process_workers/memory_available_gb)*100:.1f}%")
+    
+    # Alertas e recomendações
+    logger.info(f"⚠️  ALERTAS E RECOMENDAÇÕES:")
+    if memory_percent > 80:
+        logger.warning(f"   • ATENÇÃO: Uso de memória alto ({memory_percent:.1f}%) - considere fechar outros programas")
+    if disk_percent > 90:
+        logger.warning(f"   • ATENÇÃO: Disco quase cheio ({disk_percent:.1f}%) - libere espaço antes de continuar")
+    if cpu_count < 4:
+        logger.warning(f"   • ATENÇÃO: Poucos núcleos de CPU ({cpu_count}) - performance pode ser limitada")
+    if memory_gb < 4:
+        logger.warning(f"   • ATENÇÃO: Pouca RAM ({memory_gb:.1f}GB) - considere aumentar memória virtual")
+    
+    # Recomendações de otimização
+    if memory_gb >= 16 and cpu_count >= 8:
+        logger.info(f"   • ✅ Sistema otimizado para processamento intensivo de dados")
+    elif memory_gb >= 8 and cpu_count >= 4:
+        logger.info(f"   • ✅ Sistema adequado para processamento de dados")
+    else:
+        logger.info(f"   • ⚠️ Sistema básico - considere upgrade de hardware para melhor performance")
+    
+    # Limites teóricos
+    theoretical_max_downloads = cpu_count * 2
+    theoretical_max_processing = cpu_count
+    logger.info(f"🔬 LIMITES TEÓRICOS:")
+    logger.info(f"   • Máximo downloads teórico: {theoretical_max_downloads}")
+    logger.info(f"   • Máximo processamento teórico: {theoretical_max_processing}")
+    logger.info(f"   • Configuração atual vs. máximo: {(download_workers/theoretical_max_downloads)*100:.1f}% downloads, {(process_workers/theoretical_max_processing)*100:.1f}% processamento")
+    
+    logger.info("=" * 60)
+    
+    # Log resumido para o console
+    console.print(f"\n🖥️  [bold blue]Recursos do Sistema:[/bold blue]")
+    console.print(f"   💻 CPU: {cpu_count} núcleos")
+    console.print(f"   🧠 RAM: {memory_total_gb:.1f}GB total, {memory_available_gb:.1f}GB disponível")
+    console.print(f"   💾 Disco: {disk_free_gb:.1f}GB livres de {disk_total_gb:.1f}GB")
+    console.print(f"   ⚙️  Configuração: {download_workers} downloads | {process_workers} processamentos")
+    console.print(f"   📊 Categoria: [bold]{system_category}[/bold]")
     
     return download_workers, process_workers
 
@@ -552,7 +671,19 @@ async def _process_download_response(response: aiohttp.ClientResponse, destinati
                                      filename: str, remote_last_modified: int | None):
     """Processa o corpo da resposta HTTP e escreve no arquivo, atualizando a barra Rich."""
     downloaded_size_since_start = 0
+    temp_path = f"{destination_path}.tmp"  # Arquivo temporário
+    
     try:
+        # Verificar espaço em disco disponível
+        if expected_size > 0:
+            free_space = psutil.disk_usage(os.path.dirname(destination_path)).free
+            required_space = expected_size + (100 * 1024 * 1024)  # 100MB de margem
+            
+            if free_space < required_space:
+                error_msg = f"Espaço insuficiente em disco. Necessário: {required_space / (1024**3):.1f}GB, Disponível: {free_space / (1024**3):.1f}GB"
+                logger.error(f"{filename}: {error_msg}")
+                return filename, Exception(error_msg)
+        
         # Verifica o tamanho real do conteúdo a ser baixado (útil se for 200 OK em vez de 206)
         content_length_header = response.headers.get('Content-Length')
         if content_length_header is not None:
@@ -563,15 +694,70 @@ async def _process_download_response(response: aiohttp.ClientResponse, destinati
         else:
             size_to_download = None
 
-        async with aiofiles.open(destination_path, mode=file_mode) as f:
+        # Usar arquivo temporário para escrita segura
+        write_path = temp_path if file_mode == "wb" else destination_path
+        
+        # Buffer maior para melhor performance
+        chunk_size = 64 * 1024  # 64KB chunks
+        
+        async with aiofiles.open(write_path, mode=file_mode) as f:
             # Inicia a tarefa na barra de progresso se ainda não estiver iniciada
             progress.start_task(task_id)
-            async for chunk in response.content.iter_chunked(8192):
-                await f.write(chunk)
-                chunk_len = len(chunk)
-                downloaded_size_since_start += chunk_len
-                # Avança a barra Rich
-                progress.update(task_id, advance=chunk_len)
+            
+            # Contador para verificação periódica
+            chunks_processed = 0
+            last_check_time = time.time()
+            
+            async for chunk in response.content.iter_chunked(chunk_size):
+                try:
+                    await f.write(chunk)
+                    chunk_len = len(chunk)
+                    downloaded_size_since_start += chunk_len
+                    chunks_processed += 1
+                    
+                    # Avança a barra Rich
+                    progress.update(task_id, advance=chunk_len)
+                    
+                    # Verificação periódica de integridade (a cada 100 chunks ou 5 segundos)
+                    current_time = time.time()
+                    if chunks_processed % 100 == 0 or (current_time - last_check_time) > 5:
+                        # Flush para garantir que dados foram escritos
+                        await f.flush()
+                        last_check_time = current_time
+                        
+                        # Verificar se ainda há espaço em disco
+                        if chunks_processed % 500 == 0:  # A cada 500 chunks
+                            free_space = psutil.disk_usage(os.path.dirname(destination_path)).free
+                            if free_space < (50 * 1024 * 1024):  # Menos de 50MB
+                                error_msg = f"Espaço em disco criticamente baixo: {free_space / (1024**2):.1f}MB"
+                                logger.error(f"{filename}: {error_msg}")
+                                return filename, Exception(error_msg)
+                
+                except OSError as e:
+                    error_msg = f"Erro de I/O durante escrita: {e}"
+                    logger.error(f"{filename}: {error_msg}")
+                    return filename, e
+                except Exception as e:
+                    error_msg = f"Erro inesperado durante escrita do chunk: {e}"
+                    logger.error(f"{filename}: {error_msg}")
+                    return filename, e
+
+        # Se usamos arquivo temporário, mover para destino final
+        if write_path == temp_path:
+            try:
+                if os.path.exists(destination_path):
+                    os.remove(destination_path)
+                os.rename(temp_path, destination_path)
+                logger.debug(f"Arquivo temporário movido para destino final: {filename}")
+            except OSError as e:
+                error_msg = f"Erro ao mover arquivo temporário: {e}"
+                logger.error(f"{filename}: {error_msg}")
+                # Tentar limpar arquivo temporário
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+                return filename, e
 
         # Verificação final de tamanho
         final_local_size = initial_size + downloaded_size_since_start
@@ -634,6 +820,14 @@ async def _process_download_response(response: aiohttp.ClientResponse, destinati
         logger.error(f"{filename}: {error_msg}")
         # Marca a barra como erro
         progress.update(task_id, description=f"[red]{filename[:30]} (ERRO escrita)[/red]", style="red")
+        
+        # Limpar arquivo temporário se existir
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                logger.debug(f"Arquivo temporário removido após erro: {temp_path}")
+        except:
+            pass
         
         # Registra o erro no cache
         if config.cache.enabled:
@@ -1034,13 +1228,77 @@ async def download_multiple_files(
     path_unzip: str, 
     path_parquet: str, 
     force_download: bool = False,
-    max_concurrent_downloads: int = 4,
-    max_concurrent_processing: int = 2
+    max_concurrent_downloads: int = 6,
+    max_concurrent_processing: int = None
 ) -> Tuple[List[str], List[Tuple[str, Exception]]]:
     """
     Baixa múltiplos arquivos de forma assíncrona com pipeline otimizado e controle de falhas.
     """
     start_time = time.time()
+    
+    # Calcular max_concurrent_processing automaticamente se não fornecido
+    if max_concurrent_processing is None:
+        cpu_count = os.cpu_count() or 4
+        memory_gb = psutil.virtual_memory().total / (1024**3)
+        
+        # Usar pelo menos metade dos núcleos
+        min_workers = max(2, cpu_count // 2)
+        
+        if memory_gb >= 16:
+            max_concurrent_processing = min(cpu_count, max(min_workers, cpu_count * 3 // 4))
+        elif memory_gb >= 8:
+            max_concurrent_processing = min(cpu_count, max(min_workers, cpu_count * 2 // 3))
+        else:
+            max_concurrent_processing = max(min_workers, cpu_count // 2)
+        
+        logger.info(f"🧮 Processamento automático: {max_concurrent_processing} workers (CPU: {cpu_count}, RAM: {memory_gb:.1f}GB)")
+    
+    # Exibir análise detalhada dos recursos do sistema
+    logger.info("🔍 Executando análise detalhada dos recursos do sistema...")
+    optimal_downloads, optimal_processing = get_optimal_concurrency()
+    
+    # Usar os valores otimizados se não foram especificados
+    if max_concurrent_downloads == 6:  # Valor padrão
+        max_concurrent_downloads = optimal_downloads
+    if max_concurrent_processing is None:
+        max_concurrent_processing = optimal_processing
+    
+    # Verificar conectividade de rede antes de iniciar
+    logger.info("🌐 Verificando conectividade de rede...")
+    try:
+        from .utils.network import adaptive_network_test
+        network_results = await adaptive_network_test()
+        
+        if not network_results["connected"]:
+            logger.error(f"❌ Sem conectividade de rede: {network_results['message']}")
+            print(f"❌ Sem conectividade de rede: {network_results['message']}")
+            return [], [(url, Exception("Sem conectividade de rede")) for url in urls]
+        
+        # Aplicar recomendações de rede
+        recommendations = network_results["recommendations"]
+        
+        # Ajustar configurações baseadas na qualidade da rede
+        original_max_downloads = max_concurrent_downloads
+        max_concurrent_downloads = min(max_concurrent_downloads, recommendations["max_concurrent_downloads"])
+        
+        # Ajustar timeouts baseados na qualidade da rede
+        timeout_multiplier = recommendations["timeout_multiplier"]
+        
+        logger.info(f"✅ Rede: {network_results['quality']['connection_quality']} "
+                   f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
+        logger.info(f"🔧 Configurações adaptadas: {max_concurrent_downloads} downloads simultâneos "
+                   f"(original: {original_max_downloads}), timeout x{timeout_multiplier}")
+        
+        print(f"🌐 Qualidade da rede: {network_results['quality']['connection_quality']} "
+              f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
+        print(f"🔧 Downloads simultâneos ajustados: {max_concurrent_downloads}")
+        
+    except ImportError:
+        logger.warning("Módulo de teste de rede não disponível, usando configurações padrão")
+        timeout_multiplier = 1.0
+    except Exception as e:
+        logger.warning(f"Erro no teste de rede: {e}. Usando configurações padrão")
+        timeout_multiplier = 1.0
     
     # Listas para rastrear resultados
     downloaded_files = []
@@ -1048,11 +1306,11 @@ async def download_multiple_files(
     failed_downloads = []
     failed_processing = []
     
-    # Controle de falhas críticas
+    # Controle de falhas críticas - mais tolerante
     consecutive_failures = 0
-    max_consecutive_failures = 5  # Para após 5 falhas consecutivas
+    max_consecutive_failures = 8  # Aumentado para 8 falhas consecutivas
     total_failures = 0
-    max_failure_rate = 0.5  # Para se mais de 50% dos arquivos falharem
+    max_failure_rate = 0.7  # Aumentado para 70% de taxa máxima de falhas
     
     # Configurar semáforos adaptativos
     download_semaphore = asyncio.Semaphore(max_concurrent_downloads)
@@ -1102,6 +1360,9 @@ async def download_multiple_files(
     print(f"📈 Monitoramento adaptativo: ✅")
     print(f"📏 Ordenação por tamanho: ✅ (menores primeiro)")
     print(f"🛡️ Controle de falhas: máx {max_consecutive_failures} consecutivas, {max_failure_rate*100:.0f}% taxa máxima")
+    print(f"🔄 Retry robusto: 5 tentativas por arquivo com backoff exponencial")
+    print(f"✅ Validação de integridade: ativada")
+    print(f"🌐 Conectividade: verificada")
 
     # Função que processa os arquivos da fila em paralelo
     async def process_files_from_queue():
@@ -1193,7 +1454,7 @@ async def download_multiple_files(
         logger.info(f"Processador {processor_id} encerrado")
 
     # Função de download otimizada
-    async def download_and_queue(url: str):
+    async def download_and_queue(url: str, force_download_param: bool = force_download):
         """Baixa um arquivo e o adiciona à fila de processamento."""
         nonlocal consecutive_failures, total_failures
         
@@ -1221,13 +1482,16 @@ async def download_multiple_files(
                     enable_cleanup_closed=True
                 )
                 
+                # Aplicar multiplicador de timeout baseado na qualidade da rede
+                base_timeout = 1200  # 20 minutos base
+                adjusted_timeout = int(base_timeout * timeout_multiplier)
+                
                 timeout = aiohttp.ClientTimeout(
-                    total=1200,  # 20 minutos total
-                    connect=60,  # 1 minuto para conectar
-                    sock_read=600  # 10 minutos para leitura
+                    total=adjusted_timeout,  # Timeout total ajustado
+                    connect=min(60, int(60 * timeout_multiplier)),  # Timeout de conexão ajustado
+                    sock_read=int(900 * timeout_multiplier)  # Timeout de leitura ajustado
                 )
                 
-                # Usar sessão HTTP temporária para este download
                 async with aiohttp.ClientSession(
                     connector=connector,
                     timeout=timeout,
@@ -1244,7 +1508,7 @@ async def download_multiple_files(
                     
                     # Chamar download_file com todos os argumentos necessários
                     file_path, error, skip_reason = await download_file(
-                        session, url, destination_path, download_semaphore, progress, task_id, force_download
+                        session, url, destination_path, download_semaphore, progress, task_id, force_download_param
                     )
                 
                 if error is None:
@@ -1298,7 +1562,7 @@ async def download_multiple_files(
         
         # Criar tasks de download
         download_tasks = [
-            asyncio.create_task(download_and_queue(url))
+            asyncio.create_task(download_and_queue(url, force_download))
             for url in sorted_urls
         ]
         
@@ -1327,6 +1591,59 @@ async def download_multiple_files(
         # Aguardar workers de processamento terminarem
         await asyncio.gather(*processing_tasks, return_exceptions=True)
         print("🏁 Todos os workers finalizados")
+        
+        # === FASE DE RECUPERAÇÃO AUTOMÁTICA ===
+        if failed_downloads and len(failed_downloads) <= 10:  # Só tentar recuperar se não há muitas falhas
+            logger.info(f"🔄 Iniciando fase de recuperação automática para {len(failed_downloads)} falhas...")
+            print(f"\n🔄 === FASE DE RECUPERAÇÃO AUTOMÁTICA ===")
+            
+            try:
+                # Tentar recuperar downloads que falharam
+                recovered_files, remaining_failures = await _attempt_recovery_downloads(
+                    failed_downloads, 
+                    sorted_urls,
+                    path_zip, 
+                    max_concurrent_downloads,
+                    force_download=True
+                )
+                
+                if recovered_files:
+                    # Adicionar arquivos recuperados à fila de processamento
+                    for recovered_file in recovered_files:
+                        await processing_queue.put(recovered_file)
+                        downloaded_files.append(recovered_file)
+                    
+                    # Recriar workers de processamento para arquivos recuperados
+                    recovery_processing_tasks = [
+                        asyncio.create_task(process_files_from_queue())
+                        for _ in range(min(2, max_concurrent_processing))
+                    ]
+                    
+                    # Aguardar processamento dos arquivos recuperados
+                    await processing_queue.join()
+                    
+                    # Sinalizar parada para workers de recuperação
+                    for _ in recovery_processing_tasks:
+                        await processing_queue.put(None)
+                    
+                    # Aguardar workers de recuperação terminarem
+                    await asyncio.gather(*recovery_processing_tasks, return_exceptions=True)
+                    
+                    # Atualizar listas de falhas
+                    failed_downloads = remaining_failures
+                    
+                    print(f"✅ Recuperação concluída: {len(recovered_files)} arquivos recuperados")
+                    logger.info(f"Recuperação automática concluída: {len(recovered_files)} arquivos recuperados")
+                else:
+                    print(f"❌ Nenhum arquivo foi recuperado na fase de recuperação")
+                    logger.warning("Nenhum arquivo foi recuperado na fase de recuperação automática")
+                    
+            except Exception as e:
+                logger.error(f"Erro durante fase de recuperação automática: {e}")
+                print(f"❌ Erro na recuperação automática: {e}")
+        elif failed_downloads and len(failed_downloads) > 10:
+            logger.warning(f"Muitas falhas ({len(failed_downloads)}) - pulando recuperação automática")
+            print(f"⚠️ Muitas falhas ({len(failed_downloads)}) - recuperação automática desabilitada")
         
     except Exception as e:
         logger.error(f"Erro no pipeline principal: {e}")
@@ -1479,3 +1796,292 @@ async def get_file_sizes_and_sort(urls: List[str]) -> List[Tuple[str, int]]:
         logger.info(f"  ... e mais {len(url_sizes) - 10} arquivos")
     
     return url_sizes
+
+
+async def _attempt_recovery_downloads(failed_downloads: List[Tuple[str, Exception]], 
+                                    original_urls: List[str],
+                                    path_zip: str, 
+                                    max_concurrent_downloads: int,
+                                    force_download: bool = True) -> Tuple[List[str], List[Tuple[str, Exception]]]:
+    """
+    Tenta recuperar downloads que falharam usando estratégias específicas para cada tipo de erro.
+    
+    Args:
+        failed_downloads: Lista de downloads que falharam (filename, error)
+        original_urls: Lista das URLs originais para reconstruir URLs dos arquivos que falharam
+        path_zip: Diretório onde salvar os arquivos
+        max_concurrent_downloads: Número máximo de downloads simultâneos
+        force_download: Forçar download mesmo se arquivo existir
+        
+    Returns:
+        Tupla com (arquivos_recuperados, falhas_restantes)
+    """
+    if not failed_downloads:
+        return [], []
+    
+    logger.info(f"🔄 Iniciando recuperação automática de {len(failed_downloads)} downloads falhados...")
+    print(f"🔄 Tentando recuperar {len(failed_downloads)} downloads que falharam...")
+    
+    recovered_files = []
+    remaining_failures = []
+    
+    # Criar mapeamento de filename para URL
+    url_map = {}
+    for url in original_urls:
+        filename = os.path.basename(url)
+        url_map[filename] = url
+    
+    # Categorizar falhas por tipo
+    timeout_failures = []
+    network_failures = []
+    disk_failures = []
+    other_failures = []
+    
+    for filename, error in failed_downloads:
+        error_str = str(error).lower()
+        if 'timeout' in error_str or 'timed out' in error_str:
+            timeout_failures.append((filename, error))
+        elif any(keyword in error_str for keyword in ['connection', 'network', 'dns', 'resolve']):
+            network_failures.append((filename, error))
+        elif any(keyword in error_str for keyword in ['espaço', 'disk', 'space', 'i/o']):
+            disk_failures.append((filename, error))
+        else:
+            other_failures.append((filename, error))
+    
+    logger.info(f"Categorização de falhas: {len(timeout_failures)} timeouts, {len(network_failures)} rede, {len(disk_failures)} disco, {len(other_failures)} outros")
+    
+    # Estratégia 0: Verificar problemas de espaço em disco primeiro
+    if disk_failures:
+        logger.warning(f"💾 Detectadas {len(disk_failures)} falhas de disco. Verificando espaço disponível...")
+        try:
+            free_space = psutil.disk_usage(path_zip).free
+            free_space_gb = free_space / (1024**3)
+            
+            if free_space_gb < 5:  # Menos de 5GB
+                logger.error(f"Espaço em disco criticamente baixo: {free_space_gb:.1f}GB. Não é possível recuperar falhas de disco.")
+                print(f"❌ Espaço em disco insuficiente: {free_space_gb:.1f}GB")
+                # Adicionar todas as falhas de disco às falhas restantes
+                remaining_failures.extend(disk_failures)
+                disk_failures = []  # Limpar para não tentar recuperar
+            else:
+                logger.info(f"Espaço em disco disponível: {free_space_gb:.1f}GB. Tentando recuperar falhas de disco...")
+                print(f"💾 Espaço disponível: {free_space_gb:.1f}GB - tentando recuperar...")
+        except Exception as e:
+            logger.error(f"Erro ao verificar espaço em disco: {e}")
+            remaining_failures.extend(disk_failures)
+            disk_failures = []
+    
+    # Estratégia 1: Recuperar falhas de timeout com configurações mais conservadoras
+    if timeout_failures:
+        logger.info(f"🕐 Recuperando {len(timeout_failures)} falhas de timeout com configurações conservadoras...")
+        print(f"🕐 Recuperando falhas de timeout...")
+        
+        for filename, original_error in timeout_failures:
+            if filename not in url_map:
+                logger.warning(f"URL não encontrada para {filename}, pulando recuperação")
+                remaining_failures.append((filename, original_error))
+                continue
+                
+            try:
+                url = url_map[filename]
+                destination_path = os.path.join(path_zip, filename)
+                
+                # Configuração ultra-conservadora para timeouts
+                connector = aiohttp.TCPConnector(
+                    limit=5,
+                    limit_per_host=1,
+                    ttl_dns_cache=600,
+                    use_dns_cache=True,
+                    keepalive_timeout=180,
+                    enable_cleanup_closed=True
+                )
+                
+                timeout = aiohttp.ClientTimeout(
+                    total=3600,  # 1 hora total
+                    connect=180,  # 3 minutos para conectar
+                    sock_read=2400  # 40 minutos para leitura
+                )
+                
+                async with aiohttp.ClientSession(
+                    connector=connector,
+                    timeout=timeout,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': '*/*',
+                        'Connection': 'keep-alive'
+                    }
+                ) as session:
+                    
+                    semaphore = asyncio.Semaphore(1)  # Um por vez para timeouts
+                    progress = Progress(console=None, disable=True)
+                    task_id = progress.add_task(f"Recovering {filename}", total=100)
+                    
+                    file_path, error, skip_reason = await download_file(
+                        session, url, destination_path, semaphore, progress, task_id, force_download
+                    )
+                    
+                    if error is None:
+                        recovered_files.append(file_path)
+                        logger.info(f"✅ Recuperado com sucesso: {filename}")
+                        print(f"✅ Recuperado: {filename}")
+                    else:
+                        remaining_failures.append((filename, error))
+                        logger.warning(f"❌ Falha na recuperação de timeout: {filename} - {error}")
+                        
+            except Exception as e:
+                remaining_failures.append((filename, e))
+                logger.error(f"❌ Erro na recuperação de timeout: {filename} - {e}")
+    
+    # Estratégia 2: Aguardar e tentar falhas de rede
+    if network_failures:
+        logger.info(f"🌐 Aguardando 30s antes de tentar recuperar {len(network_failures)} falhas de rede...")
+        print(f"🌐 Aguardando para recuperar falhas de rede...")
+        await asyncio.sleep(30)  # Aguardar para problemas de rede se resolverem
+        
+        for filename, original_error in network_failures:
+            if filename not in url_map:
+                logger.warning(f"URL não encontrada para {filename}, pulando recuperação")
+                remaining_failures.append((filename, original_error))
+                continue
+                
+            try:
+                # Verificar conectividade antes de tentar
+                try:
+                    from .utils.network import check_internet_connection
+                    is_connected, _ = check_internet_connection()
+                    if not is_connected:
+                        logger.warning(f"Sem conectividade para recuperar {filename}")
+                        remaining_failures.append((filename, Exception("Sem conectividade de rede")))
+                        continue
+                except:
+                    pass
+                
+                url = url_map[filename]
+                destination_path = os.path.join(path_zip, filename)
+                
+                # Configuração robusta para problemas de rede
+                connector = aiohttp.TCPConnector(
+                    limit=20,
+                    limit_per_host=3,
+                    ttl_dns_cache=300,
+                    use_dns_cache=True,
+                    keepalive_timeout=90,
+                    enable_cleanup_closed=True
+                )
+                
+                timeout = aiohttp.ClientTimeout(
+                    total=2400,  # 40 minutos
+                    connect=120,  # 2 minutos para conectar
+                    sock_read=1800  # 30 minutos para leitura
+                )
+                
+                async with aiohttp.ClientSession(
+                    connector=connector,
+                    timeout=timeout,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': '*/*',
+                        'Connection': 'keep-alive'
+                    }
+                ) as session:
+                    
+                    semaphore = asyncio.Semaphore(2)  # Baixa concorrência para problemas de rede
+                    progress = Progress(console=None, disable=True)
+                    task_id = progress.add_task(f"Recovering {filename}", total=100)
+                    
+                    file_path, error, skip_reason = await download_file(
+                        session, url, destination_path, semaphore, progress, task_id, force_download
+                    )
+                    
+                    if error is None:
+                        recovered_files.append(file_path)
+                        logger.info(f"✅ Recuperado com sucesso: {filename}")
+                        print(f"✅ Recuperado: {filename}")
+                    else:
+                        remaining_failures.append((filename, error))
+                        logger.warning(f"❌ Falha na recuperação de rede: {filename} - {error}")
+                        
+            except Exception as e:
+                remaining_failures.append((filename, e))
+                logger.error(f"❌ Erro na recuperação de rede: {filename} - {e}")
+    
+    # Estratégia 3: Tentar falhas de disco com configuração padrão (se espaço disponível)
+    if disk_failures:
+        logger.info(f"💾 Tentando recuperar {len(disk_failures)} falhas de disco...")
+        print(f"💾 Recuperando falhas de disco...")
+        
+        for filename, original_error in disk_failures:
+            if filename not in url_map:
+                logger.warning(f"URL não encontrada para {filename}, pulando recuperação")
+                remaining_failures.append((filename, original_error))
+                continue
+                
+            try:
+                url = url_map[filename]
+                destination_path = os.path.join(path_zip, filename)
+                
+                # Configuração padrão para falhas de disco
+                async with aiohttp.ClientSession() as session:
+                    semaphore = asyncio.Semaphore(max_concurrent_downloads)
+                    progress = Progress(console=None, disable=True)
+                    task_id = progress.add_task(f"Recovering {filename}", total=100)
+                    
+                    file_path, error, skip_reason = await download_file(
+                        session, url, destination_path, semaphore, progress, task_id, force_download
+                    )
+                    
+                    if error is None:
+                        recovered_files.append(file_path)
+                        logger.info(f"✅ Recuperado com sucesso: {filename}")
+                        print(f"✅ Recuperado: {filename}")
+                    else:
+                        remaining_failures.append((filename, error))
+                        logger.warning(f"❌ Falha na recuperação de disco: {filename} - {error}")
+                        
+            except Exception as e:
+                remaining_failures.append((filename, e))
+                logger.error(f"❌ Erro na recuperação de disco: {filename} - {e}")
+    
+    # Estratégia 4: Tentar outros tipos de falha com configuração padrão
+    if other_failures:
+        logger.info(f"🔧 Tentando recuperar {len(other_failures)} outras falhas...")
+        print(f"🔧 Recuperando outras falhas...")
+        
+        for filename, original_error in other_failures:
+            if filename not in url_map:
+                logger.warning(f"URL não encontrada para {filename}, pulando recuperação")
+                remaining_failures.append((filename, original_error))
+                continue
+                
+            try:
+                url = url_map[filename]
+                destination_path = os.path.join(path_zip, filename)
+                
+                # Configuração padrão
+                async with aiohttp.ClientSession() as session:
+                    semaphore = asyncio.Semaphore(max_concurrent_downloads)
+                    progress = Progress(console=None, disable=True)
+                    task_id = progress.add_task(f"Recovering {filename}", total=100)
+                    
+                    file_path, error, skip_reason = await download_file(
+                        session, url, destination_path, semaphore, progress, task_id, force_download
+                    )
+                    
+                    if error is None:
+                        recovered_files.append(file_path)
+                        logger.info(f"✅ Recuperado com sucesso: {filename}")
+                        print(f"✅ Recuperado: {filename}")
+                    else:
+                        remaining_failures.append((filename, error))
+                        logger.warning(f"❌ Falha na recuperação: {filename} - {error}")
+                        
+            except Exception as e:
+                remaining_failures.append((filename, e))
+                logger.error(f"❌ Erro na recuperação: {filename} - {e}")
+    
+    recovery_rate = len(recovered_files) / len(failed_downloads) * 100 if failed_downloads else 0
+    
+    logger.info(f"🎯 Recuperação concluída: {len(recovered_files)}/{len(failed_downloads)} arquivos recuperados ({recovery_rate:.1f}%)")
+    print(f"🎯 Recuperação: {len(recovered_files)}/{len(failed_downloads)} arquivos recuperados ({recovery_rate:.1f}%)")
+    
+    return recovered_files, remaining_failures

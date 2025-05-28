@@ -36,9 +36,43 @@ logger = logging.getLogger(__name__)
 # Variáveis globais para controle de recursos
 _processing_lock = Lock()
 _active_processes = Value('i', 0)
-_max_concurrent_processes = Value('i', 2)  # Máximo de 2 processamentos simultâneos
+# Usar pelo menos metade dos núcleos do processador
+_max_concurrent_processes = Value('i', max(2, (os.cpu_count() or 4) // 2))
 _process_queue = PriorityQueue()
 _workers_should_stop = Value('b', False)  # Flag para parar workers
+
+def log_system_resources_socio():
+    """Log detalhado dos recursos do sistema para processamento de sócios."""
+    cpu_count = os.cpu_count() or 4
+    memory_info = psutil.virtual_memory()
+    memory_total_gb = memory_info.total / (1024**3)
+    memory_available_gb = memory_info.available / (1024**3)
+    memory_percent = memory_info.percent
+    
+    max_workers = _max_concurrent_processes.value
+    
+    logger.info("=" * 50)
+    logger.info("👥 MÓDULO SÓCIO - CONFIGURAÇÃO DE RECURSOS")
+    logger.info("=" * 50)
+    logger.info(f"💻 CPU: {cpu_count} núcleos disponíveis")
+    logger.info(f"🧠 RAM: {memory_total_gb:.1f}GB total, {memory_available_gb:.1f}GB disponível ({100-memory_percent:.1f}%)")
+    logger.info(f"⚙️  Workers configurados: {max_workers} ({(max_workers/cpu_count)*100:.1f}% dos núcleos)")
+    logger.info(f"📊 Estratégia: Usar pelo menos 50% dos núcleos para processamento paralelo")
+    logger.info(f"🔄 Capacidade estimada: ~{max_workers * 2} arquivos ZIP simultâneos")
+    logger.info(f"💾 Memória por worker: ~{memory_available_gb/max_workers:.1f}GB")
+    
+    if memory_percent > 80:
+        logger.warning(f"⚠️  ATENÇÃO: Uso alto de memória ({memory_percent:.1f}%)")
+    if cpu_count < 4:
+        logger.warning(f"⚠️  ATENÇÃO: Poucos núcleos CPU ({cpu_count}) - considere upgrade")
+    if max_workers == cpu_count:
+        logger.info(f"✅ Configuração otimizada: usando todos os núcleos disponíveis")
+    elif max_workers >= cpu_count // 2:
+        logger.info(f"✅ Configuração balanceada: usando {(max_workers/cpu_count)*100:.0f}% dos núcleos")
+    else:
+        logger.info(f"⚠️  Configuração conservadora: usando apenas {(max_workers/cpu_count)*100:.0f}% dos núcleos")
+    
+    logger.info("=" * 50)
 
 def get_system_resources():
     """Retorna informações sobre os recursos do sistema."""
@@ -797,7 +831,19 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
         return False
 
 def process_socio_files(path_zip: str, path_unzip: str, path_parquet: str) -> bool:
-    """Processa os dados de sócios."""
+    """
+    Processa todos os arquivos de sócio encontrados no diretório ZIP.
+    """
+    # Log detalhado dos recursos do sistema
+    log_system_resources_socio()
+    
+    logger.info(f"Iniciando processamento de arquivos de sócio em {path_zip}")
+    
+    # Verificar se o diretório existe
+    if not os.path.exists(path_zip):
+        logger.error(f"Diretório não encontrado: {path_zip}")
+        return False
+
     start_time = time.time()
     
     logger.info('=' * 50)

@@ -26,6 +26,94 @@ import inspect
 
 logger = logging.getLogger(__name__)
 
+# Variáveis globais para controle de recursos
+_processing_lock = threading.Lock()
+_active_processes = threading.local()
+# Usar pelo menos metade dos núcleos do processador
+_max_concurrent_processes = max(2, (os.cpu_count() or 4) // 2)
+
+def log_system_resources_estabelecimento():
+    """Log detalhado dos recursos do sistema para processamento de estabelecimentos."""
+    cpu_count = os.cpu_count() or 4
+    memory_info = psutil.virtual_memory()
+    memory_total_gb = memory_info.total / (1024**3)
+    memory_available_gb = memory_info.available / (1024**3)
+    memory_percent = memory_info.percent
+    
+    max_workers = _max_concurrent_processes
+    
+    logger.info("=" * 50)
+    logger.info("🏪 MÓDULO ESTABELECIMENTO - CONFIGURAÇÃO DE RECURSOS")
+    logger.info("=" * 50)
+    
+    # Recursos do sistema
+    logger.info(f"🖥️  RECURSOS DO SISTEMA:")
+    logger.info(f"   • CPU: {cpu_count} núcleos disponíveis")
+    logger.info(f"   • Memória: {memory_total_gb:.2f}GB total | {memory_available_gb:.2f}GB disponível ({100-memory_percent:.1f}%)")
+    
+    # Informações de disco
+    try:
+        if os.name == 'nt':  # Windows
+            disk_path = os.path.splitdrive(os.getcwd())[0] + '\\'
+        else:  # Unix/Linux
+            disk_path = '/'
+        
+        disk_info = psutil.disk_usage(disk_path)
+        disk_total_gb = disk_info.total / (1024**3)
+        disk_free_gb = disk_info.free / (1024**3)
+        disk_percent = (disk_info.used / disk_info.total) * 100
+        logger.info(f"   • Disco: {disk_total_gb:.2f}GB total | {disk_free_gb:.2f}GB livres ({100-disk_percent:.1f}%)")
+    except Exception as e:
+        logger.warning(f"   • Disco: Erro ao obter informações ({e})")
+    
+    # Configurações de processamento
+    logger.info(f"⚙️  CONFIGURAÇÕES DE PROCESSAMENTO:")
+    logger.info(f"   • Workers máximos: {max_workers}")
+    logger.info(f"   • Estratégia: Pelo menos {cpu_count // 2} workers (50% dos núcleos)")
+    logger.info(f"   • Tipo de processamento: Estabelecimentos (arquivos grandes)")
+    logger.info(f"   • Otimização: Processamento em chunks para arquivos >500MB")
+    
+    # Estimativas de performance
+    estimated_throughput = max_workers * 2  # Estimativa conservadora para estabelecimentos
+    estimated_memory_per_worker = memory_available_gb / max_workers if max_workers > 0 else 0
+    
+    logger.info(f"📊 ESTIMATIVAS DE PERFORMANCE:")
+    logger.info(f"   • Throughput estimado: ~{estimated_throughput} arquivos/hora")
+    logger.info(f"   • Memória por worker: ~{estimated_memory_per_worker:.1f}GB")
+    logger.info(f"   • Eficiência de CPU: {(max_workers/cpu_count)*100:.1f}%")
+    
+    # Alertas específicos para estabelecimentos
+    logger.info(f"⚠️  ALERTAS ESPECÍFICOS:")
+    alerts_count = 0
+    if memory_percent > 85:
+        logger.warning(f"   • CRÍTICO: Uso de memória muito alto ({memory_percent:.1f}%) - estabelecimentos requerem muita RAM")
+        alerts_count += 1
+    elif memory_percent > 70:
+        logger.warning(f"   • ATENÇÃO: Uso de memória alto ({memory_percent:.1f}%) - monitorar durante processamento")
+        alerts_count += 1
+    
+    if memory_total_gb < 8:
+        logger.warning(f"   • ATENÇÃO: Pouca RAM ({memory_total_gb:.1f}GB) - estabelecimentos podem ser lentos")
+        alerts_count += 1
+    
+    if disk_free_gb < 50:
+        logger.warning(f"   • CRÍTICO: Pouco espaço em disco ({disk_free_gb:.1f}GB) - estabelecimentos geram arquivos grandes")
+        alerts_count += 1
+    
+    if alerts_count == 0:
+        logger.info(f"   • ✅ Sistema sem alertas críticos para processamento de estabelecimentos")
+    
+    # Recomendações específicas
+    if memory_total_gb >= 32 and cpu_count >= 8:
+        logger.info(f"   • ✅ Sistema EXCELENTE para processamento de estabelecimentos")
+    elif memory_total_gb >= 16 and cpu_count >= 6:
+        logger.info(f"   • ✅ Sistema BOM para processamento de estabelecimentos")
+    elif memory_total_gb >= 8 and cpu_count >= 4:
+        logger.info(f"   • ⚠️ Sistema ADEQUADO - processamento pode ser mais lento")
+    else:
+        logger.info(f"   • ⚠️ Sistema LIMITADO - considere upgrade para melhor performance")
+    
+    logger.info("=" * 50)
 
 def get_system_resources():
     """Retorna informações sobre os recursos do sistema."""
@@ -901,6 +989,9 @@ def process_single_zip(zip_file: str, path_zip: str, path_unzip: str, path_parqu
 
 def process_estabelecimento_files(path_zip: str, path_unzip: str, path_parquet: str, uf_subset: str | None = None) -> bool:
     """Processa todos os arquivos de estabelecimentos de um diretório."""
+    # Log detalhado dos recursos do sistema
+    log_system_resources_estabelecimento()
+    
     start_time = time.time()
     
     logger.info('=' * 50)
