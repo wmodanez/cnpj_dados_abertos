@@ -64,6 +64,7 @@ import os
 from multiprocessing import freeze_support
 import psutil
 import re
+import sys
 import time
 import socket
 import requests
@@ -153,20 +154,22 @@ def setup_logging(log_level_str: str):
     log_format = '%(asctime)s - %(levelname)s - %(message)s'
     date_format = '%Y-%m-%d %H:%M:%S'
 
+    # Comando de execução
+    cmd_line = ' '.join(sys.argv)
+    # Escreve o comando como primeira linha do log
+    with open(log_filename, 'w', encoding='utf-8') as f:
+        f.write(f"# Linha de comando: {cmd_line}\n")
+
     # Converte a string do argumento para o nível de log correspondente
     log_level = getattr(logging, log_level_str.upper(), logging.INFO)
 
     # Configuração do logger raiz para capturar tudo
     root_logger = logging.getLogger()
-    # root_logger.setLevel(logging.INFO) # Nível fixo removido
-    root_logger.setLevel(log_level) # Define o nível dinamicamente
+    root_logger.setLevel(log_level)
 
-    # Limpa handlers existentes para evitar duplicação em re-execuções (ex: testes)
-    # CUIDADO: Isso pode remover handlers adicionados por outras bibliotecas.
-    # Alternativa: verificar se handlers específicos já existem antes de adicionar.
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
-        print("[setup_logging] Handlers de log anteriores removidos.") # Log temporário para depuração
+        print("[setup_logging] Handlers de log anteriores removidos.")
 
     # Handler para arquivo (sem cores)
     file_handler = logging.FileHandler(log_filename, encoding='utf-8')
@@ -179,6 +182,7 @@ def setup_logging(log_level_str: str):
 
     logger_instance = logging.getLogger(__name__)
     logger_instance.info(f"Nível de log configurado para: {logging.getLevelName(log_level)}")
+    logger_instance.info(f"Linha de comando: {cmd_line}")
     return logger_instance
 
 

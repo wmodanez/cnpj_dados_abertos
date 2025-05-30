@@ -40,6 +40,7 @@ from .process.socio import process_single_zip as process_socio_zip
 from .utils.time_utils import format_elapsed_time
 from .utils.statistics import global_stats
 from .utils.cache import DownloadCache  # Corrigir import do cache
+from src.utils.processing_cache import processing_cache
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -1186,7 +1187,7 @@ async def download_file(session: aiohttp.ClientSession | None, url: str, destina
                             
                             # Validar arquivo baixado
                             if error is None and await _validate_file_integrity(result_path, remote_size):
-                                return result_path, None, None
+                                return result_path, None
                             elif error is None:
                                 error = Exception("Arquivo baixado falhou na validação de integridade")
                             
@@ -1667,6 +1668,7 @@ async def download_multiple_files(
         progress = DummyProgress()
     
     # Configurar layout e live display baseado nas opções ativadas
+   
     live_display = None
     layout = None  # Definir layout no escopo correto
     if show_progress_bar or show_pending_files:
