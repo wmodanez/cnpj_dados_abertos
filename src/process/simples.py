@@ -31,6 +31,7 @@ from ..utils.folders import get_output_path, ensure_correct_folder_structure
 from ..utils.time_utils import format_elapsed_time
 from ..utils.statistics import global_stats
 from ..utils.progress_tracker import progress_tracker
+from src.utils.processing_cache import processing_cache
 import inspect
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,13 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, crea
                     # Fila ficou vazia entre a verificação e o get
                     continue
                     
+                zip_path = os.path.join(path_zip, zip_file)
+                file_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
+                file_mtime = int(os.path.getmtime(zip_path)) if os.path.exists(zip_path) else 0
+                if processing_cache.is_processed(zip_file, file_size, file_mtime):
+                    logger.warning(f"[WORKER-{worker_id}] Arquivo {zip_file} já processado anteriormente. Pulando processamento.")
+                    continue
+                
                 logger.info(f"[WORKER-{worker_id}] Iniciando processamento de {zip_file}")
                 
                 # Registrar início do processamento do arquivo
@@ -187,6 +195,7 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, crea
                     
                     if result:
                         logger.info(f"[WORKER-{worker_id}] ✓ {zip_file} processado com sucesso em {elapsed_time:.2f}s")
+                        processing_cache.mark_completed(zip_file, file_size, file_mtime, path_parquet)
                     else:
                         logger.error(f"[WORKER-{worker_id}] ✗ Falha ao processar {zip_file} após {elapsed_time:.2f}s")
                         

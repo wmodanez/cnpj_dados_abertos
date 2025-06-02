@@ -32,6 +32,7 @@ from ..utils.time_utils import format_elapsed_time
 from ..utils.statistics import global_stats
 from ..utils.progress_tracker import progress_tracker
 import inspect
+from src.utils.processing_cache import processing_cache
 
 logger = logging.getLogger(__name__)
 
@@ -151,30 +152,27 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, crea
                 except:
                     # Fila ficou vazia entre a verificação e o get
                     continue
-                    
+
+                worker_id = threading.current_thread().name
+                zip_path = os.path.join(path_zip, zip_file)
+                file_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
+                file_mtime = int(os.path.getmtime(zip_path)) if os.path.exists(zip_path) else 0
+
+                # Verificar duplicidade de processamento
+                if processing_cache.is_processed(zip_file, file_size, file_mtime):
+                    logger.warning(f"[WORKER-{worker_id}] Arquivo {zip_file} já processado anteriormente. Pulando processamento.")
+                    continue
+
                 logger.info(f"[WORKER-{worker_id}] Iniciando processamento de {zip_file}")
-                
-                # Registrar início do processamento do arquivo
                 progress_tracker.start_file("socios", zip_file, worker_id)
-                
                 with _processing_lock:
                     _active_processes.value += 1
                     logger.debug(f"[WORKER-{worker_id}] Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
-                    
                 try:
-                    # Obter tamanho do arquivo para estatísticas
-                    zip_path = os.path.join(path_zip, zip_file)
-                    file_size = os.path.getsize(zip_path) if os.path.exists(zip_path) else 0
-                    
-                    # Processa o arquivo
                     start_time = time.time()
                     result = process_single_zip(zip_file, path_zip, path_unzip, path_parquet, create_private=create_private)
                     elapsed_time = time.time() - start_time
-                    
-                    # Registrar conclusão do arquivo no rastreador de progresso
                     progress_tracker.complete_file("socios", zip_file, result, worker_id, elapsed_time)
-                    
-                    # Registrar estatística de processamento
                     global_stats.add_processing_stat(
                         filename=zip_file,
                         file_type="socios",
@@ -184,25 +182,21 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, crea
                         success=result,
                         error=None if result else "Processamento falhou"
                     )
-                    
                     if result:
                         logger.info(f"[WORKER-{worker_id}] ✓ {zip_file} processado com sucesso em {elapsed_time:.2f}s")
+                        # Marcar como processado no cache
+                        processing_cache.mark_completed(zip_file, file_size, file_mtime, path_parquet)
                     else:
                         logger.error(f"[WORKER-{worker_id}] ✗ Falha ao processar {zip_file} após {elapsed_time:.2f}s")
-                        
                 finally:
                     with _processing_lock:
                         _active_processes.value -= 1
                         logger.debug(f"[WORKER-{worker_id}] Processo finalizado. Processos ativos: {_active_processes.value}/{_max_concurrent_processes.value}")
-                        
             except Exception as e:
                 logger.error(f"[WORKER-{worker_id}] Erro no worker da fila: {str(e)}")
-                # Registrar estatística de erro
                 try:
-                    # Registrar falha no arquivo se estava sendo processado
                     if 'zip_file' in locals():
                         progress_tracker.complete_file("socios", zip_file, False, worker_id)
-                    
                     global_stats.add_processing_stat(
                         filename=zip_file if 'zip_file' in locals() else "unknown",
                         file_type="socios",
@@ -213,11 +207,9 @@ def process_queue_worker(path_zip: str, path_unzip: str, path_parquet: str, crea
                         error=str(e)
                     )
                 except:
-                    pass  # Evitar erro duplo
+                    pass
                 time.sleep(5)
-    
     finally:
-        # Registrar finalização do worker no rastreador de progresso
         progress_tracker.stop_worker("socios", worker_id)
         logger.info(f"[WORKER-{worker_id}] Worker finalizado")
 
