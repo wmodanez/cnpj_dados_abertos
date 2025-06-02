@@ -50,8 +50,11 @@ benchmark_temp/
 .ipynb_checkpoints/
 dados-abertos/
 dados-abertos-zip/
-src/Entity/
-/experiments/
+experiments/
+exemplos/
 
 # Ignorar pastas de cache em qualquer subdiretório
 */cache/
+
+tests/
+test_interface/
