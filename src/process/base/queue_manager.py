@@ -85,6 +85,32 @@ class ProcessingQueueManager:
         """Tamanho atual da fila."""
         return self._process_queue.qsize()
     
+    def get_queue_size(self) -> int:
+        """
+        Retorna o tamanho atual da fila.
+        
+        Método de compatibilidade para testes.
+        
+        Returns:
+            int: Número de itens na fila
+        """
+        return self.queue_size
+    
+    def clear_queue(self) -> None:
+        """
+        Limpa todos os itens da fila.
+        
+        Remove todos os itens pendentes da fila de processamento.
+        """
+        try:
+            while True:
+                self._process_queue.get_nowait()
+        except Empty:
+            # Fila vazia
+            pass
+        
+        self.logger.info("Fila de processamento limpa")
+    
     def can_start_processing(self) -> bool:
         """
         Verifica se é possível iniciar um novo processamento.

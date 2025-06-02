@@ -8,7 +8,7 @@ que estava duplicado nos 4 processadores originais.
 import logging
 import os
 import psutil
-from typing import Dict, NamedTuple
+from typing import Dict, NamedTuple, Any
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,25 @@ class ResourceMonitor:
                 memory_available_gb=4.0,
                 cpu_count=4
             )
+    
+    def get_system_resources_dict(self) -> Dict[str, Any]:
+        """
+        Retorna informações dos recursos do sistema como dict.
+        
+        Versão de compatibilidade para testes que esperam dict.
+        
+        Returns:
+            Dict com informações do sistema
+        """
+        resources = self.get_system_resources()
+        return {
+            'cpu_percent': resources.cpu_percent,
+            'memory_percent': resources.memory_percent,
+            'disk_percent': resources.disk_percent,
+            'memory_total': resources.memory_total_gb,
+            'memory_available': resources.memory_available_gb,
+            'cpu_count': resources.cpu_count
+        }
     
     def can_start_processing(self, active_processes: int, max_processes: int) -> bool:
         """
