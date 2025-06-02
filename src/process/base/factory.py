@@ -342,18 +342,19 @@ def auto_register_processors():
     """
     try:
         # Import aqui para evitar imports circulares
-        from ..processors.empresa_processor import EmpresaProcessor
-        from ..processors.estabelecimento_processor import EstabelecimentoProcessor
         from ..processors.socio_processor import SocioProcessor
         from ..processors.simples_processor import SimplesProcessor
+        from ..processors.empresa_processor import EmpresaProcessor
+        from ..processors.estabelecimento_processor import EstabelecimentoProcessor
         
-        # Registrar processadores
-        ProcessorFactory.register('empresa', EmpresaProcessor)
-        ProcessorFactory.register('estabelecimento', EstabelecimentoProcessor)
+        # Registrar todos os processadores refatorados
         ProcessorFactory.register('socio', SocioProcessor)
         ProcessorFactory.register('simples', SimplesProcessor)
+        ProcessorFactory.register('empresa', EmpresaProcessor)
+        ProcessorFactory.register('estabelecimento', EstabelecimentoProcessor)
         
-        logger.info("Processadores padrão registrados automaticamente")
+        logger.info("Todos os processadores refatorados registrados: socio, simples, empresa, estabelecimento")
+        logger.info("✅ FASE 3 CONCLUÍDA: Todos os 4 processadores migrados com sucesso!")
         
     except ImportError as e:
         logger.warning(f"Alguns processadores não puderam ser registrados automaticamente: {str(e)}")

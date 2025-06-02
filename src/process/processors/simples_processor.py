@@ -1,9 +1,9 @@
 """
-Processador de sócios refatorado.
+Processador de Simples Nacional refatorado.
 
-Implementação específica para processamento de dados de sócios,
+Implementação específica para processamento de dados do Simples Nacional,
 utilizando a infraestrutura unificada da Fase 2 e integrando
-com a entidade Socio da Fase 1.
+com a entidade Simples da Fase 1.
 """
 
 import logging
@@ -14,39 +14,40 @@ import tempfile
 import shutil
 from typing import List, Type
 
-from ...Entity.Socio import Socio
+from ...Entity.Simples import Simples
 from ...Entity.base import BaseEntity
 from ..base.processor import BaseProcessor
 
 logger = logging.getLogger(__name__)
 
 
-class SocioProcessor(BaseProcessor):
+class SimplesProcessor(BaseProcessor):
     """
-    Processador específico para dados de sócios.
+    Processador específico para dados do Simples Nacional.
     
     Características:
-    - Utiliza entidade Socio para validação e transformação
+    - Utiliza entidade Simples para validação e transformação
     - Processamento simples sem subsets específicos
     - Integração com sistema de fila unificado
     - Remove toda duplicação de código
+    - Transformações específicas para opções S/N e datas
     """
     
     def get_processor_name(self) -> str:
         """Retorna o nome do processador."""
-        return "SOCIO"
+        return "SIMPLES"
     
     def get_entity_class(self) -> Type[BaseEntity]:
         """Retorna a classe de entidade associada."""
-        return Socio
+        return Simples
     
     def get_valid_options(self) -> List[str]:
         """Retorna opções válidas para este processador."""
-        return ['create_private']  # Recebe mas não usa
+        return ['create_private']  # Recebe mas não usa (similar ao socio)
     
     def apply_specific_transformations(self, df: pl.DataFrame) -> pl.DataFrame:
         """
-        Aplica transformações específicas de sócios.
+        Aplica transformações específicas do Simples Nacional.
         
         Args:
             df: DataFrame a ser transformado
@@ -55,7 +56,7 @@ class SocioProcessor(BaseProcessor):
             DataFrame transformado
         """
         try:
-            # Transformações específicas para sócios
+            # Transformações específicas para Simples Nacional
             
             # 1. Limpar e padronizar CNPJ básico
             if 'cnpj_basico' in df.columns:
@@ -67,32 +68,45 @@ class SocioProcessor(BaseProcessor):
                     .alias('cnpj_basico')
                 ])
             
-            # 2. Limpar CPF do representante legal
-            if 'representante_legal' in df.columns:
-                df = df.with_columns([
-                    pl.col('representante_legal')
-                    .str.replace_all(r'[^\d]', '')
-                    .str.replace_all(r'^0+', '')  # Remove zeros à esquerda
-                    .alias('representante_legal')
-                ])
+            # 2. Converter opções para 0/1 (melhor performance que S/N)
+            opcao_columns = [
+                'opcao_simples', 'opcao_mei', 'ultimo_evento'
+            ]
             
-            # 3. Normalizar nomes
-            name_columns = ['nome_socio', 'nome_representante']
-            for col in name_columns:
+            for col in opcao_columns:
                 if col in df.columns:
                     df = df.with_columns([
                         pl.col(col)
-                        .str.strip_chars()
-                        .str.to_uppercase()
+                        .map_elements(self._normalize_opcao_to_int, return_dtype=pl.Int8)
                         .alias(col)
                     ])
             
-            # 4. Tratar valores nulos específicos
+            # 3. Converter datas do Simples Nacional (formato YYYYMMDD)
+            date_columns = [
+                'data_opcao_simples', 'data_exclusao_simples',
+                'data_opcao_mei', 'data_exclusao_mei'
+            ]
+            
+            for col in date_columns:
+                if col in df.columns:
+                    df = df.with_columns([
+                        pl.col(col)
+                        .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
+                        .map_elements(
+                            lambda x: self._convert_date_simples(x),
+                            return_dtype=pl.Date
+                        )
+                        .alias(col)
+                    ])
+            
+            # 4. Tratar valores nulos específicos do Simples Nacional
             null_replacements = {
-                'cnpj_cpf_socio': ['0', '00000000000', '00000000000000'],
-                'representante_legal': ['0', '00000000000'],
-                'qualificacao_socio': [0, 99],
-                'qualificacao_representante_legal': [0, 99]
+                'opcao_simples': ['', '0', 'NULL', 'null'],
+                'opcao_mei': ['', '0', 'NULL', 'null'],
+                'data_opcao_simples': ['0', '00000000', ''],
+                'data_exclusao_simples': ['0', '00000000', ''],
+                'data_opcao_mei': ['0', '00000000', ''],
+                'data_exclusao_mei': ['0', '00000000', '']
             }
             
             for col, null_values in null_replacements.items():
@@ -104,32 +118,172 @@ class SocioProcessor(BaseProcessor):
                         .alias(col)
                     ])
             
-            # 5. Validar comprimento de CPF/CNPJ
-            if 'cnpj_cpf_socio' in df.columns:
-                df = df.with_columns([
-                    pl.when(
-                        (pl.col('cnpj_cpf_socio').str.len_chars() != 11) &
-                        (pl.col('cnpj_cpf_socio').str.len_chars() != 14)
-                    )
-                    .then(None)
-                    .otherwise(pl.col('cnpj_cpf_socio'))
-                    .alias('cnpj_cpf_socio')
-                ])
+            # 5. Validar consistência de datas
+            df = self._validate_date_consistency(df)
             
-            if 'representante_legal' in df.columns:
-                df = df.with_columns([
-                    pl.when(pl.col('representante_legal').str.len_chars() != 11)
-                    .then(None)
-                    .otherwise(pl.col('representante_legal'))
-                    .alias('representante_legal')
-                ])
+            # 6. Adicionar colunas calculadas úteis
+            df = self._add_calculated_columns(df)
             
-            self.logger.debug(f"Transformações específicas aplicadas. Linhas: {df.height}")
+            self.logger.debug(f"Transformações específicas do Simples aplicadas. Linhas: {df.height}")
             return df
             
         except Exception as e:
             self.logger.error(f"Erro ao aplicar transformações específicas: {str(e)}")
             return df
+    
+    def _normalize_opcao_to_int(self, value: str) -> int:
+        """
+        Normaliza valores de opção para 0/1 (melhor performance que S/N).
+        
+        Args:
+            value: Valor a ser normalizado
+            
+        Returns:
+            0 (Não), 1 (Sim) ou None
+        """
+        if not value or value is None:
+            return None
+        
+        value = str(value).strip().upper()
+        
+        # Valores que indicam "Sim" -> 1
+        if value in ['S', 'SIM', 'YES', '1', 'TRUE', 'VERDADEIRO']:
+            return 1
+        
+        # Valores que indicam "Não" -> 0
+        if value in ['N', 'NAO', 'NÃO', 'NO', '0', 'FALSE', 'FALSO']:
+            return 0
+        
+        # Valor não reconhecido -> None
+        return None
+    
+    def _normalize_opcao(self, value: str) -> str:
+        """
+        DEPRECATED: Use _normalize_opcao_to_int para melhor performance.
+        Mantido apenas para compatibilidade.
+        """
+        result = self._normalize_opcao_to_int(value)
+        if result == 1:
+            return 'S'
+        elif result == 0:
+            return 'N'
+        return None
+    
+    def _convert_date_simples(self, date_str: str) -> pl.Date:
+        """
+        Converte string de data no formato YYYYMMDD para Date.
+        
+        Args:
+            date_str: String da data
+            
+        Returns:
+            Data convertida ou None
+        """
+        if not date_str or date_str in ['0', '00000000', '']:
+            return None
+        
+        try:
+            # Garantir que tem 8 dígitos
+            date_str = str(date_str).zfill(8)
+            
+            if len(date_str) != 8 or not date_str.isdigit():
+                return None
+            
+            year = int(date_str[:4])
+            month = int(date_str[4:6])
+            day = int(date_str[6:8])
+            
+            # Validações básicas
+            if year < 2006 or year > 2030:  # Simples Nacional criado em 2006
+                return None
+            if month < 1 or month > 12:
+                return None
+            if day < 1 or day > 31:
+                return None
+            
+            return pl.Date(year, month, day)
+            
+        except Exception:
+            return None
+    
+    def _validate_date_consistency(self, df: pl.DataFrame) -> pl.DataFrame:
+        """
+        Valida consistência entre datas de opção e exclusão.
+        
+        Args:
+            df: DataFrame a ser validado
+            
+        Returns:
+            DataFrame com datas inconsistentes corrigidas
+        """
+        # Validar consistência Simples Nacional
+        if ('data_opcao_simples' in df.columns and 
+            'data_exclusao_simples' in df.columns):
+            df = df.with_columns([
+                pl.when(
+                    (pl.col('data_exclusao_simples').is_not_null()) &
+                    (pl.col('data_opcao_simples').is_not_null()) &
+                    (pl.col('data_exclusao_simples') <= pl.col('data_opcao_simples'))
+                )
+                .then(None)  # Remove data de exclusão inválida
+                .otherwise(pl.col('data_exclusao_simples'))
+                .alias('data_exclusao_simples')
+            ])
+        
+        # Validar consistência MEI
+        if ('data_opcao_mei' in df.columns and 
+            'data_exclusao_mei' in df.columns):
+            df = df.with_columns([
+                pl.when(
+                    (pl.col('data_exclusao_mei').is_not_null()) &
+                    (pl.col('data_opcao_mei').is_not_null()) &
+                    (pl.col('data_exclusao_mei') <= pl.col('data_opcao_mei'))
+                )
+                .then(None)  # Remove data de exclusão inválida
+                .otherwise(pl.col('data_exclusao_mei'))
+                .alias('data_exclusao_mei')
+            ])
+        
+        return df
+    
+    def _add_calculated_columns(self, df: pl.DataFrame) -> pl.DataFrame:
+        """
+        Adiciona colunas calculadas úteis.
+        
+        Args:
+            df: DataFrame original
+            
+        Returns:
+            DataFrame com colunas adicionais
+        """
+        # Status do Simples Nacional baseado em opções (0/1)
+        if 'opcao_simples' in df.columns and 'data_exclusao_simples' in df.columns:
+            df = df.with_columns([
+                pl.when(
+                    (pl.col('opcao_simples') == 1) &  # Optou pelo Simples
+                    (pl.col('data_exclusao_simples').is_null())  # Sem data de exclusão
+                )
+                .then('Ativo no Simples')
+                .when(pl.col('opcao_simples') == 1)  # Optou mas foi excluído
+                .then('Excluído do Simples') 
+                .when(pl.col('opcao_simples') == 0)  # Não optou
+                .then('Não optante')
+                .otherwise('Status indefinido')
+                .alias('status_simples_descricao')
+            ])
+        
+        # Status do MEI baseado em opções (0/1)
+        if 'opcao_mei' in df.columns:
+            df = df.with_columns([
+                pl.when(pl.col('opcao_mei') == 1)
+                .then('Optante MEI')
+                .when(pl.col('opcao_mei') == 0)
+                .then('Não optante MEI')
+                .otherwise('MEI indefinido')
+                .alias('status_mei_descricao')
+            ])
+        
+        return df
     
     def process_single_zip_impl(
         self, 
@@ -140,7 +294,7 @@ class SocioProcessor(BaseProcessor):
         **kwargs
     ) -> bool:
         """
-        Implementação específica do processamento de um ZIP de sócios.
+        Implementação específica do processamento de um ZIP do Simples Nacional.
         
         Args:
             zip_file: Nome do arquivo ZIP
@@ -297,7 +451,7 @@ class SocioProcessor(BaseProcessor):
                 chunk_df = self.apply_entity_transformations(chunk_df)
                 
                 # Salvar chunk
-                chunk_filename = f"{zip_prefix}_socio_chunk_{i+1:03d}.parquet"
+                chunk_filename = f"{zip_prefix}_simples_chunk_{i+1:03d}.parquet"
                 chunk_path = os.path.join(output_dir, chunk_filename)
                 
                 chunk_df.write_parquet(chunk_path, compression='snappy')
@@ -314,26 +468,32 @@ class SocioProcessor(BaseProcessor):
     
     def get_processing_summary(self) -> dict:
         """
-        Retorna resumo do processamento específico para sócios.
+        Retorna resumo do processamento específico para Simples Nacional.
         
         Returns:
             Dict com informações de resumo
         """
         base_summary = self.get_status()
         
-        # Adicionar informações específicas de sócios
-        socio_summary = {
+        # Adicionar informações específicas do Simples Nacional
+        simples_summary = {
             **base_summary,
-            'entity_type': 'Socio',
+            'entity_type': 'Simples',
             'supports_chunking': True,
             'default_chunk_size': 500_000,
             'specific_transformations': [
-                'Limpeza de CPF/CNPJ',
-                'Normalização de nomes',
-                'Validação de comprimento de documentos',
+                'Normalização de opções S/N',
+                'Conversão de datas YYYYMMDD',
+                'Validação de CNPJ básico',
+                'Validação de consistência de datas',
+                'Cálculo de situação atual',
                 'Tratamento de valores nulos específicos'
             ],
-            'output_format': 'Parquet particionado'
+            'output_format': 'Parquet particionado',
+            'calculated_columns': [
+                'status_simples_descricao',
+                'status_mei_descricao'
+            ]
         }
         
-        return socio_summary 
+        return simples_summary 
