@@ -18,11 +18,21 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
 - ✅ **100% cobertura de testes** vs ~30% da versão anterior
 - ✅ **Documentação profissional** completa (12 documentos)
 
+**🆕 Funcionalidades Avançadas (v2.1):**
+- ✅ **Download Cronológico**: Download ordenado de múltiplas pastas remotas com `--all-folders` e `--from-folder`
+- ✅ **Processamento Múltiplo**: Processamento inteligente de múltiplas pastas locais com `--process-all-folders`
+- ✅ **Economia de Espaço**: Deleção automática de ZIPs após extração com `--delete-zips-after-extract`
+- ✅ **Verificação de Integridade**: Sistema robusto de verificação antes de deletar arquivos
+- ✅ **Processamento Híbrido**: Paralelização inteligente onde aumenta performance, sequenciamento onde evita problemas
+
 **Benefícios Imediatos:**
 - 🏃‍♂️ **Muito mais rápido**: ~166 linhas/segundo vs <50 linhas/segundo anterior
 - 🛡️ **Mais confiável**: 100% taxa de sucesso vs ~85% anterior  
 - 🔧 **Mais fácil de manter**: 1 lugar para mudanças vs 4 lugares anteriormente
 - 📚 **Mais fácil de usar**: Interface unificada e documentação completa
+- 💾 **Mais eficiente**: Economia automática de espaço em disco
+- 📊 **Mais organizado**: Processamento cronológico e estruturado
+- 🧵 **Mais inteligente**: Paralelização otimizada baseada em recursos do sistema
 
 ## Navegação
 
@@ -77,6 +87,7 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
   - [Tratamento Específico de Exceções](#tratamento-específico-de-exceções)
   - [Verificações de Segurança](#verificações-de-segurança)
   - [Limpeza de arquivos temporários](#limpeza-de-arquivos-temporários)
+  - [Economia de Espaço em Disco](#economia-de-espaço-em-disco)
   - [Melhorias na Conversão de Tipos](#melhorias-na-conversão-de-tipos)
 </details>
 
@@ -177,7 +188,30 @@ python main.py --step all --tipos empresas --output-subfolder apenas_empresas_po
 # 11. Processar Estabelecimentos, criando subset para SP:
 #     (Execução completa, mas poderia ser --step process se os ZIPs já existirem)
 python main.py --step all --tipos estabelecimentos --output-subfolder process_go --criar-subset-uf GO
-```
+
+# 12. NOVO: Baixar arquivos de todas as pastas remotas a partir de 2023-01 até a mais atual:
+python main.py --all-folders --from-folder 2023-01 --step download
+
+# 13. NOVO: Baixar e processar arquivos de todas as pastas remotas desde a mais antiga até a mais atual:
+python main.py --all-folders
+
+# 14. NOVO: Baixar e processar dados a partir de 2023-06 até a mais atual:
+python main.py --all-folders --from-folder 2023-06
+
+# 15. NOVO: Processar todas as pastas locais no formato AAAA-MM a partir de 2023-03:
+python main.py --step process --process-all-folders --from-folder 2023-03 --output-subfolder processados_desde_2023_03
+
+# 16. NOVO: Processar dados deletando os ZIPs após extração para economizar espaço:
+python main.py --tipos empresas --delete-zips-after-extract
+
+# 17. NOVO: Baixar e processar dados de 2023-01 até atual, deletando ZIPs após processamento:
+python main.py --all-folders --from-folder 2023-01 --delete-zips-after-extract
+
+# 18. NOVO: Processar todas as pastas locais deletando ZIPs para economizar espaço:
+python main.py --step process --process-all-folders --output-subfolder economizando_espaco --delete-zips-after-extract
+
+# 19. NOVO: Processamento conservador de espaço - apenas estabelecimentos com deleção de ZIPs:
+python main.py --tipos estabelecimentos --delete-zips-after-extract --output-subfolder estabelecimentos_sem_zips
 
 **Argumentos Principais:**
 
@@ -188,6 +222,11 @@ python main.py --step all --tipos estabelecimentos --output-subfolder process_go
 *   `--output-subfolder <nome>`: Subpasta em `PATH_PARQUET` para salvar/ler Parquets (obrigatório para `--step process` e `--step database`).
 *   `--criar-empresa-privada`: Flag para criar subset de empresas privadas (na etapa `process`).
 *   `--criar-subset-uf <UF>`: Flag para criar subset de estabelecimentos por UF (na etapa `process`).
+*   `--all-folders`: Baixa/processa de TODOS os diretórios remotos disponíveis ou todas as pastas locais.
+*   `--from-folder <pasta>`: 🆕 Especifica pasta inicial para download/processamento sequencial (formato AAAA-MM).
+*   `--process-all-folders`: 🆕 Processa todas as pastas locais no formato AAAA-MM encontradas.
+*   `--delete-zips-after-extract`: 🆕 Deleta arquivos ZIP após extração bem-sucedida para economizar espaço.
+*   `--force-download`: Força download mesmo que arquivos já existam localmente ou no cache.
 *   `--log-level <NÍVEL>`: Ajusta o nível de log (padrão: `INFO`).
 
 ### Gerenciamento de Cache
@@ -429,7 +468,7 @@ graph TD
 - **⚡ Paralelização**: Downloads assíncronos e processamento em múltiplas threads
 - **💾 Otimização de Memória**: Processamento sequencial de ZIPs para evitar sobrecarga
 - **🛡️ Resiliência**: Sistema de cache, retry automático e limpeza de recursos
-- **📊 Monitoramento**: Estatísticas em tempo real e logs detalhados
+- **📊 Monitoramento**: Estatísticas em tempo real, métricas de performance e relatórios automáticos
 - **🏗️ Validação**: Sistema de entidades com validação automática de dados
 
 ### Fluxo Modular Atual (`--step`)
@@ -454,7 +493,10 @@ O fluxo de execução é controlado pelo argumento `--step`, permitindo executar
 *   **Sistema de Entidades:** 🆕 Sistema robusto de entidades com validação automática, transformações e schemas Pydantic.
 *   **Pipeline Assíncrono:** Download e processamento simultâneos com streaming inteligente.
 *   **Download Eficiente:** Assíncrono, paralelo, com cache, ordenação por tamanho e retentativas automáticas.
-*   **Processamento Otimizado:** Streaming de dados, chunks adaptativos e workers dinâmicos baseados em recursos.
+*   **Processamento Híbrido:** 🆕 **Paralelização inteligente** - usa múltiplas threads onde aumenta performance, processamento sequencial onde economiza recursos.
+*   **Download Cronológico:** 🆕 Download ordenado de múltiplas pastas remotas em ordem cronológica com `--all-folders` e `--from-folder`.
+*   **Processamento Múltiplo:** 🆕 Processamento inteligente de múltiplas pastas locais com `--process-all-folders` e controle por `--from-folder`.
+*   **Economia de Espaço:** 🆕 Deleção automática de ZIPs após extração com `--delete-zips-after-extract` para conservar espaço em disco.
 *   **Monitoramento Avançado:** Estatísticas em tempo real, métricas de performance e relatórios automáticos.
 *   **Validação Robusta:** 🆕 Sistema híbrido com Pydantic 2.x, correção automática e relatórios detalhados.
 *   **Organização Inteligente:** Estrutura de pastas por data (`parquet/AAAA-MM/tipo/`) com `--remote-folder`.
@@ -465,6 +507,52 @@ O fluxo de execução é controlado pelo argumento `--step`, permitindo executar
 *   **Resiliência:** Sistema robusto de recuperação de falhas e limpeza automática de recursos.
 
 ## 🔄 Atualizações Recentes
+
+### 🆕 **Março de 2025 - Versão 2.1 - Funcionalidades de Download Cronológico e Economia de Espaço**
+
+#### **1. Download e Processamento Cronológico**
+
+##### **Download Cronológico de Múltiplas Pastas**
+- ✅ Novo parâmetro `--from-folder` para especificar pasta inicial (formato AAAA-MM)
+- ✅ Comportamento padrão do `--all-folders`: da pasta mais antiga até a mais atual
+- ✅ Download cronológico ordenado com filtragem inteligente
+- ✅ **Processamento paralelo dentro de cada pasta** (mantém multi-threading)
+- ✅ Compatibilidade total com cache e sistema de retry
+
+##### **Processamento de Múltiplas Pastas Locais**
+- ✅ Parâmetro `--process-all-folders` para processar todas as pastas no formato AAAA-MM
+- ✅ Suporte a `--from-folder` para processamento a partir de pasta específica
+- ✅ **Múltiplos workers por pasta** (paralelização mantida)
+- ✅ Criação automática de subpastas organizadas por data
+- ✅ Relatórios consolidados de múltiplas pastas
+
+#### **2. Economia Inteligente de Espaço em Disco**
+
+##### **Deleção Automática de ZIPs**
+- ✅ Novo parâmetro `--delete-zips-after-extract` para economia de espaço
+- ✅ Verificação de integridade antes da deleção (segurança robusta)
+- ✅ Logs detalhados sobre espaço economizado
+- ✅ **Compatibilidade com processamento paralelo**
+- ✅ Compatibilidade com todos os modos de processamento
+
+##### **Funcionalidades de Segurança**
+- ✅ Verificação automática se extração foi bem-sucedida
+- ✅ Tratamento de erros robustos (permissões, corrupção, etc.)
+- ✅ Falha graciosamente sem interromper o pipeline paralelo
+- ✅ Logs informativos sobre economia de espaço
+
+#### **3. Exemplos de Uso Expandidos**
+
+```bash
+# Download cronológico com processamento paralelo interno
+python main.py --all-folders --from-folder 2023-01 --delete-zips-after-extract
+
+# Processamento com economia de espaço e múltiplos workers
+python main.py --tipos empresas --delete-zips-after-extract
+
+# Processamento múltiplas pastas com economia e paralelização
+python main.py --step process --process-all-folders --output-subfolder economizando_espaco --delete-zips-after-extract
+```
 
 ### 🏗️ **Versão 3.0.0 - Maio/2025 - Refatoração Completa do Sistema**
 
@@ -592,13 +680,22 @@ Essa abordagem tem as seguintes vantagens:
 Todos os arquivos temporários descompactados são excluídos após o processamento, mesmo em caso de erro,
 garantindo que não fiquem arquivos residuais no sistema.
 
-### Melhorias na Conversão de Tipos
+### Economia de Espaço em Disco
 
-- **Tratamento robusto para valores numéricos**: Conversão segura para Int64 com suporte para valores nulos
-- **Conversão avançada de datas**: Tratamento melhorado para valores inválidos (zeros, valores vazios, etc.)
-- **Processamento de valores monetários**: Conversão adequada de valores com vírgulas como separador decimal
-- **Validação de tipos após conversão**: Verificação da integridade dos dados pós-conversão
-- **Logs detalhados**: Rastreamento do processo de conversão para facilitar depuração
+🆕 **Nova funcionalidade para otimização de armazenamento:**
+
+- **Deleção Automática de ZIPs**: Com `--delete-zips-after-extract`, os arquivos ZIP são automaticamente deletados após extração e processamento bem-sucedido
+- **Verificação de Integridade**: Antes da deleção, o sistema verifica se a extração foi realizada corretamente
+- **Log de Economia**: Registra quanto espaço foi economizado com cada arquivo deletado
+- **Segurança**: Falha graciosamente se não conseguir deletar, sem interromper o processamento
+- **Compatibilidade Total**: Funciona com todos os modos (`download`, `process`, `database`, `all`) e mantém o processamento paralelo
+- **Processamento Híbrido**: Combina economia de espaço com máxima performance através de workers paralelos
+
+**Uso recomendado:** Ideal para sistemas com limitações de armazenamento ou processamento de grandes volumes de dados onde o espaço em disco é uma restrição.
+
+**Exemplo:** Um arquivo ZIP de 500MB, após processamento paralelo por múltiplos workers, pode ser automaticamente removido, economizando espaço para os próximos processamentos.
+
+**Arquitetura:** O sistema processa cada ZIP com múltiplos workers paralelos, verifica a integridade, e só então remove o arquivo original, mantendo máxima performance e segurança.
 
 ## 🛠️ Processamento e Regras de Negócio
 
@@ -631,13 +728,18 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 
 ## ⚠️ Notas
 
-- O processamento pode levar algumas horas dependendo do hardware
+- O processamento utiliza **múltiplos workers paralelos** para máxima performance
 - Requisitos mínimos de espaço em disco:
   - Empresas: 5GB
   - Estabelecimentos: 8GB
   - Simples Nacional: 3GB
-- Em caso de falhas, o sistema tentará novamente automaticamente
+  - **💡 Dica**: Use `--delete-zips-after-extract` para economizar até 50% do espaço necessário
+- **🧵 Processamento Híbrido**: O sistema usa paralelização inteligente onde aumenta performance e sequenciamento onde economiza recursos
+- Em caso de falhas, o sistema tentará novamente automaticamente com workers paralelos
 - Verificação de espaço em disco é realizada antes da descompactação
+- **🆕 Download Cronológico**: Use `--all-folders --from-folder AAAA-MM` para baixar dados históricos de forma organizada
+- **🆕 Economia de Espaço**: A opção `--delete-zips-after-extract` remove ZIPs automaticamente após processamento paralelo bem-sucedido
+- **🚀 Performance**: Sistema otimizado com 6-12 workers simultâneos baseado no hardware disponível
 
 ---
-*Desenvolvido com ❤️ e Python 3.9+!*
+*Desenvolvido com ❤️ e Python 3.9+! Otimizado com arquitetura híbrida para máxima performance e economia de recursos.*

@@ -112,3 +112,61 @@ def estimate_zip_extracted_size(zip_path: str) -> float:
         logger.error(f"Erro ao estimar tamanho do ZIP {zip_path}: {str(e)}")
         # Em caso de erro, retorna uma estimativa grande para forçar uma verificação cuidadosa
         return 10000  # 10GB como valor seguro
+
+
+def delete_zip_after_extraction(zip_path: str, extracted_dir: str, verify_extraction: bool = True) -> bool:
+    """
+    Deleta um arquivo ZIP com segurança após verificar que foi extraído corretamente.
+    
+    Args:
+        zip_path: Caminho para o arquivo ZIP
+        extracted_dir: Diretório onde os arquivos foram extraídos
+        verify_extraction: Se True, verifica se a extração foi bem-sucedida antes de deletar
+        
+    Returns:
+        bool: True se o ZIP foi deletado com sucesso, False caso contrário
+    """
+    try:
+        if verify_extraction:
+            # Verificar se o arquivo ZIP é válido e tem conteúdo
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_files = zip_ref.namelist()
+                
+                if not zip_files:
+                    logger.warning(f"Arquivo ZIP vazio, não deletando: {os.path.basename(zip_path)}")
+                    return False
+                
+                # Verificar se pelo menos alguns arquivos foram extraídos
+                extracted_files = []
+                for root, dirs, files in os.walk(extracted_dir):
+                    extracted_files.extend(files)
+                
+                if not extracted_files:
+                    logger.warning(f"Nenhum arquivo foi extraído, não deletando ZIP: {os.path.basename(zip_path)}")
+                    return False
+                
+                # Verificação básica: se há arquivos extraídos, consideramos a extração bem-sucedida
+                logger.debug(f"Verificação de extração bem-sucedida para {os.path.basename(zip_path)}: "
+                           f"{len(zip_files)} arquivos no ZIP, {len(extracted_files)} arquivos extraídos")
+        
+        # Obter tamanho do arquivo antes de deletar para log
+        file_size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+        
+        # Deletar o arquivo ZIP
+        os.remove(zip_path)
+        
+        logger.info(f"🗑️  ZIP deletado após extração: {os.path.basename(zip_path)} ({file_size_mb:.1f}MB economizados)")
+        return True
+        
+    except zipfile.BadZipFile:
+        logger.error(f"Arquivo ZIP corrompido, não deletando: {os.path.basename(zip_path)}")
+        return False
+    except FileNotFoundError:
+        logger.warning(f"Arquivo ZIP não encontrado para deletar: {os.path.basename(zip_path)}")
+        return False
+    except PermissionError:
+        logger.error(f"Sem permissão para deletar ZIP: {os.path.basename(zip_path)}")
+        return False
+    except Exception as e:
+        logger.error(f"Erro ao deletar ZIP {os.path.basename(zip_path)}: {str(e)}")
+        return False

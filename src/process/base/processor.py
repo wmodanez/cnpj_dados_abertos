@@ -11,6 +11,8 @@ import polars as pl
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, Type, List
 from pathlib import Path
+import tempfile
+import zipfile
 
 # Imports das entidades (Fase 1)
 from ...Entity.base import BaseEntity
@@ -30,6 +32,7 @@ except ImportError:
 # Imports da infraestrutura unificada (Fase 2)
 from .queue_manager import ProcessingQueueManager
 from .resource_monitor import ResourceMonitor
+from ...utils import delete_zip_after_extraction
 
 
 class BaseProcessor(ABC):
@@ -59,6 +62,9 @@ class BaseProcessor(ABC):
         self.path_parquet = path_parquet
         self.options = kwargs
         
+        # Opção para deletar ZIPs após extração
+        self.delete_zips_after_extract = kwargs.get('delete_zips_after_extract', False)
+        
         # Configurar logging
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         
@@ -75,6 +81,7 @@ class BaseProcessor(ABC):
         # Log da inicialização
         self.logger.info(f"Processador {self.get_processor_name()} inicializado")
         self.logger.info(f"Caminhos: ZIP={path_zip}, UNZIP={path_unzip}, PARQUET={path_parquet}")
+        self.logger.info(f"Deleção de ZIPs após extração: {'ATIVADA' if self.delete_zips_after_extract else 'DESATIVADA'}")
         self.logger.info(f"Opções: {self.options}")
     
     # Métodos abstratos que cada processador deve implementar
@@ -117,8 +124,11 @@ class BaseProcessor(ABC):
         """Valida opções fornecidas contra opções válidas."""
         valid_options = self.get_valid_options()
         
+        # Adicionar opções globais válidas
+        global_valid_options = ['max_workers', 'delete_zips_after_extract']
+        
         for option in self.options:
-            if option not in valid_options and option not in ['max_workers']:
+            if option not in valid_options and option not in global_valid_options:
                 self.logger.warning(f"Opção '{option}' não é válida para {self.get_processor_name()}")
     
     def get_column_mapping(self, df: pl.DataFrame) -> Dict[str, str]:
@@ -443,4 +453,52 @@ class BaseProcessor(ABC):
             
         except Exception as e:
             self.logger.error(f"Erro no processamento geral: {str(e)}")
+            return False
+
+    def process_single_zip(self, zip_file: str, path_zip: str, path_unzip: str, path_parquet: str, **kwargs) -> bool:
+        """
+        Processa um único ZIP.
+        
+        Args:
+            zip_file: Nome do arquivo ZIP
+            path_zip: Diretório com arquivos ZIP
+            path_unzip: Diretório para extração
+            path_parquet: Diretório de saída
+            **kwargs: Opções adicionais para o processamento
+            
+        Returns:
+            bool: True se processado com sucesso, False caso contrário
+        """
+        try:
+            # Extrair o ZIP
+            with zipfile.ZipFile(os.path.join(path_zip, zip_file), 'r') as zip_ref:
+                zip_ref.extractall(path_unzip)
+            
+            # Processar o conteúdo extraído
+            df = self.process_single_zip_impl(
+                zip_file,
+                path_zip,
+                path_unzip,
+                path_parquet,
+                **kwargs
+            )
+            
+            if df is None:
+                self.logger.error(f"Erro ao processar {zip_file}")
+                return False
+            
+            # Salvar o resultado no formato Parquet
+            if not self.create_parquet_output(df, path_parquet, zip_file):
+                self.logger.error(f"Erro ao salvar {zip_file}")
+                return False
+            
+            # Deletar o ZIP após processamento
+            if self.delete_zips_after_extract:
+                delete_zip_after_extraction(os.path.join(path_zip, zip_file))
+            
+            self.logger.info(f"Processado {zip_file}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao processar {zip_file}: {str(e)}")
             return False 
