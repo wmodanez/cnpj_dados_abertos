@@ -33,10 +33,12 @@ import psutil  # Adicionar import do psutil
 from src.config import config
 from src.utils.statistics import global_stats
 from src.utils.progress_tracker import progress_tracker
-from .process.empresa import process_single_zip as process_empresa_zip
-from .process.estabelecimento import process_single_zip as process_estabelecimento_zip
-from .process.simples import process_single_zip as process_simples_zip
-from .process.socio import process_single_zip as process_socio_zip
+# 🆕 Versão 3.0.0: Importações da nova arquitetura refatorada
+from .process.base.factory import ProcessorFactory
+from .process.processors.empresa_processor import EmpresaProcessor
+from .process.processors.estabelecimento_processor import EstabelecimentoProcessor
+from .process.processors.simples_processor import SimplesProcessor
+from .process.processors.socio_processor import SocioProcessor
 from .utils.time_utils import format_elapsed_time
 from .utils.statistics import global_stats
 from .utils.cache import DownloadCache  # Corrigir import do cache
@@ -64,12 +66,63 @@ def get_download_cache():
 
 logger = logging.getLogger(__name__)
 
-# Mapeamento de tipos de arquivo para funções de processamento
+# 🆕 Versão 3.0.0: Função auxiliar para processar usando nova arquitetura
+def process_with_new_processor(processor_type: str, zip_file: str, path_unzip: str, path_parquet: str, path_zip: str = None) -> bool:
+    """
+    Processa um arquivo ZIP usando a nova arquitetura refatorada.
+    
+    Args:
+        processor_type: Tipo do processador ('empresa', 'estabelecimento', 'simples', 'socio')
+        zip_file: Nome do arquivo ZIP
+        path_unzip: Caminho para extração temporária
+        path_parquet: Caminho de saída dos parquets
+        path_zip: Caminho onde estão os arquivos ZIP (se None, extrai do path_unzip)
+    
+    Returns:
+        bool: True se processamento foi bem-sucedido
+    """
+    try:
+        # Mapear nome do arquivo para tipo de processador
+        if zip_file.startswith('Empr'):
+            processor_key = 'empresa'
+        elif zip_file.startswith('Estabele'):
+            processor_key = 'estabelecimento'
+        elif zip_file.startswith('Simples'):
+            processor_key = 'simples'
+        elif zip_file.startswith('Socio'):
+            processor_key = 'socio'
+        else:
+            logger.error(f"Tipo de arquivo não reconhecido: {zip_file}")
+            return False
+        
+        # Determinar o caminho de origem dos ZIPs
+        if path_zip:
+            source_zip_path = path_zip
+        else:
+            # Fallback: tentar extrair do path_unzip ou usar diretório pai
+            source_zip_path = os.path.dirname(path_unzip) if path_unzip.endswith('unzip') else path_unzip
+        
+        # Criar processador usando factory
+        processor = ProcessorFactory.create(
+            processor_key,
+            source_zip_path,
+            path_unzip,
+            path_parquet
+        )
+        
+        # Processar o arquivo
+        return processor.process_single_zip(zip_file)
+        
+    except Exception as e:
+        logger.error(f"Erro ao processar {zip_file} com nova arquitetura: {e}")
+        return False
+
+# 🆕 Versão 3.0.0: Mapeamento atualizado para nova arquitetura
 PROCESSOR_MAP = {
-    'Empresas': process_empresa_zip,
-    'Estabelecimentos': process_estabelecimento_zip,
-    'Simples': process_simples_zip,
-    'Socios': process_socio_zip
+    'Empresas': lambda zip_file, path_unzip, path_parquet, path_zip=None: process_with_new_processor('empresa', zip_file, path_unzip, path_parquet, path_zip),
+    'Estabelecimentos': lambda zip_file, path_unzip, path_parquet, path_zip=None: process_with_new_processor('estabelecimento', zip_file, path_unzip, path_parquet, path_zip),
+    'Simples': lambda zip_file, path_unzip, path_parquet, path_zip=None: process_with_new_processor('simples', zip_file, path_unzip, path_parquet, path_zip),
+    'Socios': lambda zip_file, path_unzip, path_parquet, path_zip=None: process_with_new_processor('socio', zip_file, path_unzip, path_parquet, path_zip)
 }
 
 # ===== OTIMIZAÇÕES DE PIPELINE =====
@@ -424,44 +477,27 @@ class StreamingProcessor:
             # Processamento com monitoramento de recursos
             logger.info(f"Iniciando processamento streaming de {filename}")
             
-            # Determinar tipo de arquivo e processador
-            processor_fn = None
+            # 🆕 Versão 3.0.0: Usar nova arquitetura diretamente
+            # Determinar tipo de arquivo
             file_type = None
-            for tipo_prefixo, processor in PROCESSOR_MAP.items():
-                if filename.lower().startswith(tipo_prefixo.lower()):
-                    processor_fn = processor
-                    file_type = tipo_prefixo
-                    break
-            
-            if not processor_fn:
+            if filename.startswith('Empr'):
+                file_type = 'empresa'
+            elif filename.startswith('Estabele'):
+                file_type = 'estabelecimento'
+            elif filename.startswith('Simples'):
+                file_type = 'simples'
+            elif filename.startswith('Socio'):
+                file_type = 'socio'
+            else:
                 raise ValueError(f"Tipo de arquivo não reconhecido: {filename}")
             
-            # Extrair pasta remota
-            remote_folder = os.path.basename(os.path.dirname(file_path))
-            if not re.match(r'^\d{4}-\d{2}$', remote_folder):
-                match = re.search(r'(20\d{2}-\d{2})', file_path)
-                remote_folder = match.group(1) if match else "dados"
-            
-            # Executar processamento com argumentos otimizados
-            kwargs = {
-                "zip_file": filename,
-                "path_zip": os.path.dirname(file_path),
-                "path_unzip": path_unzip,
-                "path_parquet": path_parquet,
-            }
-            
-            # Adicionar argumentos específicos
-            if "remote_folder" in processor_fn.__code__.co_varnames:
-                kwargs["remote_folder"] = remote_folder
-            if "create_private" in processor_fn.__code__.co_varnames:
-                kwargs["create_private"] = False
-            
-            # Executar em thread separada para não bloquear event loop
+            # Executar processamento usando nova arquitetura
             loop = asyncio.get_event_loop()
             
-            # Criar função wrapper para passar argumentos corretamente
             def run_processor():
-                return processor_fn(**kwargs)
+                # Determinar path_zip a partir do file_path
+                path_zip = os.path.dirname(file_path)
+                return process_with_new_processor(file_type, filename, path_unzip, path_parquet, path_zip)
             
             result = await loop.run_in_executor(None, run_processor)
             
@@ -475,11 +511,8 @@ class StreamingProcessor:
                 gc.collect()
             
             if result:
-                # Construir caminho do parquet
-                if remote_folder:
-                    parquet_path = os.path.join(path_parquet, remote_folder, file_type.lower())
-                else:
-                    parquet_path = os.path.join(path_parquet, file_type.lower())
+                # Construir caminho do parquet baseado na nova arquitetura
+                parquet_path = os.path.join(path_parquet, file_type)
                 
                 # Marcar como processado no cache
                 processing_cache.mark_completed(filename, file_stat.st_size, int(file_stat.st_mtime), parquet_path)
@@ -1471,6 +1504,17 @@ async def download_multiple_files(
         Tupla com (lista_arquivos_baixados, lista_falhas)
     """
     start_time = time.time()
+    
+    # 🆕 Versão 3.0.0: Inicializar processadores na factory
+    try:
+        ProcessorFactory.register("empresa", EmpresaProcessor)
+        ProcessorFactory.register("estabelecimento", EstabelecimentoProcessor)
+        ProcessorFactory.register("simples", SimplesProcessor)
+        ProcessorFactory.register("socio", SocioProcessor)
+        logger.info("✅ Processadores da nova arquitetura registrados na factory")
+    except Exception as e:
+        logger.error(f"❌ Erro ao registrar processadores na factory: {e}")
+        return [], [(url, Exception(f"Erro ao inicializar processadores: {e}")) for url in urls]
     
     # Calcular max_concurrent_processing automaticamente se não fornecido
     if max_concurrent_processing is None:

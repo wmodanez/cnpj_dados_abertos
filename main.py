@@ -82,10 +82,12 @@ from src.async_downloader import (
 )
 from src.config import config
 from src.database import create_duckdb_file
-from src.process.empresa import process_empresa_files
-from src.process.estabelecimento import process_estabelecimento_files
-from src.process.simples import process_simples_files
-from src.process.socio import process_socio_files
+# Importações da nova arquitetura refatorada (versão 3.0.0)
+from src.process.base.factory import ProcessorFactory
+from src.process.processors.empresa_processor import EmpresaProcessor
+from src.process.processors.estabelecimento_processor import EstabelecimentoProcessor
+from src.process.processors.simples_processor import SimplesProcessor
+from src.process.processors.socio_processor import SocioProcessor
 from src.utils import check_basic_folders
 from src.utils.time_utils import format_elapsed_time
 from src.utils.statistics import global_stats
@@ -271,8 +273,15 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
             logger.error("Espaço em disco insuficiente. Libere espaço e tente novamente.")
             return False, ""
 
-        # Criar diretórios básicos
+        # Verificando pastas básicas
         check_basic_folders([PATH_ZIP, PATH_UNZIP, PATH_PARQUET])
+        
+        # 🆕 Versão 3.0.0: Inicializar nova arquitetura de processadores
+        print_section("Inicializando arquitetura refatorada (v3.0.0)...")
+        if not initialize_processors():
+            print_error("Falha ao inicializar processadores da nova arquitetura")
+            return
+        print_success("Arquitetura refatorada inicializada com sucesso")
 
         # Obter URLs base
         base_url = os.getenv('BASE_URL')
@@ -668,6 +677,98 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
         return False, ""
 
 
+def initialize_processors():
+    """Inicializa todos os processadores da nova arquitetura (versão 3.0.0)."""
+    try:
+        # Registrar todos os processadores na factory
+        ProcessorFactory.register("empresa", EmpresaProcessor)
+        ProcessorFactory.register("estabelecimento", EstabelecimentoProcessor)
+        ProcessorFactory.register("simples", SimplesProcessor)
+        ProcessorFactory.register("socio", SocioProcessor)
+        
+        registered = ProcessorFactory.get_registered_processors()
+        logger.info(f"✅ Processadores registrados: {', '.join(registered)}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erro ao inicializar processadores: {e}")
+        return False
+
+def process_with_new_architecture(processor_type: str, source_zip_path: str, unzip_path: str, 
+                                 output_parquet_path: str, **options) -> bool:
+    """
+    Processa dados usando a nova arquitetura refatorada (versão 3.0.0).
+    
+    Args:
+        processor_type: Tipo do processador ('empresa', 'estabelecimento', 'simples', 'socio')
+        source_zip_path: Caminho dos arquivos ZIP
+        unzip_path: Caminho temporário para extração
+        output_parquet_path: Caminho de saída dos parquets
+        **options: Opções específicas do processador
+    
+    Returns:
+        bool: True se processamento foi bem-sucedido
+    """
+    try:
+        # Criar processador usando factory
+        processor = ProcessorFactory.create(
+            processor_type,
+            source_zip_path,
+            unzip_path,
+            output_parquet_path
+        )
+        
+        # Encontrar arquivos ZIP relevantes
+        if processor_type == "empresa":
+            pattern = "Empr"
+        elif processor_type == "estabelecimento":
+            pattern = "Estabele"
+        elif processor_type == "simples":
+            pattern = "Simples"
+        elif processor_type == "socio":
+            pattern = "Socio"
+        else:
+            logger.error(f"Tipo de processador desconhecido: {processor_type}")
+            return False
+        
+        zip_files = [f for f in os.listdir(source_zip_path) 
+                    if f.startswith(pattern) and f.endswith('.zip')]
+        
+        if not zip_files:
+            logger.warning(f"Nenhum arquivo ZIP encontrado para {processor_type}")
+            return True  # Não é erro se não há arquivos
+        
+        logger.info(f"Arquivos {processor_type} encontrados: {len(zip_files)}")
+        
+        # Processar cada arquivo ZIP
+        success_count = 0
+        for zip_file in zip_files:
+            try:
+                file_path = os.path.join(source_zip_path, zip_file)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                logger.info(f"Processando {zip_file}: {file_size_mb:.1f}MB")
+                
+                # Processar arquivo usando o novo sistema
+                success = processor.process_single_zip(zip_file, **options)
+                
+                if success:
+                    success_count += 1
+                    logger.info(f"✅ {zip_file} processado com sucesso")
+                else:
+                    logger.error(f"❌ Falha ao processar {zip_file}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Erro ao processar {zip_file}: {e}")
+        
+        # Verificar se todos foram processados com sucesso
+        all_success = success_count == len(zip_files)
+        logger.info(f"Processamento {processor_type}: {success_count}/{len(zip_files)} arquivos processados com sucesso")
+        
+        return all_success
+        
+    except Exception as e:
+        logger.error(f"❌ Erro no processamento {processor_type}: {e}")
+        return False
+
 def process_folder(source_zip_path, unzip_path, output_parquet_path, 
                  tipos_list, engine, criar_empresa_privada, criar_subset_uf,
                  tipos_a_processar) -> dict:
@@ -733,8 +834,9 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
                 logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
             
             # Agora só usamos polars
-            empresas_ok = process_empresa_files(
-                source_zip_path, unzip_path, output_parquet_path, criar_empresa_privada
+            empresas_ok = process_with_new_architecture(
+                "empresa", source_zip_path, unzip_path, output_parquet_path, 
+                create_private=criar_empresa_privada
             )
             end_time = time.time()
             elapsed_time = end_time - start_time
@@ -780,8 +882,9 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
                 else:
                     logger.warning(f"Valor inválido para subset UF: {criar_subset_uf}. Ignorando.")
             
-            estab_ok = process_estabelecimento_files(
-                source_zip_path, unzip_path, output_parquet_path, uf_subset
+            estab_ok = process_with_new_architecture(
+                "estabelecimento", source_zip_path, unzip_path, output_parquet_path, 
+                uf_subset=uf_subset
             )
             end_time = time.time()
             elapsed_time = end_time - start_time
@@ -815,8 +918,8 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
                 file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
             
-            simples_ok = process_simples_files(
-                source_zip_path, unzip_path, output_parquet_path
+            simples_ok = process_with_new_architecture(
+                "simples", source_zip_path, unzip_path, output_parquet_path
             )
             end_time = time.time()
             elapsed_time = end_time - start_time
@@ -850,8 +953,8 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
                 file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
             
-            socios_ok = process_socio_files(
-                source_zip_path, unzip_path, output_parquet_path
+            socios_ok = process_with_new_architecture(
+                "socio", source_zip_path, unzip_path, output_parquet_path
             )
             end_time = time.time()
             elapsed_time = end_time - start_time
@@ -994,6 +1097,13 @@ def main():
 
     # Verificando pastas básicas
     check_basic_folders([PATH_ZIP, PATH_UNZIP, PATH_PARQUET])
+    
+    # 🆕 Versão 3.0.0: Inicializar nova arquitetura de processadores
+    print_section("Inicializando arquitetura refatorada (v3.0.0)...")
+    if not initialize_processors():
+        print_error("Falha ao inicializar processadores da nova arquitetura")
+        return
+    print_success("Arquitetura refatorada inicializada com sucesso")
     
     # Determinar o modo de processamento
     if args.step == 'process':
