@@ -110,8 +110,8 @@ def process_with_new_processor(processor_type: str, zip_file: str, path_unzip: s
             path_parquet
         )
         
-        # Processar o arquivo
-        return processor.process_single_zip(zip_file)
+        # Processar o arquivo com todos os argumentos necessários
+        return processor.process_single_zip(zip_file, source_zip_path, path_unzip, path_parquet)
         
     except Exception as e:
         logger.error(f"Erro ao processar {zip_file} com nova arquitetura: {e}")

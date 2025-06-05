@@ -855,8 +855,8 @@ def process_with_new_architecture(processor_type: str, source_zip_path: str, unz
                 file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 logger.info(f"Processando {zip_file}: {file_size_mb:.1f}MB")
                 
-                # Processar arquivo usando o novo sistema
-                success = processor.process_single_zip(zip_file, **options)
+                # Processar arquivo usando o novo sistema com todos os argumentos necessários
+                success = processor.process_single_zip(zip_file, source_zip_path, unzip_path, output_parquet_path, **options)
                 
                 if success:
                     success_count += 1
