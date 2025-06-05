@@ -150,7 +150,7 @@ def check_internet_connection() -> bool:
 
 def check_disk_space() -> bool:
     """
-    Verifica se há espaço suficiente em disco.
+    Verifica se há espaço suficiente em disco (multiplataforma).
     
     Returns:
         bool: True se houver espaço suficiente, False caso contrário
@@ -161,22 +161,60 @@ def check_disk_space() -> bool:
         if not path_zip:
             logger.error("PATH_ZIP não definido no arquivo .env")
             return False
-            
-        # Obtém o espaço livre em bytes usando ctypes para Windows
-        import ctypes
-        free_bytes = ctypes.c_ulonglong(0)
-        ctypes.windll.kernel32.GetDiskFreeSpaceExW(
-            ctypes.c_wchar_p(path_zip), None, None, ctypes.pointer(free_bytes)
-        )
+        
+        # Garantir que o diretório existe
+        if not os.path.exists(path_zip):
+            try:
+                os.makedirs(path_zip, exist_ok=True)
+                logger.info(f"Diretório criado: {path_zip}")
+            except Exception as e:
+                logger.error(f"Erro ao criar diretório {path_zip}: {e}")
+                return False
         
         # Define um limite mínimo de 10GB
         min_space = 10 * 1024 * 1024 * 1024  # 10GB em bytes
         
-        if free_bytes.value < min_space:
-            logger.warning(f"Espaço livre insuficiente: {free_bytes.value / (1024*1024*1024):.2f}GB")
+        # Método multiplataforma para verificar espaço em disco
+        if os.name == 'nt':  # Windows
+            try:
+                import ctypes
+                free_bytes = ctypes.c_ulonglong(0)
+                ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                    ctypes.c_wchar_p(path_zip), None, None, ctypes.pointer(free_bytes)
+                )
+                available_space = free_bytes.value
+            except Exception as e:
+                logger.warning(f"Erro ao usar método Windows para verificar espaço: {e}")
+                # Fallback para método padrão
+                import shutil
+                _, _, available_space = shutil.disk_usage(path_zip)
+        else:  # Linux, macOS, Unix
+            try:
+                # Usar os.statvfs (mais preciso em sistemas Unix)
+                statvfs = os.statvfs(path_zip)
+                available_space = statvfs.f_bavail * statvfs.f_frsize
+            except (AttributeError, OSError) as e:
+                logger.warning(f"Erro ao usar os.statvfs: {e}")
+                # Fallback para shutil.disk_usage
+                try:
+                    import shutil
+                    _, _, available_space = shutil.disk_usage(path_zip)
+                except Exception as e2:
+                    logger.error(f"Erro ao verificar espaço em disco: {e2}")
+                    return False
+        
+        # Converter para GB para logging
+        available_gb = available_space / (1024**3)
+        min_gb = min_space / (1024**3)
+        
+        logger.info(f"Espaço disponível: {available_gb:.2f}GB (mínimo necessário: {min_gb:.1f}GB)")
+        
+        if available_space < min_space:
+            logger.warning(f"Espaço livre insuficiente: {available_gb:.2f}GB < {min_gb:.1f}GB")
             return False
             
         return True
+        
     except Exception as e:
         logger.error(f"Erro ao verificar espaço em disco: {e}")
         return False
@@ -420,8 +458,9 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                     
                     # Informações de disco
                     try:
+                        # Usar o diretório atual ou root de forma multiplataforma
                         if os.name == 'nt':  # Windows
-                            disk_path = os.path.splitdrive(os.getcwd())[0] + '\\'
+                            disk_path = os.path.splitdrive(os.getcwd())[0] + os.sep
                         else:  # Unix/Linux
                             disk_path = '/'
                         
@@ -600,8 +639,9 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                 
                 # Informações de disco
                 try:
+                    # Usar o diretório atual ou root de forma multiplataforma
                     if os.name == 'nt':  # Windows
-                        disk_path = os.path.splitdrive(os.getcwd())[0] + '\\'
+                        disk_path = os.path.splitdrive(os.getcwd())[0] + os.sep
                     else:  # Unix/Linux
                         disk_path = '/'
                     

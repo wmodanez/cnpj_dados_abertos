@@ -6,6 +6,25 @@
 
 Este projeto automatiza o download, processamento e armazenamento dos dados públicos de CNPJ disponibilizados pela Receita Federal. Ele foi desenvolvido para ser eficiente, resiliente, modular e fácil de usar.
 
+## 🌐 Compatibilidade Multiplataforma
+
+O sistema foi projetado e testado para funcionar perfeitamente em **todos os sistemas operacionais modernos**:
+
+- ✅ **Windows** (7, 8, 10, 11) - Totalmente compatível
+- ✅ **Linux** (Ubuntu, Debian, CentOS, Fedora, etc.) - Nativo
+- ✅ **macOS** (10.14+) - Totalmente compatível
+- ✅ **Outros sistemas Unix** - Suporte através de fallbacks universais
+
+### Detecção Automática do Sistema
+
+O sistema detecta automaticamente o sistema operacional e usa as APIs nativas mais eficientes:
+
+- **Windows**: `ctypes.windll` para verificação de espaço em disco e `os.splitdrive()` para paths
+- **Linux/Unix**: `os.statvfs()` para informações de disco e paths Unix padrão
+- **Fallback Universal**: `shutil.disk_usage()` para máxima compatibilidade
+
+Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, garantindo experiência consistente independente do sistema operacional.
+
 ## 🚀 O que há de Novo na Versão 3.0.0
 
 **Sistema Completamente Refatorado:**
@@ -17,6 +36,7 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
 - ✅ **Infraestrutura centralizada**: ResourceMonitor, QueueManager, ProcessorFactory
 - ✅ **100% cobertura de testes** vs ~30% da versão anterior
 - ✅ **Documentação profissional** completa (12 documentos)
+- ✅ **🌐 Compatibilidade multiplataforma total** - Windows, Linux, macOS
 
 **🆕 Funcionalidades Avançadas (v2.1):**
 - ✅ **Download Cronológico**: Download ordenado de múltiplas pastas remotas com `--all-folders` e `--from-folder`
@@ -33,6 +53,7 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
 - 💾 **Mais eficiente**: Economia automática de espaço em disco
 - 📊 **Mais organizado**: Processamento cronológico e estruturado
 - 🧵 **Mais inteligente**: Paralelização otimizada baseada em recursos do sistema
+- 🌐 **Mais universal**: Funciona identicamente em Windows, Linux e macOS
 
 ## Navegação
 
@@ -106,39 +127,53 @@ Este projeto automatiza o download, processamento e armazenamento dos dados púb
 - Python 3.9 ou superior
 - Espaço em disco suficiente para os arquivos
 - Conexão com internet estável
+- **Sistema Operacional**: Windows, Linux ou macOS (detecção automática)
 
 ### Instalação
 
-1. **Clone o repositório**
-```bash
+#### Windows
+```cmd
+# Clone o repositório
 git clone https://github.com/seu-usuario/cnpj.git
 cd cnpj
-```
 
-2. **Crie um ambiente virtual**
-```bash
-# Windows
+# Crie um ambiente virtual
 python -m venv venv
 venv\Scripts\activate
 
-# Linux/Mac
-python3 -m venv venv
-source venv/bin/activate
-```
-
-3. **Instale as dependências**
-```bash
+# Instale as dependências
 pip install -r requirements.txt
 ```
 
-4. **Configure o ambiente**
-   - Copie o arquivo `.env.local.example` para `.env.local`
-   - Ajuste as configurações conforme necessário:
+#### Linux/macOS
+```bash
+# Clone o repositório
+git clone https://github.com/seu-usuario/cnpj.git
+cd cnpj
+
+# Crie um ambiente virtual
+python3 -m venv venv
+source venv/bin/activate
+
+# Instale as dependências
+pip install -r requirements.txt
+```
+
+### Configuração Universal
+
+O sistema funciona identicamente em todos os sistemas operacionais:
+
+```bash
+# Configure o ambiente (funciona em Windows, Linux e macOS)
+cp .env.local.example .env.local
+```
+
+Configure as variáveis no arquivo `.env.local`:
 ```env
 # URL base dos dados da Receita Federal
 URL_ORIGIN=https://dados.rfb.gov.br/CNPJ/
 
-# Diretórios para download e processamento
+# Diretórios para download e processamento (paths são automaticamente adaptados)
 PATH_ZIP=./download/      # Arquivos ZIP baixados
 PATH_UNZIP=./unzip/      # Arquivos extraídos
 PATH_PARQUET=./parquet/  # Arquivos Parquet processados
@@ -148,9 +183,13 @@ FILE_DB_PARQUET=cnpj.duckdb
 PATH_REMOTE_PARQUET=//servidor/compartilhado/
 ```
 
+**Nota**: Os caminhos são automaticamente adaptados para cada sistema operacional. Use `/` ou `\` conforme sua preferência - o sistema normaliza automaticamente.
+
 ### Execução
 
 O script principal `main.py` aceita diversos argumentos para customizar a execução. O argumento principal para controle de fluxo é `--step`.
+
+#### Comandos Universais (funcionam identicamente em Windows/Linux/macOS):
 
 ```bash
 # 1. Execução completa (padrão: baixa, processa, cria DuckDB):
@@ -212,6 +251,7 @@ python main.py --step process --process-all-folders --output-subfolder economiza
 
 # 19. NOVO: Processamento conservador de espaço - apenas estabelecimentos com deleção de ZIPs:
 python main.py --tipos estabelecimentos --delete-zips-after-extract --output-subfolder estabelecimentos_sem_zips
+```
 
 **Argumentos Principais:**
 
@@ -490,6 +530,7 @@ O fluxo de execução é controlado pelo argumento `--step`, permitindo executar
 ## ✨ Características
 
 *   **Execução Modular:** Controle granular do fluxo com `--step` (`download`, `process`, `database`, `all`)
+*   **🌐 Compatibilidade Total:** Funciona identicamente em Windows, Linux e macOS com detecção automática do SO
 *   **Sistema de Entidades:** 🆕 Sistema robusto de entidades com validação automática, transformações e schemas Pydantic.
 *   **Pipeline Assíncrono:** Download e processamento simultâneos com streaming inteligente.
 *   **Download Eficiente:** Assíncrono, paralelo, com cache, ordenação por tamanho e retentativas automáticas.
@@ -526,7 +567,7 @@ O fluxo de execução é controlado pelo argumento `--step`, permitindo executar
 - ✅ Criação automática de subpastas organizadas por data
 - ✅ Relatórios consolidados de múltiplas pastas
 
-#### **2. Economia Inteligente de Espaço em Disco**
+#### **2. Economia Inteligente de Espaço**
 
 ##### **Deleção Automática de ZIPs**
 - ✅ Novo parâmetro `--delete-zips-after-extract` para economia de espaço
@@ -728,6 +769,8 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 
 ## ⚠️ Notas
 
+- **🌐 Compatibilidade**: O sistema funciona identicamente em Windows, Linux e macOS
+- **🔍 Detecção Automática**: Sistema operacional e recursos de hardware são detectados automaticamente
 - O processamento utiliza **múltiplos workers paralelos** para máxima performance
 - Requisitos mínimos de espaço em disco:
   - Empresas: 5GB
@@ -740,6 +783,8 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 - **🆕 Download Cronológico**: Use `--all-folders --from-folder AAAA-MM` para baixar dados históricos de forma organizada
 - **🆕 Economia de Espaço**: A opção `--delete-zips-after-extract` remove ZIPs automaticamente após processamento paralelo bem-sucedido
 - **🚀 Performance**: Sistema otimizado com 6-12 workers simultâneos baseado no hardware disponível
+- **📂 Caminhos**: O sistema normaliza automaticamente caminhos de arquivo para cada sistema operacional
+- **💾 APIs Nativas**: Usa APIs específicas do SO para máxima eficiência (Windows: `ctypes.windll`, Linux: `os.statvfs`)
 
 ---
-*Desenvolvido com ❤️ e Python 3.9+! Otimizado com arquitetura híbrida para máxima performance e economia de recursos.*
+*Desenvolvido com ❤️ e Python 3.9+! Otimizado com arquitetura híbrida para máxima performance e economia de recursos. Funciona perfeitamente em Windows, Linux e macOS! 🌐*

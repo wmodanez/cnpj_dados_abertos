@@ -147,9 +147,9 @@ def get_optimal_concurrency():
     
     # Informações de disco
     try:
-        # No Windows, usar o drive atual ao invés de '/'
+        # Usar o diretório atual ou root de forma multiplataforma
         if os.name == 'nt':  # Windows
-            disk_path = os.path.splitdrive(os.getcwd())[0] + '\\'
+            disk_path = os.path.splitdrive(os.getcwd())[0] + os.sep
         else:  # Unix/Linux
             disk_path = '/'
         
