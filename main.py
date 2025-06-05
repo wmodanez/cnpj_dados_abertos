@@ -352,7 +352,44 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
             print_error("Falha ao inicializar processadores da nova arquitetura")
             return False, ""
         print_success("Arquitetura refatorada inicializada com sucesso")
-
+        
+        # Processar argumentos de interface (barra de progresso e arquivos pendentes)
+        # Determinar configurações de interface baseadas nos argumentos
+        show_progress_bar = config.pipeline.show_progress_bar  # Valor padrão
+        show_pending_files = config.pipeline.show_pending_files  # Valor padrão
+        
+        # Modo silencioso tem prioridade máxima
+        if args.quiet:
+            show_progress_bar = False
+            show_pending_files = False
+            logger.info("🔇 Modo silencioso ativado: interface simplificada")
+        
+        # Modo verboso sobrescreve padrão, mas não o modo silencioso
+        elif args.verbose_ui:
+            show_progress_bar = True
+            show_pending_files = True
+            logger.info("📊 Modo verboso ativado: interface completa")
+        
+        # Argumentos específicos têm prioridade sobre modos
+        else:
+            if args.show_progress:
+                show_progress_bar = True
+            elif args.hide_progress:
+                show_progress_bar = False
+            
+            if args.show_pending:
+                show_pending_files = True
+            elif args.hide_pending:
+                show_pending_files = False
+        
+        # Sobrescrever configurações no objeto config para uso nos downloaders
+        config.pipeline.show_progress_bar = show_progress_bar
+        config.pipeline.show_pending_files = show_pending_files
+        
+        # Log das configurações finais de interface
+        logger.info(f"📊 Barra de progresso: {'✅ ativada' if show_progress_bar else '❌ desativada'}")
+        logger.info(f"📋 Lista de arquivos pendentes: {'✅ ativada' if show_pending_files else '❌ desativada'}")
+        
         # Obter URLs base
         base_url = os.getenv('BASE_URL', 'https://dados.rfb.gov.br/CNPJ/')
         if not base_url:
@@ -1206,6 +1243,38 @@ def main():
         help="Se presente, deleta os arquivos ZIP após extração bem-sucedida para economizar espaço em disco. Use com cautela!"
     )
     parser.add_argument(
+        '--show-progress', '-pb',
+        action='store_true',
+        default=None,
+        help="Exibe barras de progresso visuais durante downloads e processamento. Sobrescreve configuração padrão."
+    )
+    parser.add_argument(
+        '--hide-progress', '-hp',
+        action='store_true',
+        help="Oculta barras de progresso visuais. Útil para logs limpos ou execução em background."
+    )
+    parser.add_argument(
+        '--show-pending', '-sp',
+        action='store_true',
+        default=None,
+        help="Exibe lista de arquivos pendentes/em progresso. Sobrescreve configuração padrão."
+    )
+    parser.add_argument(
+        '--hide-pending', '-hf',
+        action='store_true',
+        help="Oculta lista de arquivos pendentes. Útil para logs mais limpos."
+    )
+    parser.add_argument(
+        '--quiet', '-q',
+        action='store_true',
+        help="Modo silencioso: desativa tanto barra de progresso quanto lista de arquivos pendentes."
+    )
+    parser.add_argument(
+        '--verbose-ui', '-v',
+        action='store_true',
+        help="Modo verboso: ativa tanto barra de progresso quanto lista de arquivos pendentes."
+    )
+    parser.add_argument(
         '--step', '-s',
         choices=['download', 'process', 'database', 'all'], 
         default='all',
@@ -1269,11 +1338,48 @@ def main():
     # Verificando pastas básicas
     check_basic_folders([PATH_ZIP, PATH_UNZIP, PATH_PARQUET])
     
+    # Processar argumentos de interface (barra de progresso e arquivos pendentes)
+    # Determinar configurações de interface baseadas nos argumentos
+    show_progress_bar = config.pipeline.show_progress_bar  # Valor padrão
+    show_pending_files = config.pipeline.show_pending_files  # Valor padrão
+    
+    # Modo silencioso tem prioridade máxima
+    if args.quiet:
+        show_progress_bar = False
+        show_pending_files = False
+        logger.info("🔇 Modo silencioso ativado: interface simplificada")
+    
+    # Modo verboso sobrescreve padrão, mas não o modo silencioso
+    elif args.verbose_ui:
+        show_progress_bar = True
+        show_pending_files = True
+        logger.info("📊 Modo verboso ativado: interface completa")
+    
+    # Argumentos específicos têm prioridade sobre modos
+    else:
+        if args.show_progress:
+            show_progress_bar = True
+        elif args.hide_progress:
+            show_progress_bar = False
+        
+        if args.show_pending:
+            show_pending_files = True
+        elif args.hide_pending:
+            show_pending_files = False
+    
+    # Sobrescrever configurações no objeto config para uso nos downloaders
+    config.pipeline.show_progress_bar = show_progress_bar
+    config.pipeline.show_pending_files = show_pending_files
+    
+    # Log das configurações finais de interface
+    logger.info(f"📊 Barra de progresso: {'✅ ativada' if show_progress_bar else '❌ desativada'}")
+    logger.info(f"📋 Lista de arquivos pendentes: {'✅ ativada' if show_pending_files else '❌ desativada'}")
+    
     # 🆕 Versão 3.0.0: Inicializar nova arquitetura de processadores
     print_section("Inicializando arquitetura refatorada (v3.0.0)...")
     if not initialize_processors():
         print_error("Falha ao inicializar processadores da nova arquitetura")
-        return
+        return False, ""
     print_success("Arquitetura refatorada inicializada com sucesso")
     
     # Inicializar variáveis para controle de escopo
@@ -1294,7 +1400,7 @@ def main():
             if not args.output_subfolder:
                 logger.error("Parâmetro --output-subfolder é obrigatório para --process-all-folders")
                 print_error("Especifique a subpasta base de saída com --output-subfolder")
-                return
+                return False, ""
             
             # Encontrar todas as pastas de data no PATH_ZIP
             from_folder_param = args.from_folder if args.from_folder else None
@@ -1305,7 +1411,7 @@ def main():
                     print_error(f"Nenhuma pasta no formato AAAA-MM encontrada a partir de {args.from_folder} em {PATH_ZIP}")
                 else:
                     print_error(f"Nenhuma pasta no formato AAAA-MM encontrada em {PATH_ZIP}")
-                return
+                return False, ""
             
             logger.info(f"Encontradas {len(date_folders)} pastas para processamento: {', '.join(date_folders)}")
             
@@ -1365,7 +1471,7 @@ def main():
             logger.info(f"Status geral: {'✅ SUCESSO' if overall_success else '❌ FALHAS DETECTADAS'}")
             logger.info("=" * 60)
             
-            return
+            return overall_success, date_folders[-1] if date_folders else ""
         
         # Verificar se temos o source-zip-folder para processamento de pasta única
         if args.source_zip_folder:
@@ -1376,7 +1482,7 @@ def main():
             if not os.path.exists(source_folder_path):
                 logger.error(f"Pasta de origem especificada não existe: {source_folder_path}")
                 print_error(f"Pasta {args.source_zip_folder} não encontrada")
-                return
+                return False, ""
             
             # Determinar pasta de saída - usando o nome do diretório como subpasta
             if args.output_subfolder:
@@ -1419,7 +1525,7 @@ def main():
         else:
             print_error("É necessário especificar a pasta de origem dos ZIPs com --source-zip-folder")
             logger.error("Parâmetro --source-zip-folder é obrigatório para o step 'process'.")
-            return
+            return False, ""
     
     # Resto do código do step 'download'
     elif args.step == 'download':
@@ -1450,7 +1556,7 @@ def main():
             logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
             logger.info("STATUS FINAL: FALHA")
             logger.info("=" * 50)
-            return
+            return False, ""
         
         if not latest_folder:
             print_error("Erro: não foi possível determinar a pasta de download para processamento")
@@ -1459,7 +1565,7 @@ def main():
             logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
             logger.info("STATUS FINAL: FALHA")
             logger.info("=" * 50)
-            return
+            return False, ""
         
         print_success(f"Download concluído. Arquivos salvos em: {os.path.join(PATH_ZIP, latest_folder)}")
     
@@ -1471,14 +1577,14 @@ def main():
         if not args.output_subfolder:
             logger.error("Parâmetro --output-subfolder é obrigatório para o step 'database'.")
             print_error("Especifique a subpasta dos Parquets com --output-subfolder")
-            return
+            return False, ""
         
         # Caminho completo para a pasta de parquets
         parquet_folder = os.path.join(PATH_PARQUET, args.output_subfolder)
         if not os.path.exists(parquet_folder):
             logger.error(f"Pasta de Parquets não encontrada: {parquet_folder}")
             print_error(f"Pasta {parquet_folder} não existe. Execute o processamento primeiro.")
-            return
+            return False, ""
         
         # Criar o arquivo DuckDB
         try:
@@ -1490,11 +1596,11 @@ def main():
             else:
                 print_error("Falha ao criar banco de dados. Verifique os logs para mais detalhes.")
                 logger.error("Criação do banco de dados falhou")
-                return
+                return False, ""
         except Exception as e:
             logger.exception(f"Erro ao criar banco de dados: {e}")
             print_error(f"Falha ao criar banco de dados: {str(e)}")
-            return
+            return False, ""
     
     # Código para o step 'all' (executa todos os passos em sequência)
     elif args.step == 'all':
@@ -1532,7 +1638,7 @@ def main():
             logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
             logger.info("STATUS FINAL: FALHA")
             logger.info("=" * 50)
-            return
+            return False, ""
         
         if not latest_folder:
             print_error("Erro: não foi possível determinar a pasta de download para processamento")
@@ -1541,7 +1647,7 @@ def main():
             logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
             logger.info("STATUS FINAL: FALHA")
             logger.info("=" * 50)
-            return
+            return False, ""
         
         print_success(f"Download concluído. Arquivos salvos em: {os.path.join(PATH_ZIP, latest_folder)}")
         
@@ -1582,7 +1688,7 @@ def main():
             logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
             logger.info("STATUS FINAL: FALHA")
             logger.info("=" * 50)
-            return
+            return False, ""
         else:
             print_success("Processamento concluído com sucesso.")
         
@@ -1610,7 +1716,7 @@ def main():
                 logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
                 logger.info("STATUS FINAL: FALHA")
                 logger.info("=" * 50)
-                return
+                return False, ""
         except Exception as e:
             db_time = time.time() - db_start_time
             logger.exception(f"Erro ao criar banco de dados: {e}")
@@ -1622,7 +1728,7 @@ def main():
             logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
             logger.info("STATUS FINAL: FALHA")
             logger.info("=" * 50)
-            return
+            return False, ""
     
     total_time = time.time() - start_time
     
@@ -1658,7 +1764,7 @@ def main():
     except Exception as e:
         logger.error(f"Erro ao salvar estatísticas: {e}")
     
-    return
+    return overall_success, date_folders[-1] if date_folders else ""
 
 
 if __name__ == '__main__':
