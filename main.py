@@ -1,44 +1,91 @@
 """
 Exemplos de uso:
 
-1. Execução padrão (Baixa todos os tipos na pasta mais recente, processa todos com Pandas, salva em subpasta com nome da data baixada):
+1. Execução padrão (Baixa todos os tipos na pasta mais recente e salva em subpasta com nome da data baixada):
    python main.py
 
-2. Baixa e processa apenas Empresas e Sócios com Pandas (salva em subpasta com nome da data baixada):
+2. Baixa e processa apenas Empresas e Sócios (salva em subpasta com nome da data baixada):
    python main.py --tipos empresas socios
 
-3. Baixa e processa todos os tipos usando o motor Dask (salva em subpasta com nome da data baixada):
-   python main.py --engine dask
+3. Baixa e processa todos os tipos (salva em subpasta com nome da data baixada):
+   python main.py
 
-4. Baixa e processa apenas Estabelecimentos usando Polars (salva em subpasta com nome da data baixada):
-   python main.py --tipos estabelecimentos --engine polars
+4. Pular o download e processar todos os tipos da pasta ZIP '../dados-abertos-zip/2023-05', salvando Parquet na subpasta 'meu_processamento_manual' (dentro de PATH_PARQUET):
+   python main.py --step process --source-zip-folder ../dados-abertos-zip/2023-05 --output-subfolder meu_processamento_manual
 
-5. Pular o download e processar todos os tipos da pasta ZIP '../dados-abertos-zip', salvando Parquet na subpasta 'meu_processamento_manual' (dentro de PATH_PARQUET):
-   python main.py --skip-download --source-zip-folder ../dados-abertos-zip --output-subfolder meu_processamento_manual
+5. Pular o download, processar apenas Simples e Sócios da pasta ZIP 'D:/MeusDownloads/CNPJ_ZIPs/2023-01', salvando Parquet na subpasta 'simples_socios' (dentro de PATH_PARQUET):
+   python main.py --step process --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs/2023-01" --output-subfolder simples_socios --tipos simples socios
 
-6. Pular o download, processar apenas Simples e Sócios da pasta ZIP 'D:/MeusDownloads/CNPJ_ZIPs', usando Dask, salvando Parquet na subpasta 'simples_socios_dask' (dentro de PATH_PARQUET):
-   python main.py --skip-download --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs" --output-subfolder simples_socios_dask --tipos simples socios --engine dask
+6. Baixa e processa apenas Empresas (salva em subpasta com nome da data baixada):
+   python main.py --tipos empresas
 
-7. Baixa e processa apenas Empresas usando Pandas (salva em subpasta com nome da data baixada):
-   python main.py --tipos empresas --engine pandas
+7. Baixa e processa apenas Empresas e salvando na subpasta 'apenas_empresas' (dentro de PATH_PARQUET):
+   python main.py --tipos empresas --output-subfolder apenas_empresa
 
-8. Baixa e processa apenas Empresas usando Polars, salvando na subpasta 'apenas_empresas_polars' (dentro de PATH_PARQUET):
-   python main.py --tipos empresas --engine polars --output-subfolder apenas_empresas_polars
+8. Como o exemplo 7, mas também cria o subconjunto 'empresa_privada' no diretório de saída:
+   python main.py --tipos empresas --output-subfolder apenas_empresas --criar-empresa-privada
 
-9. Como o exemplo 8, mas também cria o subconjunto 'empresa_privada' no diretório de saída:
-   python main.py --tipos empresas --engine polars --output-subfolder apenas_empresas_polars --criar-empresa-privada
+9. Pular download E processamento, criando apenas o arquivo DuckDB a partir dos Parquets existentes na subpasta 'processamento_anterior' (dentro de PATH_PARQUET):
+    python main.py --step database --output-subfolder processamento_anterior
 
-10. Pular download E processamento, criando apenas o arquivo DuckDB a partir dos Parquets existentes na subpasta 'processamento_anterior' (dentro de PATH_PARQUET):
-    python main.py --skip-processing --output-subfolder processamento_anterior
+10. Pular download, processar, e depois criar o DuckDB, usando a pasta de origem 'meus_zips/2023-05' e salvando na subpasta 'resultado':
+    python main.py --step process --source-zip-folder meus_zips/2023-05 --output-subfolder resultado
 
-11. Pular download, processar com Dask, e depois criar o DuckDB, usando a pasta de origem 'meus_zips' e salvando na subpasta 'resultado_dask':
-    python main.py --skip-download --source-zip-folder meus_zips --engine dask --output-subfolder resultado_dask
+11. Processar apenas estabelecimentos, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
+    python main.py --tipos estabelecimentos --output-subfolder process_sp --criar-subset-uf SP
 
-12. Processar apenas estabelecimentos com Polars, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
-    python main.py --tipos estabelecimentos --engine polars --output-subfolder process_sp --criar-subset-uf SP
-
-13. Baixar e processar dados de uma pasta remota específica (2023-05) em vez da pasta mais recente:
+12. Baixar e processar dados de uma pasta remota específica (2023-05) em vez da pasta mais recente:
     python main.py --remote-folder 2023-05
+
+13. Baixar arquivos de TODOS os diretórios remotos disponíveis (salvando em subpastas separadas):
+    python main.py --all-folders --step download
+
+14. Processar dados de uma pasta baixada anteriormente (aponta diretamente para a subpasta com arquivos):
+    python main.py --step process --source-zip-folder pasta_zips/2023-05 --output-subfolder processados_2023_05
+
+15. Baixar arquivos forçando download mesmo que já existam localmente ou no cache:
+    python main.py --remote-folder 2023-05 --force-download
+
+16. Processar todas as pastas no formato AAAA-MM encontradas dentro de PATH_ZIP (útil após download com --all-folders):
+    python main.py --step process --process-all-folders --output-subfolder processados_completos
+
+17. Baixar arquivos de todas as pastas remotas a partir de 2023-01 até a mais atual:
+    python main.py --all-folders --from-folder 2023-01 --step download
+
+18. Baixar e processar arquivos de todas as pastas remotas desde a mais antiga até a mais atual:
+    python main.py --all-folders
+
+19. Baixar e processar arquivos a partir de uma pasta específica (2023-06) até a mais atual:
+    python main.py --all-folders --from-folder 2023-06
+
+20. Processar todas as pastas locais no formato AAAA-MM a partir de 2023-03:
+    python main.py --step process --process-all-folders --from-folder 2023-03 --output-subfolder processados_desde_2023_03
+
+21. Baixar sequencialmente da pasta mais antiga até a mais atual, processando cada uma:
+    python main.py --all-folders --from-folder 2022-01
+
+22. Processar dados deletando os ZIPs após extração para economizar espaço:
+    python main.py --tipos empresas --delete-zips-after-extract
+
+23. Baixar e processar dados de 2023-01 até atual, deletando ZIPs após processamento:
+    python main.py --all-folders --from-folder 2023-01 --delete-zips-after-extract
+
+24. Processar todas as pastas locais deletando ZIPs para economizar espaço:
+    python main.py --step process --process-all-folders --output-subfolder economizando_espaco --delete-zips-after-extract
+
+25. Processamento conservador de espaço - apenas estabelecimentos com deleção de ZIPs:
+    python main.py --tipos estabelecimentos --delete-zips-after-extract --output-subfolder estabelecimentos_sem_zips
+
+NOTA: O download sempre salvará os arquivos em uma subpasta com o nome da pasta remota.
+      Exemplo: se --remote-folder=2023-05, os arquivos serão salvos em PATH_ZIP/2023-05/.
+      Ao usar --source-zip-folder, aponte diretamente para o diretório que contém os arquivos ZIP.
+      
+NOVO COMPORTAMENTO:
+      - --from-folder especifica a pasta inicial para download/processamento sequencial
+      - Sem --from-folder + --all-folders: baixa/processa da mais antiga até a mais atual
+      - --process-all-folders agora suporta --from-folder para processamento sequencial local
+      - --delete-zips-after-extract deleta arquivos ZIP após extração bem-sucedida (economiza espaço)
+      - A deleção só ocorre após verificação de que a extração foi realizada com sucesso
 """
 import argparse
 import asyncio
@@ -46,24 +93,128 @@ import datetime
 import logging
 import os
 from multiprocessing import freeze_support
+import psutil
 import re
+import sys
+import time
+import socket
+import requests
 
 import aiohttp
-from dask.distributed import Client, LocalCluster
 from dotenv import load_dotenv
 from rich.logging import RichHandler
 
-from src.async_downloader import get_latest_month_zip_urls, download_multiple_files, _filter_urls_by_type
+from src.async_downloader import (
+    download_multiple_files, 
+    get_latest_month_zip_urls, 
+    get_remote_folders, 
+    get_latest_remote_folder,
+    _filter_urls_by_type
+)
 from src.config import config
 from src.database import create_duckdb_file
-from src.process.empresa import process_empresa, process_empresa_with_pandas as process_empresa_pandas_impl, process_empresa_with_polars as process_empresa_polars_impl
-from src.process.estabelecimento import process_estabelecimento
-from src.process.simples import process_simples, process_single_zip_pandas, process_single_zip_polars
-from src.process.socio import process_socio
+# Importações da nova arquitetura refatorada (versão 3.0.0)
+from src.process.base.factory import ProcessorFactory
+from src.process.processors.empresa_processor import EmpresaProcessor
+from src.process.processors.estabelecimento_processor import EstabelecimentoProcessor
+from src.process.processors.simples_processor import SimplesProcessor
+from src.process.processors.socio_processor import SocioProcessor
 from src.utils import check_basic_folders
-import dask
-from src.utils.dask_manager import DaskManager
+from src.utils.time_utils import format_elapsed_time
+from src.utils.statistics import global_stats
 
+# Configurar logger global
+logger = logging.getLogger(__name__)
+
+def check_internet_connection() -> bool:
+    """
+    Verifica se há conexão com a internet.
+    
+    Returns:
+        bool: True se houver conexão, False caso contrário
+    """
+    try:
+        # Tenta fazer uma requisição para um servidor confiável
+        requests.get("http://www.google.com", timeout=5)
+        return True
+    except requests.RequestException:
+        try:
+            # Tenta resolver um domínio conhecido
+            socket.create_connection(("8.8.8.8", 53), timeout=5)
+            return True
+        except OSError:
+            return False
+
+def check_disk_space() -> bool:
+    """
+    Verifica se há espaço suficiente em disco (multiplataforma).
+    
+    Returns:
+        bool: True se houver espaço suficiente, False caso contrário
+    """
+    try:
+        # Obtém o diretório de destino
+        path_zip = os.getenv('PATH_ZIP', './dados-zip')
+        if not path_zip:
+            logger.error("PATH_ZIP não definido no arquivo .env")
+            return False
+        
+        # Garantir que o diretório existe
+        if not os.path.exists(path_zip):
+            try:
+                os.makedirs(path_zip, exist_ok=True)
+                logger.info(f"Diretório criado: {path_zip}")
+            except Exception as e:
+                logger.error(f"Erro ao criar diretório {path_zip}: {e}")
+                return False
+        
+        # Define um limite mínimo de 10GB
+        min_space = 10 * 1024 * 1024 * 1024  # 10GB em bytes
+        
+        # Método multiplataforma para verificar espaço em disco
+        if os.name == 'nt':  # Windows
+            try:
+                import ctypes
+                free_bytes = ctypes.c_ulonglong(0)
+                ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                    ctypes.c_wchar_p(path_zip), None, None, ctypes.pointer(free_bytes)
+                )
+                available_space = free_bytes.value
+            except Exception as e:
+                logger.warning(f"Erro ao usar método Windows para verificar espaço: {e}")
+                # Fallback para método padrão
+                import shutil
+                _, _, available_space = shutil.disk_usage(path_zip)
+        else:  # Linux, macOS, Unix
+            try:
+                # Usar os.statvfs (mais preciso em sistemas Unix)
+                statvfs = os.statvfs(path_zip)
+                available_space = statvfs.f_bavail * statvfs.f_frsize
+            except (AttributeError, OSError) as e:
+                logger.warning(f"Erro ao usar os.statvfs: {e}")
+                # Fallback para shutil.disk_usage
+                try:
+                    import shutil
+                    _, _, available_space = shutil.disk_usage(path_zip)
+                except Exception as e2:
+                    logger.error(f"Erro ao verificar espaço em disco: {e2}")
+                    return False
+        
+        # Converter para GB para logging
+        available_gb = available_space / (1024**3)
+        min_gb = min_space / (1024**3)
+        
+        logger.info(f"Espaço disponível: {available_gb:.2f}GB (mínimo necessário: {min_gb:.1f}GB)")
+        
+        if available_space < min_space:
+            logger.warning(f"Espaço livre insuficiente: {available_gb:.2f}GB < {min_gb:.1f}GB")
+            return False
+            
+        return True
+        
+    except Exception as e:
+        logger.error(f"Erro ao verificar espaço em disco: {e}")
+        return False
 
 def setup_logging(log_level_str: str):
     """Configura o sistema de logging com base no nível fornecido."""
@@ -74,20 +225,22 @@ def setup_logging(log_level_str: str):
     log_format = '%(asctime)s - %(levelname)s - %(message)s'
     date_format = '%Y-%m-%d %H:%M:%S'
 
+    # Comando de execução
+    cmd_line = ' '.join(sys.argv)
+    # Escreve o comando como primeira linha do log
+    with open(log_filename, 'w', encoding='utf-8') as f:
+        f.write(f"# Linha de comando: {cmd_line}\n")
+
     # Converte a string do argumento para o nível de log correspondente
     log_level = getattr(logging, log_level_str.upper(), logging.INFO)
 
     # Configuração do logger raiz para capturar tudo
     root_logger = logging.getLogger()
-    # root_logger.setLevel(logging.INFO) # Nível fixo removido
-    root_logger.setLevel(log_level) # Define o nível dinamicamente
+    root_logger.setLevel(log_level)
 
-    # Limpa handlers existentes para evitar duplicação em re-execuções (ex: testes)
-    # CUIDADO: Isso pode remover handlers adicionados por outras bibliotecas.
-    # Alternativa: verificar se handlers específicos já existem antes de adicionar.
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
-        print("[setup_logging] Handlers de log anteriores removidos.") # Log temporário para depuração
+        print("[setup_logging] Handlers de log anteriores removidos.")
 
     # Handler para arquivo (sem cores)
     file_handler = logging.FileHandler(log_filename, encoding='utf-8')
@@ -100,6 +253,7 @@ def setup_logging(log_level_str: str):
 
     logger_instance = logging.getLogger(__name__)
     logger_instance.info(f"Nível de log configurado para: {logging.getLevelName(log_level)}")
+    logger_instance.info(f"Linha de comando: {cmd_line}")
     return logger_instance
 
 
@@ -108,144 +262,910 @@ def print_header(text: str):
     print(f"\n{'=' * 50}")
     print(f"{text}")
     print(f"{'=' * 50}\n")
+    # Também logar
+    logger.info("=" * 50)
+    logger.info(text)
+    logger.info("=" * 50)
 
 
 def print_section(text: str):
     """Imprime uma seção formatada."""
     print(f"\n▶ {text}")
+    # Também logar
+    logger.info(f"▶ {text}")
 
 
 def print_success(text: str):
     """Imprime uma mensagem de sucesso formatada."""
     print(f"✓ {text}")
+    # Também logar
+    logger.info(f"✓ {text}")
 
 
 def print_warning(text: str):
     """Imprime uma mensagem de aviso formatada."""
     print(f"⚠ {text}")
+    # Também logar
+    logger.warning(f"⚠ {text}")
 
 
 def print_error(text: str):
     """Imprime uma mensagem de erro formatada."""
     print(f"✗ {text}")
+    # Também logar
+    logger.error(f"✗ {text}")
 
 
-async def run_download_process(tipos_desejados: list[str] | None = None, remote_folder: str | None = None):
+async def run_download_process(tipos_desejados: list[str] | None = None, remote_folder: str | None = None, all_folders: bool = False, from_folder: str | None = None):
     """Executa todo o processo de download de forma assíncrona.
-
+    
     Args:
-        tipos_desejados: Lista de tipos de arquivos a serem baixados. Se None, baixa todos.
-        remote_folder: Pasta remota específica a ser baixada no formato AAAA-MM. Se None, usa a mais recente.
-
-    Returns:
-        tuple[bool, str]: (sucesso do download, pasta mais recente)
-            - Se sucesso for False, a pasta mais recente será uma string vazia
+        tipos_desejados: Lista de tipos de arquivos para baixar (ex: ['Empresas', 'Estabelecimentos'])
+        remote_folder: Nome da pasta remota específica para baixar (ex: '2024-01')
+        all_folders: Se True, baixa de todas as pastas remotas disponíveis
+        from_folder: Se especificado com all_folders, baixa da pasta especificada até a mais atual
     """
-    logger = logging.getLogger(__name__)
-    logger.info("Iniciando processo de download centralizado...")
-
     try:
-        base_url = os.getenv('URL_ORIGIN')
-        download_folder = os.getenv('PATH_ZIP')
+        # Importar e executar teste de rede adaptativo
+        from src.utils.network import adaptive_network_test
+        try:
+            network_results = await adaptive_network_test()
+            if network_results and network_results.get("connected"):
+                logger.info(f"✅ Teste de rede concluído: {network_results['quality']['connection_quality']} "
+                           f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
+            else:
+                logger.warning("⚠️ Teste de rede indicou problemas de conectividade")
+        except Exception as e:
+            logger.warning(f"⚠️ Erro no teste de rede adaptativo: {e}. Continuando sem otimizações de rede.")
+            network_results = None
+        
+        # Se nenhum tipo foi especificado ou lista vazia, usar a lista padrão
+        if not tipos_desejados:
+            tipos_desejados = ['Empresas', 'Estabelecimentos', 'Simples', 'Socios']
+            logger.info("Nenhum tipo especificado. Usando tipos padrão: Empresas, Estabelecimentos, Simples, Socios")
 
-        if not base_url or not download_folder:
-            logger.error("Variáveis de ambiente URL_ORIGIN ou PATH_ZIP não definidas.")
+        # Obter variáveis de ambiente
+        PATH_ZIP = os.getenv('PATH_ZIP', './dados-zip')
+        PATH_UNZIP = os.getenv('PATH_UNZIP', './dados-unzip')
+        PATH_PARQUET = os.getenv('PATH_PARQUET', './dados-parquet')
+
+        if not all([PATH_ZIP, PATH_UNZIP, PATH_PARQUET]):
+            logger.error("Variáveis de ambiente PATH_ZIP, PATH_UNZIP ou PATH_PARQUET não definidas")
             return False, ""
 
-        # 1. Buscar URLs mais recentes ou da pasta específica
-        try:
-            all_zip_urls, latest_folder = get_latest_month_zip_urls(base_url, remote_folder)
-            if not all_zip_urls:
-                if remote_folder:
-                    logger.warning(f"Nenhuma URL .zip encontrada na pasta remota especificada: {remote_folder}.")
+        # Verificar conexão com internet
+        if not check_internet_connection():
+            logger.error("Sem conexão com a internet. Verifique sua conexão e tente novamente.")
+            return False, ""
+
+        # Verificar espaço em disco
+        if not check_disk_space():
+            logger.error("Espaço em disco insuficiente. Libere espaço e tente novamente.")
+            return False, ""
+
+        # Verificando pastas básicas
+        check_basic_folders([PATH_ZIP, PATH_UNZIP, PATH_PARQUET])
+        
+        # 🆕 Versão 3.0.0: Inicializar nova arquitetura de processadores
+        print_section("Inicializando arquitetura refatorada (v3.0.0)...")
+        if not initialize_processors():
+            print_error("Falha ao inicializar processadores da nova arquitetura")
+            return False, ""
+        print_success("Arquitetura refatorada inicializada com sucesso")
+        
+        # As configurações de interface já foram processadas na função main()
+        # e estão disponíveis em config.pipeline
+        
+        # Log das configurações de interface
+        logger.info(f"📊 Barra de progresso: {'✅ ativada' if config.pipeline.show_progress_bar else '❌ desativada'}")
+        logger.info(f"📋 Lista de arquivos pendentes: {'✅ ativada' if config.pipeline.show_pending_files else '❌ desativada'}")
+        
+        # Obter URLs base
+        base_url = os.getenv('BASE_URL', 'https://dados.rfb.gov.br/CNPJ/')
+        if not base_url:
+            logger.error("BASE_URL não definida no arquivo .env")
+            return False, ""
+
+        # Obter pasta de download
+        download_folder = os.getenv('PATH_ZIP', './dados-zip')
+        if not download_folder:
+            logger.error("PATH_ZIP não definido no arquivo .env")
+            return False, ""
+
+        # Lista para armazenar resultados
+        downloaded_files_count = 0
+        failed_downloads_count = 0
+        all_successful = True
+        latest_folder = ""
+
+        if all_folders:
+            # Modo: Baixar de todas as pastas
+            logger.info("Modo: Baixar de todas as pastas disponíveis")
+            
+            # Obter lista de pastas remotas
+            remote_folders = await get_remote_folders(base_url)
+            if not remote_folders:
+                logger.error("Não foi possível obter a lista de pastas remotas")
+                return False, ""
+
+            logger.info(f"Encontradas {len(remote_folders)} pastas remotas")
+            
+            # Filtrar pastas com base no from_folder se especificado
+            if from_folder:
+                logger.info(f"Filtrando pastas a partir de: {from_folder}")
+                # Ordenar as pastas e filtrar a partir da pasta especificada
+                remote_folders_sorted = sorted(remote_folders)
+                if from_folder in remote_folders_sorted:
+                    start_index = remote_folders_sorted.index(from_folder)
+                    remote_folders = remote_folders_sorted[start_index:]
+                    logger.info(f"Baixando {len(remote_folders)} pastas a partir de {from_folder}: {', '.join(remote_folders)}")
                 else:
-                    logger.warning("Nenhuma URL .zip encontrada na origem.")
+                    logger.warning(f"Pasta inicial '{from_folder}' não encontrada. Disponíveis: {', '.join(sorted(remote_folders))}")
+                    logger.info("Baixando todas as pastas disponíveis")
+            else:
+                # Se from_folder não especificado, ordenar da mais antiga para a mais nova
+                remote_folders = sorted(remote_folders)
+                logger.info(f"Baixando todas as {len(remote_folders)} pastas em ordem cronológica: {', '.join(remote_folders)}")
+            
+            # Processar cada pasta remota
+            for folder_name in remote_folders:
+                logger.info(f"Processando pasta remota: {folder_name}")
+                
+                # Atualizar pasta remota no cache
+                if config.cache.enabled:
+                    config.cache.set_remote_folder(folder_name)
+                    logger.info(f"Cache configurado para pasta remota: {folder_name}")
+                
+                # Criar subdiretório para esta pasta remota
+                folder_download_path = os.path.join(download_folder, folder_name)
+                os.makedirs(folder_download_path, exist_ok=True)
+                logger.info(f"Criando subdiretório para a pasta remota: {folder_download_path}")
+                
+                # Obter URLs dos arquivos
+                zip_urls, folder_name = get_latest_month_zip_urls(base_url, folder_name)
+                if not zip_urls:
+                    logger.warning(f"Nenhuma URL relevante para download encontrada em {folder_name}.")
+                    continue
+                
+                # Filtrar URLs por tipos desejados
+                if tipos_desejados:
+                    zip_urls, ignored = _filter_urls_by_type(zip_urls, tuple(tipos_desejados))
+                    if not zip_urls:
+                        logger.warning(f"Nenhuma URL relevante para download encontrada após filtrar por tipos em {folder_name}.")
+                        continue
+                    logger.info(f"Filtrados {ignored} URLs não desejadas. Restaram {len(zip_urls)} URLs para download.")
+                
+                # Log adicional para verificação de cache
+                logger.info(f"Iniciando download para {folder_name} - Sistema de cache está {'ativado' if config.cache.enabled else 'desativado'}")
+                
+                # Verificar se o diretório do cache existe
+                if config.cache.enabled and not os.path.exists(config.cache.cache_dir):
+                    os.makedirs(config.cache.cache_dir, exist_ok=True)
+                    logger.info(f"Diretório de cache criado: {config.cache.cache_dir}")
+                
+                # Baixar os arquivos deste diretório
+                try:
+                    max_concurrent_downloads = config.n_workers
+                    
+                    # Aplicar configurações de rede se disponíveis
+                    if network_results and network_results.get("connected"):
+                        recommendations = network_results["recommendations"]
+                        max_concurrent_downloads = min(max_concurrent_downloads, recommendations["max_concurrent_downloads"])
+                        logger.info(f"🌐 Configurações ajustadas pela qualidade da rede: {max_concurrent_downloads} downloads simultâneos")
+                    
+                    # Log detalhado dos recursos do sistema e configurações do pipeline
+                    cpu_count = os.cpu_count() or 4
+                    memory_info = psutil.virtual_memory()
+                    memory_total_gb = memory_info.total / (1024**3)
+                    memory_available_gb = memory_info.available / (1024**3)
+                    memory_percent = memory_info.percent
+                    
+                    # Informações de disco
+                    try:
+                        # Usar o diretório atual ou root de forma multiplataforma
+                        if os.name == 'nt':  # Windows
+                            disk_path = os.path.splitdrive(os.getcwd())[0] + os.sep
+                        else:  # Unix/Linux
+                            disk_path = '/'
+                        
+                        disk_info = psutil.disk_usage(disk_path)
+                        disk_total_gb = disk_info.total / (1024**3)
+                        disk_free_gb = disk_info.free / (1024**3)
+                        disk_percent = (disk_info.used / disk_info.total) * 100
+                    except Exception as e:
+                        logger.warning(f"Erro ao obter informações de disco: {e}")
+                        disk_total_gb = disk_free_gb = disk_percent = 0
+                    
+                    logger.info("=" * 70)
+                    logger.info("🚀 INICIANDO PIPELINE PRINCIPAL DE CNPJ")
+                    logger.info("=" * 70)
+                    
+                    # Recursos do sistema
+                    logger.info(f"🖥️  RECURSOS DO SISTEMA:")
+                    logger.info(f"   • CPU: {cpu_count} núcleos disponíveis")
+                    logger.info(f"   • Memória: {memory_total_gb:.2f}GB total | {memory_available_gb:.2f}GB disponível ({100-memory_percent:.1f}%)")
+                    logger.info(f"   • Disco: {disk_total_gb:.2f}GB total | {disk_free_gb:.2f}GB livres ({100-disk_percent:.1f}%)")
+                    
+                    # Configurações do pipeline
+                    logger.info(f"⚙️  CONFIGURAÇÕES DO PIPELINE:")
+                    logger.info(f"   • Downloads simultâneos: {max_concurrent_downloads}")
+                    logger.info(f"   • Processamento automático: ativado (será calculado dinamicamente)")
+                    logger.info(f"   • Força download: {os.getenv('FORCE_DOWNLOAD', '').lower() == 'true'}")
+                    logger.info(f"   • Pasta remota: {remote_folder if remote_folder else 'mais recente'}")
+                    
+                    # Estimativas de capacidade
+                    min_process_workers = max(2, cpu_count // 2)
+                    if memory_total_gb >= 16:
+                        estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 3 // 4))
+                        system_category = "ALTO DESEMPENHO"
+                    elif memory_total_gb >= 8:
+                        estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 2 // 3))
+                        system_category = "DESEMPENHO MODERADO"
+                    else:
+                        estimated_process_workers = max(min_process_workers, cpu_count // 2)
+                        system_category = "CONSERVADOR"
+                    
+                    estimated_throughput = estimated_process_workers * 8  # Estimativa de arquivos por hora
+                    estimated_memory_per_worker = memory_available_gb / estimated_process_workers if estimated_process_workers > 0 else 0
+                    
+                    logger.info(f"📊 ESTIMATIVAS DE PERFORMANCE:")
+                    logger.info(f"   • Categoria do sistema: {system_category}")
+                    logger.info(f"   • Workers de processamento estimados: {estimated_process_workers}")
+                    logger.info(f"   • Throughput estimado: ~{estimated_throughput} arquivos/hora")
+                    logger.info(f"   • Memória por worker: ~{estimated_memory_per_worker:.1f}GB")
+                    logger.info(f"   • Eficiência de CPU estimada: {(estimated_process_workers/cpu_count)*100:.1f}%")
+                    
+                    # Alertas e recomendações
+                    logger.info(f"⚠️  ALERTAS E RECOMENDAÇÕES:")
+                    alerts_count = 0
+                    if memory_percent > 80:
+                        logger.warning(f"   • ATENÇÃO: Uso de memória alto ({memory_percent:.1f}%) - considere fechar outros programas")
+                        alerts_count += 1
+                    if disk_percent > 90:
+                        logger.warning(f"   • ATENÇÃO: Disco quase cheio ({disk_percent:.1f}%) - libere espaço antes de continuar")
+                        alerts_count += 1
+                    if cpu_count < 4:
+                        logger.warning(f"   • ATENÇÃO: Poucos núcleos de CPU ({cpu_count}) - performance pode ser limitada")
+                        alerts_count += 1
+                    if memory_total_gb < 4:
+                        logger.warning(f"   • ATENÇÃO: Pouca RAM ({memory_total_gb:.1f}GB) - considere aumentar memória virtual")
+                        alerts_count += 1
+                    
+                    if alerts_count == 0:
+                        logger.info(f"   • ✅ Sistema sem alertas críticos detectados")
+                    
+                    # Recomendações de otimização
+                    if memory_total_gb >= 16 and cpu_count >= 8:
+                        logger.info(f"   • ✅ Sistema otimizado para processamento intensivo de dados CNPJ")
+                    elif memory_total_gb >= 8 and cpu_count >= 4:
+                        logger.info(f"   • ✅ Sistema adequado para processamento de dados CNPJ")
+                    else:
+                        logger.info(f"   • ⚠️ Sistema básico - considere upgrade de hardware para melhor performance")
+                    
+                    logger.info("=" * 70)
+                    
+                    # Calcular max_concurrent_processing baseado no hardware se None
+                    optimal_processing_workers = max(2, cpu_count // 2)
+                    if memory_total_gb >= 16:
+                        optimal_processing_workers = min(cpu_count, max(optimal_processing_workers, cpu_count * 3 // 4))
+                    elif memory_total_gb >= 8:
+                        optimal_processing_workers = min(cpu_count, max(optimal_processing_workers, cpu_count * 2 // 3))
+                    
+                    # Usar a nova função otimizada com pipeline completo
+                    processed, failed = await download_multiple_files(
+                        zip_urls,
+                        folder_download_path,  # path_zip
+                        PATH_UNZIP,           # path_unzip
+                        PATH_PARQUET,         # path_parquet
+                        force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
+                        max_concurrent_downloads=max_concurrent_downloads,
+                        max_concurrent_processing=optimal_processing_workers,
+                        show_progress_bar=config.pipeline.show_progress_bar,
+                        show_pending_files=config.pipeline.show_pending_files
+                    )
+                    
+                    downloaded_files_count += len(processed)
+                    failed_downloads_count += len(failed)
+                    
+                    if failed:
+                        logger.warning(f"{len(failed)} downloads/processamentos falharam em {folder_name}.")
+                        all_successful = False
+                except Exception as e:
+                    logger.error(f"Erro durante downloads em {folder_name}: {e}")
+                    all_successful = False
+            
+            # Resumo final
+            logger.info(f"Download de múltiplos diretórios concluído.")
+            
+        else:
+            # Modo: Baixar de uma pasta específica ou a mais recente
+            if remote_folder:
+                # Usar pasta remota especificada
+                latest_folder = remote_folder
+                logger.info(f"Usando pasta remota especificada: {latest_folder}")
+            else:
+                # Obter pasta mais recente
+                latest_folder = await get_latest_remote_folder(base_url)
+                if not latest_folder:
+                    logger.error("Não foi possível determinar a pasta remota mais recente")
+                    return False, ""
+                logger.info(f"Pasta remota mais recente: {latest_folder}")
+
+            # Atualizar pasta remota no cache
+            if config.cache.enabled:
+                config.cache.set_remote_folder(latest_folder)
+                logger.info(f"Cache configurado para pasta remota: {latest_folder}")
+
+            # Criar subdiretório para esta pasta remota
+            folder_download_path = os.path.join(download_folder, latest_folder)
+            os.makedirs(folder_download_path, exist_ok=True)
+            logger.info(f"Criando subdiretório para a pasta remota: {folder_download_path}")
+            
+            # Obter URLs dos arquivos
+            zip_urls, folder_name = get_latest_month_zip_urls(base_url, latest_folder)
+            if not zip_urls:
+                logger.warning(f"Nenhuma URL relevante para download encontrada em {latest_folder}.")
                 return False, ""
-        except aiohttp.ClientError as e:
-            logger.error(f"Erro de conexão ao buscar URLs: {e}")
-            return False, ""
-        except Exception as e:
-            logger.error(f"Erro inesperado ao buscar URLs: {e}")
-            return False, ""
+            
+            # Filtrar URLs por tipos desejados
+            if tipos_desejados:
+                zip_urls, ignored = _filter_urls_by_type(zip_urls, tuple(tipos_desejados))
+                if not zip_urls:
+                    logger.warning(f"Nenhuma URL relevante para download encontrada após filtrar por tipos em {latest_folder}.")
+                    return False, ""
+                logger.info(f"Filtrados {ignored} URLs não desejadas. Restaram {len(zip_urls)} URLs para download.")
+            
+            # Log para depuração
+            logger.info(f"Iniciando download de {len(zip_urls)} arquivos relevantes para {folder_download_path}...")
+            logger.info(f"Sistema de cache está {'ativado' if config.cache.enabled else 'desativado'}")
+            
+            # Verificar se o diretório do cache existe
+            if config.cache.enabled and not os.path.exists(config.cache.cache_dir):
+                os.makedirs(config.cache.cache_dir, exist_ok=True)
+                logger.info(f"Diretório de cache criado: {config.cache.cache_dir}")
 
-        # 2. Filtrar URLs desejadas
-        if tipos_desejados is None:
-            tipos_desejados = ("Empresas", "Estabelecimentos", "Simples", "Socios")
-        try:
-            zip_urls_to_download, ignored_count = _filter_urls_by_type(all_zip_urls, tipos_desejados)
-            logger.info(f"{ignored_count} arquivos ignorados com base nos tipos não desejados.")
-        except Exception as e:
-            logger.error(f"Erro ao filtrar URLs: {e}")
-            return False, ""
-
-        if not zip_urls_to_download:
-            logger.warning(f"Nenhuma URL relevante para download encontrada após filtrar por tipos.")
-            return False, ""
-
-        logger.info(f"Iniciando download de {len(zip_urls_to_download)} arquivos relevantes para {download_folder}...")
-
-        # 3. Baixar os arquivos
-        try:
-            max_concurrent_downloads = config.dask.n_workers
-            downloaded, failed = await download_multiple_files(
-                zip_urls_to_download,
-                download_folder,
-                max_concurrent=max_concurrent_downloads
-            )
-        except aiohttp.ClientError as e:
-            logger.error(f"Erro de conexão durante downloads: {e}")
-            return False, ""
-        except asyncio.TimeoutError as e:
-            logger.error(f"Timeout durante downloads: {e}")
-            return False, ""
-        except Exception as e:
-            logger.error(f"Erro inesperado durante downloads: {e}")
-            return False, ""
-
-        logger.info("Processo de download concluído.")
-
-        if failed:
-            logger.error(f"{len(failed)} downloads falharam. Verifique os logs acima.")
-            if not downloaded:  # Se nenhum arquivo foi baixado com sucesso
+            # Baixar os arquivos
+            try:
+                max_concurrent_downloads = config.n_workers
+                
+                # Aplicar configurações de rede se disponíveis
+                if network_results and network_results.get("connected"):
+                    recommendations = network_results["recommendations"]
+                    max_concurrent_downloads = min(max_concurrent_downloads, recommendations["max_concurrent_downloads"])
+                    logger.info(f"🌐 Configurações ajustadas pela qualidade da rede: {max_concurrent_downloads} downloads simultâneos")
+                
+                # Log detalhado dos recursos do sistema e configurações do pipeline
+                cpu_count = os.cpu_count() or 4
+                memory_info = psutil.virtual_memory()
+                memory_total_gb = memory_info.total / (1024**3)
+                memory_available_gb = memory_info.available / (1024**3)
+                memory_percent = memory_info.percent
+                
+                # Informações de disco
+                try:
+                    # Usar o diretório atual ou root de forma multiplataforma
+                    if os.name == 'nt':  # Windows
+                        disk_path = os.path.splitdrive(os.getcwd())[0] + os.sep
+                    else:  # Unix/Linux
+                        disk_path = '/'
+                    
+                    disk_info = psutil.disk_usage(disk_path)
+                    disk_total_gb = disk_info.total / (1024**3)
+                    disk_free_gb = disk_info.free / (1024**3)
+                    disk_percent = (disk_info.used / disk_info.total) * 100
+                except Exception as e:
+                    logger.warning(f"Erro ao obter informações de disco: {e}")
+                    disk_total_gb = disk_free_gb = disk_percent = 0
+                
+                logger.info("=" * 70)
+                logger.info("🚀 INICIANDO PIPELINE PRINCIPAL DE CNPJ")
+                logger.info("=" * 70)
+                
+                # Recursos do sistema
+                logger.info(f"🖥️  RECURSOS DO SISTEMA:")
+                logger.info(f"   • CPU: {cpu_count} núcleos disponíveis")
+                logger.info(f"   • Memória: {memory_total_gb:.2f}GB total | {memory_available_gb:.2f}GB disponível ({100-memory_percent:.1f}%)")
+                logger.info(f"   • Disco: {disk_total_gb:.2f}GB total | {disk_free_gb:.2f}GB livres ({100-disk_percent:.1f}%)")
+                
+                # Configurações do pipeline
+                logger.info(f"⚙️  CONFIGURAÇÕES DO PIPELINE:")
+                logger.info(f"   • Downloads simultâneos: {max_concurrent_downloads}")
+                logger.info(f"   • Processamento automático: ativado (será calculado dinamicamente)")
+                logger.info(f"   • Força download: {os.getenv('FORCE_DOWNLOAD', '').lower() == 'true'}")
+                logger.info(f"   • Pasta remota: {remote_folder if remote_folder else 'mais recente'}")
+                
+                # Estimativas de capacidade
+                min_process_workers = max(2, cpu_count // 2)
+                if memory_total_gb >= 16:
+                    estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 3 // 4))
+                    system_category = "ALTO DESEMPENHO"
+                elif memory_total_gb >= 8:
+                    estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 2 // 3))
+                    system_category = "DESEMPENHO MODERADO"
+                else:
+                    estimated_process_workers = max(min_process_workers, cpu_count // 2)
+                    system_category = "CONSERVADOR"
+                
+                estimated_throughput = estimated_process_workers * 8  # Estimativa de arquivos por hora
+                estimated_memory_per_worker = memory_available_gb / estimated_process_workers if estimated_process_workers > 0 else 0
+                
+                logger.info(f"📊 ESTIMATIVAS DE PERFORMANCE:")
+                logger.info(f"   • Categoria do sistema: {system_category}")
+                logger.info(f"   • Workers de processamento estimados: {estimated_process_workers}")
+                logger.info(f"   • Throughput estimado: ~{estimated_throughput} arquivos/hora")
+                logger.info(f"   • Memória por worker: ~{estimated_memory_per_worker:.1f}GB")
+                logger.info(f"   • Eficiência de CPU estimada: {(estimated_process_workers/cpu_count)*100:.1f}%")
+                
+                # Alertas e recomendações
+                logger.info(f"⚠️  ALERTAS E RECOMENDAÇÕES:")
+                alerts_count = 0
+                if memory_percent > 80:
+                    logger.warning(f"   • ATENÇÃO: Uso de memória alto ({memory_percent:.1f}%) - considere fechar outros programas")
+                    alerts_count += 1
+                if disk_percent > 90:
+                    logger.warning(f"   • ATENÇÃO: Disco quase cheio ({disk_percent:.1f}%) - libere espaço antes de continuar")
+                    alerts_count += 1
+                if cpu_count < 4:
+                    logger.warning(f"   • ATENÇÃO: Poucos núcleos de CPU ({cpu_count}) - performance pode ser limitada")
+                    alerts_count += 1
+                if memory_total_gb < 4:
+                    logger.warning(f"   • ATENÇÃO: Pouca RAM ({memory_total_gb:.1f}GB) - considere aumentar memória virtual")
+                    alerts_count += 1
+                
+                if alerts_count == 0:
+                    logger.info(f"   • ✅ Sistema sem alertas críticos detectados")
+                
+                # Recomendações de otimização
+                if memory_total_gb >= 16 and cpu_count >= 8:
+                    logger.info(f"   • ✅ Sistema otimizado para processamento intensivo de dados CNPJ")
+                elif memory_total_gb >= 8 and cpu_count >= 4:
+                    logger.info(f"   • ✅ Sistema adequado para processamento de dados CNPJ")
+                else:
+                    logger.info(f"   • ⚠️ Sistema básico - considere upgrade de hardware para melhor performance")
+                
+                logger.info("=" * 70)
+                
+                # Calcular max_concurrent_processing baseado no hardware se None
+                optimal_processing_workers = max(2, cpu_count // 2)
+                if memory_total_gb >= 16:
+                    optimal_processing_workers = min(cpu_count, max(optimal_processing_workers, cpu_count * 3 // 4))
+                elif memory_total_gb >= 8:
+                    optimal_processing_workers = min(cpu_count, max(optimal_processing_workers, cpu_count * 2 // 3))
+                
+                # Usar a nova função otimizada com pipeline completo
+                processed, failed = await download_multiple_files(
+                    zip_urls,
+                    folder_download_path,  # path_zip
+                    PATH_UNZIP,           # path_unzip
+                    PATH_PARQUET,         # path_parquet
+                    force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
+                    max_concurrent_downloads=max_concurrent_downloads,
+                    max_concurrent_processing=optimal_processing_workers,
+                    show_progress_bar=config.pipeline.show_progress_bar,
+                    show_pending_files=config.pipeline.show_pending_files
+                )
+                
+                downloaded_files_count = len(processed)
+                failed_downloads_count = len(failed)
+                
+                if failed:
+                    logger.warning(f"{len(failed)} downloads/processamentos falharam.")
+                    all_successful = False
+                    
+            except aiohttp.ClientError as e:
+                logger.error(f"Erro de conexão durante downloads: {e}")
                 return False, ""
-            logger.warning("Continuando processamento com os arquivos baixados com sucesso.")
+            except asyncio.TimeoutError as e:
+                logger.error(f"Timeout durante downloads: {e}")
+                return False, ""
+            except Exception as e:
+                logger.error(f"Erro inesperado durante downloads: {e}")
+                return False, ""
 
-        return True, latest_folder
+            logger.info("Processo de download concluído.")
+
+            if failed:
+                logger.error(f"{len(failed)} downloads falharam. Verifique os logs acima.")
+                if not processed:  # Se nenhum arquivo foi baixado com sucesso
+                    return False, ""
+                logger.warning("Continuando processamento com os arquivos baixados com sucesso.")
+
+        # Resumo final
+        logger.info("=" * 50)
+        logger.info("RESUMO DO PROCESSO DE DOWNLOAD:")
+        logger.info("=" * 50)
+        logger.info(f"Total de arquivos baixados com sucesso: {downloaded_files_count}")
+        logger.info(f"Total de downloads com falha: {failed_downloads_count}")
+        logger.info(f"Processo {'completo' if all_successful else 'com falhas'}")
+        logger.info("=" * 50)
+
+        return all_successful, latest_folder if not all_folders else ""
 
     except Exception as e:
-        logger.exception(f"Erro crítico no processo de download: {e}")
+        logger.error(f"Erro durante o processo de download: {str(e)}")
         return False, ""
 
 
-def setup_dask_cluster():
-    """Configura e retorna um cluster Dask otimizado."""
-    dask.config.set({
-        'distributed.worker.memory.target': 0.6,
-        'distributed.worker.memory.spill': 0.7,
-        'distributed.worker.memory.pause': 0.8,
-        'distributed.worker.memory.terminate': 0.95,
-        'distributed.comm.timeouts.connect': '30s',
-        'distributed.comm.timeouts.tcp': '30s',
-        'distributed.nanny.environ.MALLOC_TRIM_THRESHOLD_': '65536',
-    })
+def initialize_processors():
+    """Inicializa todos os processadores da nova arquitetura (versão 3.0.0)."""
+    try:
+        # Registrar todos os processadores na factory
+        ProcessorFactory.register("empresa", EmpresaProcessor)
+        ProcessorFactory.register("estabelecimento", EstabelecimentoProcessor)
+        ProcessorFactory.register("simples", SimplesProcessor)
+        ProcessorFactory.register("socio", SocioProcessor)
+        
+        registered = ProcessorFactory.get_registered_processors()
+        logger.info(f"✅ Processadores registrados: {', '.join(registered)}")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erro ao inicializar processadores: {e}")
+        return False
 
-    return LocalCluster(
-        n_workers=config.dask.n_workers,
-        threads_per_worker=config.dask.threads_per_worker,
-        memory_limit=config.dask.memory_limit,
-        dashboard_address=config.dask.dashboard_address
-    )
+def process_with_new_architecture(processor_type: str, source_zip_path: str, unzip_path: str, 
+                                 output_parquet_path: str, delete_zips_after_extract: bool = False, **options) -> bool:
+    """
+    Processa dados usando a nova arquitetura refatorada (versão 3.0.0).
+    
+    Args:
+        processor_type: Tipo do processador ('empresa', 'estabelecimento', 'simples', 'socio')
+        source_zip_path: Caminho dos arquivos ZIP
+        unzip_path: Caminho temporário para extração
+        output_parquet_path: Caminho de saída dos parquets
+        delete_zips_after_extract: Se True, deleta ZIPs após extração bem-sucedida
+        **options: Opções específicas do processador
+    
+    Returns:
+        bool: True se processamento foi bem-sucedido
+    """
+    try:
+        # Criar processador usando factory
+        processor = ProcessorFactory.create(
+            processor_type,
+            source_zip_path,
+            unzip_path,
+            output_parquet_path,
+            delete_zips_after_extract=delete_zips_after_extract,
+            **options
+        )
+        
+        # Encontrar arquivos ZIP relevantes
+        if processor_type == "empresa":
+            pattern = "Empr"
+        elif processor_type == "estabelecimento":
+            pattern = "Estabele"
+        elif processor_type == "simples":
+            pattern = "Simples"
+        elif processor_type == "socio":
+            pattern = "Socio"
+        else:
+            logger.error(f"Tipo de processador desconhecido: {processor_type}")
+            return False
+        
+        zip_files = [f for f in os.listdir(source_zip_path) 
+                    if f.startswith(pattern) and f.endswith('.zip')]
+        
+        if not zip_files:
+            logger.warning(f"Nenhum arquivo ZIP encontrado para {processor_type}")
+            return True  # Não é erro se não há arquivos
+        
+        logger.info(f"Arquivos {processor_type} encontrados: {len(zip_files)}")
+        
+        # Processar cada arquivo ZIP
+        success_count = 0
+        for zip_file in zip_files:
+            try:
+                file_path = os.path.join(source_zip_path, zip_file)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                logger.info(f"Processando {zip_file}: {file_size_mb:.1f}MB")
+                
+                # Processar arquivo usando o novo sistema com todos os argumentos necessários
+                success = processor.process_single_zip(zip_file, source_zip_path, unzip_path, output_parquet_path, **options)
+                
+                if success:
+                    success_count += 1
+                    logger.info(f"✅ {zip_file} processado com sucesso")
+                else:
+                    logger.error(f"❌ Falha ao processar {zip_file}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Erro ao processar {zip_file}: {e}")
+        
+        # Verificar se todos foram processados com sucesso
+        all_success = success_count == len(zip_files)
+        logger.info(f"Processamento {processor_type}: {success_count}/{len(zip_files)} arquivos processados com sucesso")
+        
+        return all_success
+        
+    except Exception as e:
+        logger.error(f"❌ Erro no processamento {processor_type}: {e}")
+        return False
+
+def find_date_folders(base_path: str, from_folder: str | None = None) -> list[str]:
+    """
+    Encontra todas as pastas no formato AAAA-MM no diretório especificado.
+    
+    Args:
+        base_path: Caminho base para procurar as pastas
+        from_folder: Pasta inicial para filtrar (formato AAAA-MM), se None, inclui todas
+        
+    Returns:
+        Lista de pastas no formato AAAA-MM ordenadas cronologicamente
+    """
+    if not os.path.exists(base_path):
+        return []
+    
+    # Padrão regex para pastas no formato AAAA-MM
+    date_pattern = re.compile(r'^\d{4}-\d{2}$')
+    
+    # Encontrar todas as pastas que correspondem ao padrão
+    date_folders = []
+    for item in os.listdir(base_path):
+        item_path = os.path.join(base_path, item)
+        if os.path.isdir(item_path) and date_pattern.match(item):
+            date_folders.append(item)
+    
+    # Ordenar cronologicamente
+    date_folders.sort()
+    
+    # Filtrar a partir da pasta especificada se fornecida
+    if from_folder and from_folder in date_folders:
+        start_index = date_folders.index(from_folder)
+        date_folders = date_folders[start_index:]
+        logger.info(f"Processando pastas a partir de {from_folder}: {', '.join(date_folders)}")
+    elif from_folder:
+        logger.warning(f"Pasta inicial '{from_folder}' não encontrada. Disponíveis: {', '.join(date_folders)}")
+        logger.info("Processando todas as pastas encontradas")
+    
+    return date_folders
+
+def process_folder(source_zip_path, unzip_path, output_parquet_path, 
+                 tipos_list, criar_empresa_privada, criar_subset_uf,
+                 tipos_a_processar, delete_zips_after_extract: bool = False) -> dict:
+    """Processa os arquivos da pasta usando a nova arquitetura v3.0.0.
+    
+    Args:
+        source_zip_path: Caminho para os ZIPs
+        unzip_path: Caminho para extrair arquivos
+        output_parquet_path: Caminho para salvar parquets
+        tipos_list: Lista de tipos a serem processados
+        criar_empresa_privada: Flag para criar subset empresas privadas
+        criar_subset_uf: Flag para criar subset por UF
+        tipos_a_processar: Lista de tipos a processar
+        delete_zips_after_extract: Se True, deleta ZIPs após extração
+        
+    Returns:
+        dict: Dicionário com o status de cada tipo e tempo de processamento
+    """
+    logger = logging.getLogger(__name__)
+    logger.info(f"Caminho para salvar parquets: {output_parquet_path}")
+    
+    # Extrair a pasta remota do caminho dos ZIPs (para usar na estrutura de diretórios)
+    remote_folder = os.path.basename(os.path.normpath(source_zip_path))
+    logger.info(f"Pasta remota extraída do caminho: {remote_folder}")
+    
+    all_ok = True
+    processing_results = {}
+    total_start_time = time.time()
+    
+    # Mostrar informações sobre recursos do sistema antes de iniciar
+    cpu_count = os.cpu_count() or 4
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage(output_parquet_path)
+    
+    logger.info("=" * 60)
+    logger.info("INFORMAÇÕES DO SISTEMA PARA PROCESSAMENTO:")
+    logger.info("=" * 60)
+    logger.info(f"CPUs disponíveis: {cpu_count}")
+    logger.info(f"Memória total: {memory.total / (1024**3):.1f}GB")
+    logger.info(f"Memória disponível: {memory.available / (1024**3):.1f}GB ({memory.percent:.1f}% em uso)")
+    logger.info(f"Espaço em disco disponível: {disk.free / (1024**3):.1f}GB")
+    logger.info(f"Tipos a processar: {', '.join(tipos_a_processar)}")
+    logger.info("=" * 60)
+    
+    # Contador de estatísticas antes do processamento
+    stats_before = len(global_stats.processing_stats)
+    logger.info(f"Estatísticas de processamento antes: {stats_before} registros")
+    
+    # Processa Empresas
+    if 'empresas' in tipos_a_processar:
+        if 'Empresas' in tipos_list or 'empresas' in tipos_list:
+            logger.info("🏢 INICIANDO PROCESSAMENTO DE EMPRESAS")
+            logger.info("=" * 50)
+            start_time = time.time()
+            
+            # Mostrar informações sobre arquivos a processar
+            zip_files = [f for f in os.listdir(source_zip_path) if f.startswith('Empr') and f.endswith('.zip')]
+            logger.info(f"Arquivos de empresas encontrados: {len(zip_files)}")
+            for i, zip_file in enumerate(zip_files, 1):
+                file_path = os.path.join(source_zip_path, zip_file)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
+            
+            empresas_ok = process_with_new_architecture(
+                "empresa", source_zip_path, unzip_path, output_parquet_path, 
+                delete_zips_after_extract=delete_zips_after_extract,
+                create_private=criar_empresa_privada
+            )
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            processing_results['empresas'] = {
+                'success': empresas_ok,
+                'time': elapsed_time
+            }
+            
+            status_emoji = "✅" if empresas_ok else "❌"
+            logger.info("=" * 50)
+            logger.info(f"{status_emoji} EMPRESAS CONCLUÍDO - Tempo: {format_elapsed_time(elapsed_time)}")
+            logger.info("=" * 50)
+                
+            if not empresas_ok:
+                logger.error("Erro no processamento de empresas.")
+                all_ok = False
+    
+    # Processa Estabelecimentos
+    if 'estabelecimentos' in tipos_a_processar:
+        if 'Estabelecimentos' in tipos_list or 'estabelecimentos' in tipos_list:
+            logger.info("🏪 INICIANDO PROCESSAMENTO DE ESTABELECIMENTOS")
+            logger.info("=" * 50)
+            start_time = time.time()
+            uf_subset = None
+            
+            # Mostrar informações sobre arquivos a processar
+            zip_files = [f for f in os.listdir(source_zip_path) if f.startswith('Estabele') and f.endswith('.zip')]
+            logger.info(f"Arquivos de estabelecimentos encontrados: {len(zip_files)}")
+            total_size_mb = 0
+            for i, zip_file in enumerate(zip_files, 1):
+                file_path = os.path.join(source_zip_path, zip_file)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                total_size_mb += file_size_mb
+                logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
+            logger.info(f"Tamanho total dos arquivos: {total_size_mb:.1f}MB ({total_size_mb/1024:.1f}GB)")
+            
+            # Se criar_subset_uf foi especificado, extrai a sigla da UF
+            if criar_subset_uf:
+                if isinstance(criar_subset_uf, str) and len(criar_subset_uf) == 2:
+                    uf_subset = criar_subset_uf.upper()
+                    logger.info(f"Criando subset de estabelecimentos para UF: {uf_subset}")
+                else:
+                    logger.warning(f"Valor inválido para subset UF: {criar_subset_uf}. Ignorando.")
+            
+            estab_ok = process_with_new_architecture(
+                "estabelecimento", source_zip_path, unzip_path, output_parquet_path, 
+                delete_zips_after_extract=delete_zips_after_extract,
+                uf_subset=uf_subset
+            )
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            processing_results['estabelecimentos'] = {
+                'success': estab_ok,
+                'time': elapsed_time
+            }
+            
+            status_emoji = "✅" if estab_ok else "❌"
+            logger.info("=" * 50)
+            logger.info(f"{status_emoji} ESTABELECIMENTOS CONCLUÍDO - Tempo: {format_elapsed_time(elapsed_time)}")
+            logger.info("=" * 50)
+            
+            if not estab_ok:
+                logger.error("Erro no processamento de estabelecimentos.")
+                all_ok = False
+    
+    # Processa Simples Nacional
+    if 'simples' in tipos_a_processar:
+        if 'Simples' in tipos_list or 'simples' in tipos_list:
+            logger.info("📋 INICIANDO PROCESSAMENTO DO SIMPLES NACIONAL")
+            logger.info("=" * 50)
+            start_time = time.time()
+            
+            # Mostrar informações sobre arquivos a processar
+            zip_files = [f for f in os.listdir(source_zip_path) if f.startswith('Simples') and f.endswith('.zip')]
+            logger.info(f"Arquivos do Simples Nacional encontrados: {len(zip_files)}")
+            for i, zip_file in enumerate(zip_files, 1):
+                file_path = os.path.join(source_zip_path, zip_file)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
+            
+            simples_ok = process_with_new_architecture(
+                "simples", source_zip_path, unzip_path, output_parquet_path,
+                delete_zips_after_extract=delete_zips_after_extract
+            )
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            processing_results['simples'] = {
+                'success': simples_ok,
+                'time': elapsed_time
+            }
+            
+            status_emoji = "✅" if simples_ok else "❌"
+            logger.info("=" * 50)
+            logger.info(f"{status_emoji} SIMPLES NACIONAL CONCLUÍDO - Tempo: {format_elapsed_time(elapsed_time)}")
+            logger.info("=" * 50)
+            
+            if not simples_ok:
+                logger.error("Erro no processamento do simples nacional.")
+                all_ok = False
+    
+    # Processa Sócios
+    if 'socios' in tipos_a_processar:
+        if 'Socios' in tipos_list or 'socios' in tipos_list:
+            logger.info("👥 INICIANDO PROCESSAMENTO DE SÓCIOS")
+            logger.info("=" * 50)
+            start_time = time.time()
+            
+            # Mostrar informações sobre arquivos a processar
+            zip_files = [f for f in os.listdir(source_zip_path) if f.startswith('Socio') and f.endswith('.zip')]
+            logger.info(f"Arquivos de sócios encontrados: {len(zip_files)}")
+            for i, zip_file in enumerate(zip_files, 1):
+                file_path = os.path.join(source_zip_path, zip_file)
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
+            
+            socios_ok = process_with_new_architecture(
+                "socio", source_zip_path, unzip_path, output_parquet_path,
+                delete_zips_after_extract=delete_zips_after_extract
+            )
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            processing_results['socios'] = {
+                'success': socios_ok,
+                'time': elapsed_time
+            }
+            
+            status_emoji = "✅" if socios_ok else "❌"
+            logger.info("=" * 50)
+            logger.info(f"{status_emoji} SÓCIOS CONCLUÍDO - Tempo: {format_elapsed_time(elapsed_time)}")
+            logger.info("=" * 50)
+            
+            if not socios_ok:
+                logger.error("Erro no processamento de sócios.")
+                all_ok = False
+    
+    # Calcular tempo total
+    total_elapsed_time = time.time() - total_start_time
+    processing_results['total_time'] = total_elapsed_time
+    processing_results['all_ok'] = all_ok
+    
+    # Verificar estatísticas coletadas
+    stats_after = len(global_stats.processing_stats)
+    stats_collected = stats_after - stats_before
+    logger.info(f"Estatísticas de processamento coletadas: {stats_collected} novos registros")
+    logger.info(f"Total de estatísticas de processamento: {stats_after} registros")
+    
+    # Logar resumo de processamento
+    logger.info("=" * 60)
+    logger.info("📊 RESUMO FINAL DO PROCESSAMENTO:")
+    logger.info("=" * 60)
+    for tipo, resultado in processing_results.items():
+        if tipo != 'total_time' and tipo != 'all_ok':
+            status = "✅ SUCESSO" if resultado['success'] else "❌ FALHA"
+            logger.info(f"{tipo.upper()}: {status} - Tempo: {format_elapsed_time(resultado['time'])}")
+    logger.info("-" * 60)
+    logger.info(f"⏱️  TEMPO DE PROCESSAMENTO DOS DADOS: {format_elapsed_time(total_elapsed_time)}")
+    status_final = "✅ SUCESSO COMPLETO" if all_ok else "❌ FALHA PARCIAL/TOTAL"
+    logger.info(f"🎯 STATUS GERAL: {status_final}")
+    logger.info("=" * 60)
+    
+    return processing_results
+
 
 def main():
-    """Função principal que orquestra todo o processo."""
-    parser = argparse.ArgumentParser(description='Processa dados do CNPJ')
+    """Função principal de execução."""
+    start_time = time.time()
+    
+    # Inicializar coleta de estatísticas
+    global_stats.start_session()
+    
+    parser = argparse.ArgumentParser(description='Realizar download e processamento dos dados de CNPJ')
     parser.add_argument('--tipos', '-t', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
-                        help='Tipos de dados a serem processados. Se não especificado, processa todos (relevante para steps \'process\' e \'all\').')
-    parser.add_argument('--engine', '-e', choices=['pandas', 'dask', 'polars'], default='polars',
-                        help='Motor de processamento a ser utilizado (relevante para steps \'process\' e \'all\'). Padrão: polars')
-    parser.add_argument('--source-zip-folder', '-z', type=str, default=None,
-                        help='Caminho para a pasta contendo os arquivos ZIP a serem processados (Obrigatório para --step process).')
-    parser.add_argument('--output-subfolder', '-o', type=str, default=None,
+                        default=[], help='Tipos de dados a serem processados. Se não especificado, processa todos (relevante para steps \'process\' e \'all\').')
+    parser.add_argument('--source-zip-folder', '-z', type=str, default='',
+                        help='Caminho para o diretório contendo os arquivos ZIP ou suas subpastas. No modo "all", usa automaticamente a subpasta com nome da pasta remota dentro de PATH_ZIP.')
+    parser.add_argument('--output-subfolder', '-o', type=str, default='',
                         help='Nome da subpasta dentro de PATH_PARQUET onde os arquivos Parquet serão salvos ou lidos (Obrigatório para --step process e --step database).')
     parser.add_argument('--criar-empresa-privada', '-priv', action='store_true',
                         help='Se presente (com --step process ou --step all), cria um subconjunto Parquet adicional para empresas privadas.')
@@ -254,339 +1174,568 @@ def main():
     parser.add_argument(
         '--criar-subset-uf', '-uf',
         type=str,
-        default=None,
+        default='',
         metavar='UF',
         help="Opcional (com --step process ou --step all). Cria um subconjunto Parquet adicional para estabelecimentos da UF especificada."
     )
     parser.add_argument(
         '--remote-folder', '-rf',
         type=str,
-        default=None,
+        default='',
         metavar='PASTA',
         help="Opcional (com --step download ou --step all). Especifica a pasta remota para download no formato AAAA-MM (ex: 2023-01). Se não especificado, usa a pasta mais recente."
+    )
+    parser.add_argument(
+        '--all-folders', '-af',
+        action='store_true',
+        help="Opcional (com --step download ou --step all). Quando presente, baixa os arquivos de TODOS os diretórios remotos disponíveis. Tem prioridade sobre --remote-folder."
+    )
+    parser.add_argument(
+        '--force-download', '-fd',
+        action='store_true',
+        help="Força o download de todos os arquivos, mesmo que já existam localmente ou no cache."
+    )
+    parser.add_argument(
+        '--process-all-folders', '-paf',
+        action='store_true',
+        help="Processa todas as pastas no formato AAAA-MM encontradas no diretório ZIP. Útil após download com --all-folders."
+    )
+    parser.add_argument(
+        '--from-folder', '-ff',
+        type=str,
+        default='',
+        metavar='PASTA_INICIAL',
+        help="Opcional (com --step download ou --step all). Especifica a pasta inicial para download sequencial no formato AAAA-MM (ex: 2023-01). Se não especificado com --all-folders, baixa desde a pasta mais antiga. Baixa da pasta especificada até a mais atual."
+    )
+    parser.add_argument(
+        '--delete-zips-after-extract', '-dz',
+        action='store_true',
+        help="Se presente, deleta os arquivos ZIP após extração bem-sucedida para economizar espaço em disco. Use com cautela!"
+    )
+    parser.add_argument(
+        '--show-progress', '-pb',
+        action='store_true',
+        default=None,
+        help="Exibe barras de progresso visuais durante downloads e processamento. Sobrescreve configuração padrão."
+    )
+    parser.add_argument(
+        '--hide-progress', '-hp',
+        action='store_true',
+        help="Oculta barras de progresso visuais. Útil para logs limpos ou execução em background."
+    )
+    parser.add_argument(
+        '--show-pending', '-sp',
+        action='store_true',
+        default=None,
+        help="Exibe lista de arquivos pendentes/em progresso. Sobrescreve configuração padrão."
+    )
+    parser.add_argument(
+        '--hide-pending', '-hf',
+        action='store_true',
+        help="Oculta lista de arquivos pendentes. Útil para logs mais limpos."
+    )
+    parser.add_argument(
+        '--quiet', '-q',
+        action='store_true',
+        help="Modo silencioso: desativa tanto barra de progresso quanto lista de arquivos pendentes."
+    )
+    parser.add_argument(
+        '--verbose-ui', '-v',
+        action='store_true',
+        help="Modo verboso: ativa tanto barra de progresso quanto lista de arquivos pendentes."
     )
     parser.add_argument(
         '--step', '-s',
         choices=['download', 'process', 'database', 'all'], 
         default='all',
         help="""Especifica qual(is) etapa(s) executar:
-                        'download': Apenas baixa os arquivos ZIP mais recentes (ou da pasta especificada em --remote-folder).
+                        'download': Apenas baixa os arquivos ZIP mais recentes (ou da pasta especificada em --remote-folder, ou de todos os diretórios com --all-folders).
                         'process': Apenas processa ZIPs existentes (--source-zip-folder) para Parquet (--output-subfolder).
                         'database': Apenas cria o DuckDB a partir de Parquets existentes (--output-subfolder).
                         'all': Executa todas as etapas: download -> process -> database (padrão)."""
     )
     args = parser.parse_args()
 
-    # --- Validação de Argumentos --- 
-    # Validação baseada no --step escolhido
-    if args.step == 'process' and (not args.source_zip_folder or not args.output_subfolder):
-        parser.error("--step 'process' requer que --source-zip-folder e --output-subfolder sejam especificados.")
-    if args.step == 'database' and not args.output_subfolder:
-        parser.error("--step 'database' requer que --output-subfolder seja especificado.")
-    if args.source_zip_folder and not os.path.isdir(args.source_zip_folder):
-         parser.error(f"A pasta de origem especificada (--source-zip-folder) não existe ou não é um diretório: {args.source_zip_folder}")
-
-    # Validação da UF (mantida)
-    if args.criar_subset_uf and len(args.criar_subset_uf) != 2:
-        parser.error("--criar-subset-uf deve receber uma sigla de UF com 2 caracteres (ex: SP, RJ).")
-    if args.criar_subset_uf:
-        args.criar_subset_uf = args.criar_subset_uf.upper()
-        
-    # Validação da pasta remota
-    if args.remote_folder and not re.fullmatch(r'(\d{4})-(\d{2})', args.remote_folder):
-        parser.error("--remote-folder deve estar no formato AAAA-MM (ex: 2023-01).")
-
-    tipo_para_nome = {
-        'empresas': 'Empresas',
-        'estabelecimentos': 'Estabelecimentos',
-        'simples': 'Simples',
-        'socios': 'Socios'
-    }
-
+    # Configurando o logging
     logger = setup_logging(args.log_level)
-    print_header(f'Início da execução: {datetime.datetime.now():%d/%m/%Y às %H:%M:%S}')
-    start_time = datetime.datetime.now()
 
+    # Carregar variáveis de ambiente do arquivo .env
+    load_dotenv()
     print_section("Carregando variáveis de ambiente...")
-    load_dotenv('.env.local')
+    load_dotenv()
     print_success("Variáveis de ambiente carregadas com sucesso")
 
-    PATH_ZIP = os.getenv('PATH_ZIP')
-    PATH_UNZIP = os.getenv('PATH_UNZIP')
-    PATH_PARQUET = os.getenv('PATH_PARQUET')
-    FILE_DB_PARQUET = os.getenv('FILE_DB_PARQUET')
-    PATH_REMOTE_PARQUET = os.getenv('PATH_REMOTE_PARQUET')
-
-    print_section("Criando diretórios necessários...")
-    list_folders = [PATH_ZIP, PATH_UNZIP, PATH_PARQUET]
-    list_folders.append(config.cache.cache_dir)
-    for folder in list_folders:
-        if folder:
-            check_basic_folders(folder)
-    print_success("Diretórios criados com sucesso")
-
-    tipos_a_processar = {
-        'empresas': (process_empresa, "EMPRESAS"),
-        'estabelecimentos': (process_estabelecimento, "ESTABELECIMENTOS"),
-        'simples': (process_simples, "SIMPLES NACIONAL"),
-        'socios': (process_socio, "SOCIOS")
-    }
-    tipo_para_nome = {k: v[1].split()[0].capitalize() for k, v in tipos_a_processar.items()}
-
-    if not args.tipos:
-        args.tipos = list(tipos_a_processar.keys())
-
-    # --- Definição das Etapas a Executar e Caminhos --- 
-    run_download = args.step in ['download', 'all']
-    run_process = args.step in ['process', 'all']
-    run_database = args.step in ['database', 'all']
-
-    path_zip_to_use = None
-    target_parquet_output_path = None
-    latest_folder = None # Nome da subpasta para Parquet
-
-    if run_download:
-        path_zip_to_use = PATH_ZIP # Onde salvar os downloads
-    elif run_process:
-        path_zip_to_use = args.source_zip_folder # De onde ler os ZIPs
-
-    if run_process or run_database:
-        # Determina a pasta de saída/leitura Parquet
-        if args.output_subfolder:
-            latest_folder = args.output_subfolder
-        elif run_process and args.source_zip_folder:
-            # Se processando e sem output_subfolder, usa nome da pasta de origem
-            latest_folder = os.path.basename(os.path.normpath(args.source_zip_folder))
-            print_warning(f"Nenhuma --output-subfolder especificada para 'process'. Usando nome da pasta de origem ZIP: '{latest_folder}'")
-        # Se for 'all' e sem output_subfolder, será definido após o download
-        # Se for 'database' sem output_subfolder, já deu erro na validação inicial
+    PATH_ZIP = os.getenv('PATH_ZIP', './dados-zip')
+    PATH_UNZIP = os.getenv('PATH_UNZIP', './dados-unzip') 
+    PATH_PARQUET = os.getenv('PATH_PARQUET', './dados-parquet')
+    FILE_DB_PARQUET = os.getenv('FILE_DB_PARQUET', 'cnpj.duckdb')
+    PATH_REMOTE_PARQUET = os.getenv('PATH_REMOTE_PARQUET', '')
+    
+    # Garantir que PATH_UNZIP e PATH_PARQUET estão definidos
+    if not PATH_UNZIP:
+        PATH_UNZIP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dados-unzip")
+        os.environ['PATH_UNZIP'] = PATH_UNZIP
+        logger.info(f"Variável PATH_UNZIP não encontrada no arquivo .env. Usando valor padrão: {PATH_UNZIP}")
+    
+    if not PATH_PARQUET:
+        PATH_PARQUET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dados-parquet")
+        os.environ['PATH_PARQUET'] = PATH_PARQUET
+        logger.info(f"Variável PATH_PARQUET não encontrada no arquivo .env. Usando valor padrão: {PATH_PARQUET}")
+    
+    # Garantir que PATH_ZIP está definido
+    if not PATH_ZIP:
+        PATH_ZIP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dados-zip")
+        os.environ['PATH_ZIP'] = PATH_ZIP
+        logger.info(f"Variável PATH_ZIP não encontrada no arquivo .env. Usando valor padrão: {PATH_ZIP}")
+    
+    # Garantir que FILE_DB_PARQUET está definido
+    if not FILE_DB_PARQUET:
+        FILE_DB_PARQUET = "cnpj.duckdb"
+        logger.info(f"Variável FILE_DB_PARQUET não encontrada no arquivo .env. Usando valor padrão: {FILE_DB_PARQUET}")
         
-        if latest_folder:
-             target_parquet_output_path = os.path.join(PATH_PARQUET, latest_folder)
-             logger.info(f"Caminho Parquet a ser usado/gerado: {target_parquet_output_path}")
-             # Garante que exista se formos processar
-             if run_process:
-                 os.makedirs(target_parquet_output_path, exist_ok=True)
-        # else: Se latest_folder ainda é None, será definido após download (no caso 'all')
+    # Garantir que PATH_REMOTE_PARQUET está definido
+    if not PATH_REMOTE_PARQUET:
+        PATH_REMOTE_PARQUET = ""
+        logger.info(f"Variável PATH_REMOTE_PARQUET não encontrada no arquivo .env. Usando valor padrão vazio")
+    
+    # Mostrar valores para debug
+    logger.info(f"PATH_ZIP = {PATH_ZIP}")
+    logger.info(f"PATH_UNZIP = {PATH_UNZIP}")
+    logger.info(f"PATH_PARQUET = {PATH_PARQUET}")
+    logger.info(f"FILE_DB_PARQUET = {FILE_DB_PARQUET}")
+    logger.info(f"PATH_REMOTE_PARQUET = {PATH_REMOTE_PARQUET}")
 
-    # Inicializa Dask se necessário (antes das etapas que o usam)
-    dask_manager = None
-    if args.engine == 'dask' and (run_process or run_database): # Adaptação: só inicializa se for usar
-        print_section("Iniciando configuração do Dask...")
-        freeze_support()
-        try:
-            dask_manager = DaskManager.initialize(
-                n_workers=config.dask.n_workers,
-                memory_limit=config.dask.memory_limit,
-                dashboard_address=config.dask.dashboard_address
-            )
-            print_success(f"Cliente Dask inicializado com sucesso: {dask_manager.client}")
-        except Exception as e:
-            logger.error(f"Falha ao inicializar o Dask: {e}")
-            print_error("Não foi possível iniciar o Dask. Abortando.")
-            return # Não continuar sem Dask se ele for necessário
-
-    # --- Etapa 1: Download --- 
-    if run_download:
-        print_header("Etapa 1: Download")
-        tipos_desejados_dl = [tipo_para_nome[t] for t in args.tipos] if args.tipos else None
-        download_successful, latest_folder_from_dl = asyncio.run(run_download_process(tipos_desejados_dl, args.remote_folder))
+    # Verificando pastas básicas
+    check_basic_folders([PATH_ZIP, PATH_UNZIP, PATH_PARQUET])
+    
+    # Processar argumentos de interface (barra de progresso e arquivos pendentes)
+    # Determinar configurações de interface baseadas nos argumentos
+    show_progress_bar = config.pipeline.show_progress_bar  # Valor padrão
+    show_pending_files = config.pipeline.show_pending_files  # Valor padrão
+    
+    # Modo silencioso tem prioridade máxima
+    if args.quiet:
+        show_progress_bar = False
+        show_pending_files = False
+        logger.info("🔇 Modo silencioso ativado: interface simplificada")
+    
+    # Modo verboso sobrescreve padrão, mas não o modo silencioso
+    elif args.verbose_ui:
+        show_progress_bar = True
+        show_pending_files = True
+        logger.info("📊 Modo verboso ativado: interface completa")
+    
+    # Argumentos específicos têm prioridade sobre modos
+    else:
+        if args.show_progress:
+            show_progress_bar = True
+        elif args.hide_progress:
+            show_progress_bar = False
         
-        if not download_successful:
-            print_error("Download falhou ou não encontrou arquivos.")
-            if args.step == 'download': # Se era só download, para aqui
-                 if dask_manager: dask_manager.shutdown()
-                 return 
-            else: # Se era 'all', avisa mas tenta continuar com o que tem
-                print_warning("Tentando continuar com arquivos possivelmente incompletos...")
-        else:
-             print_success("Download concluído com sucesso.")
-
-        # Define a pasta de saída para o processamento (caso 'all' e sem --output-subfolder)
-        if not latest_folder and latest_folder_from_dl:
-            latest_folder = latest_folder_from_dl
-            target_parquet_output_path = os.path.join(PATH_PARQUET, latest_folder)
-            logger.info(f"Usando subpasta de saída padrão (data baixada): '{latest_folder}'. Caminho Parquet: {target_parquet_output_path}")
-            os.makedirs(target_parquet_output_path, exist_ok=True)
-        elif not target_parquet_output_path:
-            # Caso raro: download ok, mas sem nome de pasta e sem --output-subfolder
-            latest_folder = f"processamento_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            target_parquet_output_path = os.path.join(PATH_PARQUET, latest_folder)
-            logger.warning(f"Não foi possível determinar a subpasta de saída. Usando nome padrão: '{latest_folder}'")
-            os.makedirs(target_parquet_output_path, exist_ok=True)
-
-        # Se a etapa era APENAS download, encerra aqui.
-        if args.step == 'download':
-            print_success("Etapa 'download' concluída.")
-            if dask_manager:
-                dask_manager.shutdown()
-            return
+        if args.show_pending:
+            show_pending_files = True
+        elif args.hide_pending:
+            show_pending_files = False
+    
+    # Sobrescrever configurações no objeto config para uso nos downloaders
+    config.pipeline.show_progress_bar = show_progress_bar
+    config.pipeline.show_pending_files = show_pending_files
+    
+    # Log das configurações finais de interface
+    logger.info(f"📊 Barra de progresso: {'✅ ativada' if show_progress_bar else '❌ desativada'}")
+    logger.info(f"📋 Lista de arquivos pendentes: {'✅ ativada' if show_pending_files else '❌ desativada'}")
+    
+    # 🆕 Versão 3.0.0: Inicializar nova arquitetura de processadores
+    print_section("Inicializando arquitetura refatorada (v3.0.0)...")
+    if not initialize_processors():
+        print_error("Falha ao inicializar processadores da nova arquitetura")
+        return False, ""
+    print_success("Arquitetura refatorada inicializada com sucesso")
+    
+    # Inicializar variáveis para controle de escopo
+    download_time = 0.0
+    process_time = 0.0
+    db_time = 0.0
+    latest_folder = ""
+    
+    # Determinar o modo de processamento
+    if args.step == 'process':
+        print_header("Modo de Processamento")
+        
+        # Verificar se --process-all-folders foi especificado
+        if args.process_all_folders:
+            print_section("Processando todas as pastas no formato AAAA-MM")
             
-    # --- Etapa 2: Processamento para Parquet --- 
-    processing_performed = False
-    if run_process:
-        print_header("Etapa 2: Processamento para Parquet")
-        # Verifica se os caminhos necessários estão definidos
-        if not path_zip_to_use or not target_parquet_output_path:
-             print_error("Erro interno: Caminhos de entrada ZIP ou saída Parquet não definidos para a etapa de processamento.")
-             if dask_manager: dask_manager.shutdown()
-             return
-        
-        logger.info(f"Lendo ZIPs de: {path_zip_to_use}")
-        logger.info(f"Salvando Parquets em: {target_parquet_output_path}")
-        
-        processing_success_flag = False
-        try:
-            for tipo in args.tipos:
-                process_func_base, nome_tipo = tipos_a_processar[tipo]
-                print_section(f"Processando dados de {nome_tipo} com engine '{args.engine}'...")
-                
-                kwargs = {}
-                if tipo == 'empresas':
-                    kwargs['create_private'] = args.criar_empresa_privada
-                if tipo == 'estabelecimentos' and args.criar_subset_uf:
-                    kwargs['uf_subset'] = args.criar_subset_uf
-                
-                # --- Lógica de Seleção de Função (mantida) ---
-                specific_process_func = None
-                if tipo == 'empresas':
-                    if args.engine == 'pandas': specific_process_func = process_empresa_pandas_impl
-                    elif args.engine == 'polars': specific_process_func = process_empresa_polars_impl
-                    elif args.engine == 'dask': specific_process_func = process_empresa
-                elif tipo == 'simples':
-                    if args.engine == 'pandas':
-                        try:
-                            from src.process.simples import process_simples_with_pandas
-                            specific_process_func = process_simples_with_pandas
-                        except ImportError: logger.warning("Função 'process_simples_with_pandas' não encontrada.")
-                    elif args.engine == 'polars':
-                        try:
-                            from src.process.simples import process_simples_with_polars
-                            specific_process_func = process_simples_with_polars
-                        except ImportError: logger.warning("Função 'process_simples_with_polars' não encontrada.")
-                    elif args.engine == 'dask': specific_process_func = process_simples
-                elif tipo == 'socios':
-                    if args.engine == 'pandas':
-                        try:
-                            from src.process.socio import process_socio_with_pandas
-                            specific_process_func = process_socio_with_pandas
-                        except ImportError: logger.warning("Função 'process_socio_with_pandas' não encontrada.")
-                    elif args.engine == 'polars':
-                        try:
-                            from src.process.socio import process_socio_with_polars
-                            specific_process_func = process_socio_with_polars
-                        except ImportError: logger.warning("Função 'process_socio_with_polars' não encontrada.")
-                    elif args.engine == 'dask': specific_process_func = process_socio
-                elif tipo == 'estabelecimentos':
-                    if args.engine == 'pandas':
-                         try:
-                             from src.process.estabelecimento import process_estabelecimento_with_pandas
-                             specific_process_func = process_estabelecimento_with_pandas
-                         except ImportError: logger.warning("Função 'process_estabelecimento_with_pandas' não encontrada.")
-                    elif args.engine == 'polars':
-                         try:
-                             from src.process.estabelecimento import process_estabelecimento_with_polars
-                             specific_process_func = process_estabelecimento_with_polars
-                         except ImportError: logger.warning("Função 'process_estabelecimento_with_polars' não encontrada.")
-                    elif args.engine == 'dask': specific_process_func = process_estabelecimento
-                
-                func_to_call = specific_process_func if specific_process_func else process_func_base
-                
-                if not func_to_call:
-                     logger.error(f"Nenhuma função de processamento válida encontrada para tipo '{tipo}' e engine '{args.engine}'. Pulando...")
-                     continue
-                     
-                # --- Chamada da Função (mantida) ---
-                import inspect
-                sig = inspect.signature(func_to_call)
-                valid_kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
-                
-                success = func_to_call(path_zip_to_use, PATH_UNZIP, target_parquet_output_path, **valid_kwargs)
-                processing_performed = True # Marca que tentamos processar algo
-                
-                if success:
-                    processing_success_flag = True
-                    print_success(f"Dados de {nome_tipo} processados com sucesso.")
+            # Verificar se output-subfolder foi especificado
+            if not args.output_subfolder:
+                logger.error("Parâmetro --output-subfolder é obrigatório para --process-all-folders")
+                print_error("Especifique a subpasta base de saída com --output-subfolder")
+                return False, ""
+            
+            # Encontrar todas as pastas de data no PATH_ZIP
+            from_folder_param = args.from_folder if args.from_folder else None
+            date_folders = find_date_folders(PATH_ZIP, from_folder_param)
+            
+            if not date_folders:
+                if args.from_folder:
+                    print_error(f"Nenhuma pasta no formato AAAA-MM encontrada a partir de {args.from_folder} em {PATH_ZIP}")
                 else:
-                    print_warning(f"Processamento de {nome_tipo} não foi bem-sucedido ou não encontrou/gerou dados.")
-                    
-            if not processing_performed:
-                 print_warning("Nenhum tipo de dado foi efetivamente processado.")
-            elif not processing_success_flag:
-                 print_warning("Nenhuma etapa de processamento Parquet foi concluída com sucesso.")
-                 
-        except Exception as e:
-            logger.exception(f"Erro GERAL durante a fase de processamento para Parquet: {e}")
-            print_error("Erro crítico na fase de processamento. Verifique os logs.")
-            # Mesmo com erro, podemos querer criar o DB se a etapa for 'all' ou 'database'
-
-        # Se a etapa era APENAS processamento, encerra aqui.
-        if args.step == 'process':
-             print_success("Etapa 'process' concluída.")
-             if dask_manager: dask_manager.shutdown()
-             return
-
-    # --- Etapa 3: Criação do DuckDB --- 
-    if run_database:
-        print_header("Etapa 3: Criação do Banco de Dados DuckDB")
-        # Verifica se o caminho Parquet está definido (importante se pulou etapas)
-        if not target_parquet_output_path:
-            print_error("Caminho para arquivos Parquet não definido. Não é possível criar DuckDB.")
-            # Tenta pegar do argumento se a etapa for SÓ database
-            if args.step == 'database' and args.output_subfolder:
-                 target_parquet_output_path = os.path.join(PATH_PARQUET, args.output_subfolder)
-                 logger.info(f"Usando caminho Parquet de --output-subfolder: {target_parquet_output_path}")
+                    print_error(f"Nenhuma pasta no formato AAAA-MM encontrada em {PATH_ZIP}")
+                return False, ""
+            
+            logger.info(f"Encontradas {len(date_folders)} pastas para processamento: {', '.join(date_folders)}")
+            
+            # Processar cada pasta sequencialmente
+            overall_success = True
+            total_process_time = 0
+            
+            for folder_name in date_folders:
+                print_section(f"Processando pasta: {folder_name}")
+                
+                source_folder_path = os.path.join(PATH_ZIP, folder_name)
+                
+                if not os.path.exists(source_folder_path):
+                    logger.warning(f"Pasta não encontrada: {source_folder_path}, pulando...")
+                    continue
+                
+                # Verificar se há arquivos ZIP na pasta
+                zip_files = [f for f in os.listdir(source_folder_path) if f.endswith('.zip')]
+                if not zip_files:
+                    logger.warning(f"Nenhum arquivo ZIP encontrado em {source_folder_path}, pulando...")
+                    continue
+                
+                # Criar subpasta de saída específica para esta pasta
+                output_subfolder_name = f"{args.output_subfolder}_{folder_name}"
+                output_parquet_path = os.path.join(PATH_PARQUET, output_subfolder_name)
+                os.makedirs(output_parquet_path, exist_ok=True)
+                
+                logger.info(f"Processando arquivos de: {source_folder_path}")
+                logger.info(f"Salvando Parquets em: {output_parquet_path}")
+                
+                # Definir tipos a processar (todos ou filtrados)
+                tipos_a_processar = args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios']
+                
+                # Processar esta pasta
+                folder_start_time = time.time()
+                process_results = process_folder(
+                    source_folder_path, PATH_UNZIP, output_parquet_path, 
+                    args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios'],
+                    args.criar_empresa_privada, args.criar_subset_uf or '',
+                    tipos_a_processar, args.delete_zips_after_extract
+                )
+                folder_time = time.time() - folder_start_time
+                total_process_time += folder_time
+                
+                if process_results['all_ok']:
+                    print_success(f"Pasta {folder_name} processada com sucesso em {format_elapsed_time(folder_time)}")
+                else:
+                    print_warning(f"Alguns erros ocorreram ao processar pasta {folder_name}")
+                    overall_success = False
+            
+            # Resumo final do processamento de múltiplas pastas
+            logger.info("=" * 60)
+            logger.info("RESUMO DO PROCESSAMENTO DE MÚLTIPLAS PASTAS:")
+            logger.info("=" * 60)
+            logger.info(f"Pastas processadas: {len(date_folders)}")
+            logger.info(f"Tempo total de processamento: {format_elapsed_time(total_process_time)}")
+            logger.info(f"Status geral: {'✅ SUCESSO' if overall_success else '❌ FALHAS DETECTADAS'}")
+            logger.info("=" * 60)
+            
+            return overall_success, date_folders[-1] if date_folders else ""
+        
+        # Verificar se temos o source-zip-folder para processamento de pasta única
+        if args.source_zip_folder:
+            # Processa a pasta de origem especificada
+            logger.info(f"Processando pasta de origem: {args.source_zip_folder}")
+            source_folder_path = args.source_zip_folder
+            
+            if not os.path.exists(source_folder_path):
+                logger.error(f"Pasta de origem especificada não existe: {source_folder_path}")
+                print_error(f"Pasta {args.source_zip_folder} não encontrada")
+                return False, ""
+            
+            # Determinar pasta de saída - usando o nome do diretório como subpasta
+            if args.output_subfolder:
+                output_subfolder = args.output_subfolder
             else:
-                if dask_manager: dask_manager.shutdown()
-                return
-
-        # Verifica se o caminho Parquet existe
-        if not os.path.isdir(target_parquet_output_path):
-            print_error(f"Caminho para arquivos Parquet não existe ou não é um diretório: {target_parquet_output_path}.")
-            if dask_manager: dask_manager.shutdown()
-            return
+                # Usa o nome da pasta de origem como nome da subpasta de saída
+                output_subfolder = os.path.basename(os.path.normpath(source_folder_path))
+                logger.info(f"Usando nome da pasta de origem como subpasta de saída: {output_subfolder}")
             
-        logger.info(f"Lendo Parquets de: {target_parquet_output_path}")
-        db_creation_success = create_duckdb_file(
-            path_parquet_folder=target_parquet_output_path,
-            file_db_parquet=FILE_DB_PARQUET,
-            path_remote_parquet=PATH_REMOTE_PARQUET
-        )
-        if db_creation_success:
-            print_success("Banco de dados DuckDB criado/atualizado com sucesso.")
+            output_parquet_path = os.path.join(PATH_PARQUET, output_subfolder)
+            os.makedirs(output_parquet_path, exist_ok=True)
+            
+            logger.info(f"Processando arquivos de: {source_folder_path}")
+            logger.info(f"Salvando Parquets em: {output_parquet_path}")
+            
+            # Definir tipos a processar (todos ou filtrados)
+            if args.tipos:
+                tipos_a_processar = args.tipos
+            else:
+                tipos_a_processar = ['empresas', 'estabelecimentos', 'simples', 'socios']
+            
+            # Iniciar processamento
+            process_results = process_folder(
+                source_folder_path, PATH_UNZIP, output_parquet_path, 
+                args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios'],
+                args.criar_empresa_privada, args.criar_subset_uf or '',
+                tipos_a_processar, args.delete_zips_after_extract
+            )
+            
+            if process_results['all_ok']:
+                print_success(f"Processamento concluído com sucesso na pasta: {output_parquet_path}")
+            else:
+                print_warning("Alguns erros ocorreram durante o processamento. Verifique os logs.")
+            
+            # Se process-all-folders estiver habilitado, busca todas as pastas no formato AAAA-MM
+            if args.process_all_folders:
+                print_section("Processando todas as pastas no formato AAAA-MM")
+                # Implementação para process_all_folders
+                # ...
         else:
-            print_error("Falha ao criar/atualizar banco de dados DuckDB.")
-            
-        # Se a etapa era APENAS database, encerra aqui.
-        if args.step == 'database':
-             print_success("Etapa 'database' concluída.")
-             if dask_manager: dask_manager.shutdown()
-             return
-
-    # --- Finalização --- 
-    print_header(f"Tempo total de execução: {str(datetime.datetime.now() - start_time)}")
-    if dask_manager:
-        print_section("Encerrando cliente Dask...")
+            print_error("É necessário especificar a pasta de origem dos ZIPs com --source-zip-folder")
+            logger.error("Parâmetro --source-zip-folder é obrigatório para o step 'process'.")
+            return False, ""
+    
+    # Resto do código do step 'download'
+    elif args.step == 'download':
+        print_header("Modo de Download")
+        
+        # Configurar para forçar o download se necessário
+        if args.force_download:
+            # Definir variável de ambiente para o módulo async_downloader
+            os.environ['FORCE_DOWNLOAD'] = 'True'
+            logger.info("Download forçado ativado: sobrescreverá arquivos existentes.")
+        
+        # Iniciar o download assíncrono
+        tipos_desejados = args.tipos if args.tipos else []
+        remote_folder_param = args.remote_folder if args.remote_folder else None
+        from_folder_param = args.from_folder if args.from_folder else None
+        
+        download_ok, latest_folder = asyncio.run(run_download_process(
+            tipos_desejados=tipos_desejados,
+            remote_folder=remote_folder_param,
+            all_folders=args.all_folders,
+            from_folder=from_folder_param
+        ))
+        
+        if not download_ok:
+            print_error("Falha no processo de download. Verifique os logs para mais detalhes.")
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
+            return False, ""
+        
+        if not latest_folder:
+            print_error("Erro: não foi possível determinar a pasta de download para processamento")
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
+            return False, ""
+        
+        print_success(f"Download concluído. Arquivos salvos em: {os.path.join(PATH_ZIP, latest_folder)}")
+    
+    # Código para o step 'database'
+    elif args.step == 'database':
+        print_header("Modo de Criação de Banco de Dados")
+        
+        # Verificar se temos a subpasta de saída especificada
+        if not args.output_subfolder:
+            logger.error("Parâmetro --output-subfolder é obrigatório para o step 'database'.")
+            print_error("Especifique a subpasta dos Parquets com --output-subfolder")
+            return False, ""
+        
+        # Caminho completo para a pasta de parquets
+        parquet_folder = os.path.join(PATH_PARQUET, args.output_subfolder)
+        if not os.path.exists(parquet_folder):
+            logger.error(f"Pasta de Parquets não encontrada: {parquet_folder}")
+            print_error(f"Pasta {parquet_folder} não existe. Execute o processamento primeiro.")
+            return False, ""
+        
+        # Criar o arquivo DuckDB
         try:
-            dask_manager.shutdown()
-            print_success("Cliente Dask encerrado com sucesso")
+            logger.info(f"Criando arquivo DuckDB em: {parquet_folder}")
+            db_success = create_duckdb_file(parquet_folder, FILE_DB_PARQUET, PATH_REMOTE_PARQUET)
+            if db_success:
+                db_file = os.path.join(parquet_folder, FILE_DB_PARQUET)
+                print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
+            else:
+                print_error("Falha ao criar banco de dados. Verifique os logs para mais detalhes.")
+                logger.error("Criação do banco de dados falhou")
+                return False, ""
         except Exception as e:
-            logger.error(f"Erro ao encerrar cliente Dask: {e}")
-    print_success("Processo finalizado!")
-
-
-def process_empresa_with_pandas(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
-    """Wrapper para processar empresas com Pandas, aceitando create_private."""
-    logger = logging.getLogger(__name__)
-    logger.info(f"Iniciando processamento de EMPRESAS com Pandas (create_private={create_private})...")
-    return process_empresa_pandas_impl(path_zip, path_unzip, path_parquet, create_private)
-
-def process_empresa_with_polars(path_zip: str, path_unzip: str, path_parquet: str, create_private: bool = False) -> bool:
-    """Wrapper para processar empresas com Polars, aceitando create_private."""
-    logger = logging.getLogger(__name__)
-    logger.info(f"Iniciando processamento de EMPRESAS com Polars (create_private={create_private})...")
-    return process_empresa_polars_impl(path_zip, path_unzip, path_parquet, create_private)
+            logger.exception(f"Erro ao criar banco de dados: {e}")
+            print_error(f"Falha ao criar banco de dados: {str(e)}")
+            return False, ""
+    
+    # Código para o step 'all' (executa todos os passos em sequência)
+    elif args.step == 'all':
+        print_header("Modo Completo: Download -> Processamento -> Banco de Dados")
+        
+        # 1. Download
+        print_section("Etapa 1: Download dos arquivos")
+        download_start_time = time.time()
+        
+        # Configurar para forçar o download se necessário
+        if args.force_download:
+            os.environ['FORCE_DOWNLOAD'] = 'True'
+            logger.info("Download forçado ativado: sobrescreverá arquivos existentes.")
+        
+        # Iniciar o download assíncrono
+        tipos_desejados = args.tipos if args.tipos else []
+        remote_folder_param = args.remote_folder if args.remote_folder else None
+        from_folder_param = args.from_folder if args.from_folder else None
+        
+        download_ok, latest_folder = asyncio.run(run_download_process(
+            tipos_desejados=tipos_desejados,
+            remote_folder=remote_folder_param,
+            all_folders=args.all_folders,
+            from_folder=from_folder_param
+        ))
+        
+        download_time = time.time() - download_start_time
+        logger.info("=" * 50)
+        logger.info(f"Tempo de download: {format_elapsed_time(download_time)}")
+        
+        if not download_ok:
+            print_error("Falha no processo de download. Verifique os logs para mais detalhes.")
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
+            return False, ""
+        
+        if not latest_folder:
+            print_error("Erro: não foi possível determinar a pasta de download para processamento")
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
+            return False, ""
+        
+        print_success(f"Download concluído. Arquivos salvos em: {os.path.join(PATH_ZIP, latest_folder)}")
+        
+        # 2. Processamento
+        print_section("Etapa 2: Processamento dos arquivos")
+        process_start_time = time.time()
+        
+        # Definir o diretório de origem para ZIPs
+        source_zip_path = os.path.join(PATH_ZIP, latest_folder)
+        
+        # Definir o diretório de saída para Parquets - USANDO O MESMO NOME DA PASTA REMOTA
+        output_subfolder = args.output_subfolder if args.output_subfolder else latest_folder
+        output_parquet_path = os.path.join(PATH_PARQUET, output_subfolder)
+        os.makedirs(output_parquet_path, exist_ok=True)
+        
+        logger.info(f"Processando arquivos de: {source_zip_path}")
+        logger.info(f"Salvando Parquets em: {output_parquet_path}")
+        
+        # Lista de tipos a processar (todos ou filtrados)
+        tipos_a_processar = args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios']
+        
+        # Iniciar processamento
+        process_results = process_folder(
+            source_zip_path, PATH_UNZIP, output_parquet_path,
+            args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios'],
+            args.criar_empresa_privada, args.criar_subset_uf or '',
+            tipos_a_processar, args.delete_zips_after_extract
+        )
+        
+        process_time = time.time() - process_start_time
+        logger.info("=" * 50)
+        logger.info(f"Tempo de processamento: {format_elapsed_time(process_time)}")
+        
+        if not process_results['all_ok']:
+            print_warning("Alguns erros ocorreram durante o processamento. O banco de dados NÃO será criado.")
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
+            return False, ""
+        else:
+            print_success("Processamento concluído com sucesso.")
+        
+        # 3. Criação do banco de dados
+        print_section("Etapa 3: Criação do banco de dados DuckDB")
+        db_start_time = time.time()
+        
+        try:
+            logger.info(f"Criando arquivo DuckDB em: {output_parquet_path}")
+            db_success = create_duckdb_file(output_parquet_path, FILE_DB_PARQUET, PATH_REMOTE_PARQUET)
+            db_time = time.time() - db_start_time
+            
+            if db_success:
+                logger.info("=" * 50)
+                logger.info(f"Tempo de processamento do banco: {format_elapsed_time(db_time)}")
+                db_file = os.path.join(output_parquet_path, FILE_DB_PARQUET)
+                print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
+            else:
+                logger.info("=" * 50)
+                logger.info(f"Tempo de processamento do banco (falhou): {format_elapsed_time(db_time)}")
+                print_error("Falha ao criar banco de dados. Verifique os logs para mais detalhes.")
+                logger.error("Criação do banco de dados falhou")
+                total_time = time.time() - start_time
+                logger.info("=" * 50)
+                logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+                logger.info("STATUS FINAL: FALHA")
+                logger.info("=" * 50)
+                return False, ""
+        except Exception as e:
+            db_time = time.time() - db_start_time
+            logger.exception(f"Erro ao criar banco de dados: {e}")
+            logger.info("=" * 50)
+            logger.info(f"Tempo de processamento do banco (erro): {format_elapsed_time(db_time)}")
+            print_error(f"Falha ao criar banco de dados: {str(e)}")
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
+            return False, ""
+    
+    total_time = time.time() - start_time
+    
+    # Finalizar coleta de estatísticas
+    global_stats.end_session()
+    
+    # Resumo final
+    print_header("Processamento concluído")
+    logger.info("=" * 50)
+    logger.info("RESUMO FINAL DE EXECUÇÃO:")
+    logger.info("=" * 50)
+    
+    if args.step == 'all':
+        logger.info(f"Download: {format_elapsed_time(download_time)}")
+        logger.info(f"Processamento: {format_elapsed_time(process_time)}")
+        logger.info(f"Criação do banco: {format_elapsed_time(db_time)}")
+    
+    logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+    logger.info("=" * 50)
+    logger.info("Execução concluída.")
+    
+    # Exibir relatório detalhado de estatísticas
+    global_stats.print_detailed_report()
+    
+    # Salvar estatísticas em arquivo
+    try:
+        stats_filename = f"estatisticas_cnpj_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        stats_path = os.path.join("logs", stats_filename)
+        os.makedirs("logs", exist_ok=True)
+        global_stats.save_to_json(stats_path)
+        print(f"\n📄 Estatísticas detalhadas salvas em: {stats_path}")
+        logger.info(f"📄 Estatísticas detalhadas salvas em: {stats_path}")
+    except Exception as e:
+        logger.error(f"Erro ao salvar estatísticas: {e}")
+    
+    return True, latest_folder
 
 
 if __name__ == '__main__':
-    main()
+    result = main()

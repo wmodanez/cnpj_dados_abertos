@@ -1,5 +1,10 @@
 """
-Configurações compartilhadas para processamento de dados CNPJ.
+Módulo de processamento de dados do CNPJ.
+
+Este módulo contém implementações para processar os diferentes tipos de 
+arquivos do CNPJ (empresas, estabelecimentos, sócios, etc.).
+
+Implementado com suporte à paralelização usando Polars.
 """
 from typing import Dict, Any
 

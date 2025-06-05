@@ -1,64 +1,15 @@
 """
-Utilitários para processamento paralelo de arquivos CSV usando Dask.
+Utilitários para processamento paralelo de arquivos CSV.
 """
 import csv
 import logging
 import os
+import concurrent.futures
 from typing import List, Callable, Optional, Any, Dict
 
-import dask
-import dask.dataframe as dd
-from dask.distributed import Client, LocalCluster
+import polars as pl
 
 logger = logging.getLogger('cnpj')
-
-def setup_dask_client(n_workers: int = 4, memory_limit: str = '4GB') -> Client:
-    """
-    Configura e retorna um client Dask para computação distribuída.
-    """
-    cluster = LocalCluster(
-        n_workers=n_workers,
-        threads_per_worker=2,
-        memory_limit=memory_limit
-    )
-    return Client(cluster)
-
-def optimize_dask_read(csv_path: str, 
-                      dtype: Dict,
-                      column_names: List[str],
-                      chunksize: str = "100MB",
-                      separator: str = ';',
-                      encoding: str = 'latin1') -> dd.DataFrame:
-    """
-    Lê um arquivo CSV de forma otimizada usando Dask.
-    
-    Args:
-        csv_path: Caminho do arquivo
-        dtype: Tipos das colunas
-        column_names: Nomes das colunas
-        chunksize: Tamanho de cada chunk
-        separator: Separador do CSV
-        encoding: Codificação do arquivo
-        
-    Returns:
-        DataFrame Dask
-    """
-    try:
-        return dd.read_csv(
-            csv_path,
-            dtype=dtype,
-            sep=separator,
-            encoding=encoding,
-            quoting=csv.QUOTE_MINIMAL,
-            blocksize=chunksize,
-            header=None,
-            names=column_names,
-            assume_missing=True,  # Otimização para valores ausentes
-            storage_options={'anon': True}  # Permite leitura paralela
-        )
-    except Exception as e:
-        logger.error(f"Erro ao ler {os.path.basename(csv_path)}: {str(e)}")
-        raise
 
 def verify_csv_integrity(csv_path: str) -> bool:
     """
@@ -93,49 +44,53 @@ def process_csv_to_df(csv_path: str,
                      column_names: List[str],
                      separator: str = ';',
                      encoding: str = 'latin1',
-                     na_filter: bool = True,
-                     partition_size: str = "100MB") -> dd.DataFrame:
+                     na_filter: bool = True) -> pl.DataFrame:
     """
-    Versão otimizada para processar CSV com Dask.
+    Processa um arquivo CSV usando Polars.
+    
+    Args:
+        csv_path: Caminho do arquivo
+        dtype: Tipos das colunas (ignorado, mantido para compatibilidade)
+        column_names: Nomes das colunas
+        separator: Separador do CSV
+        encoding: Codificação do arquivo
+        na_filter: Flag para detectar valores NA (ignorado, mantido para compatibilidade)
+        
+    Returns:
+        DataFrame Polars
     """
     try:
-        df = optimize_dask_read(
+        # Lê o CSV com Polars
+        df = pl.read_csv(
             csv_path,
-            dtype=dtype,
-            column_names=column_names,
-            chunksize=partition_size,
             separator=separator,
-            encoding=encoding
+            encoding=encoding,
+            has_header=False,
+            new_columns=column_names,
+            infer_schema_length=0,  # Não inferir schema
+            dtypes={col: pl.Utf8 for col in column_names}  # Inicialmente lê tudo como string
         )
-        
-        # Otimiza o número de partições baseado no tamanho dos dados
-        if df.npartitions > 32:
-            df = df.repartition(npartitions=32)
-        
         return df
     except Exception as e:
         logger.error(f"Erro ao processar {os.path.basename(csv_path)}: {str(e)}")
         raise
 
-def process_dataframe_batch(df: dd.DataFrame, 
-                          batch_operation: Callable[[dd.DataFrame], dd.DataFrame],
+def process_dataframe_batch(df: pl.DataFrame, 
+                          batch_operation: Callable[[pl.DataFrame], pl.DataFrame],
                           compute: bool = True) -> Any:
     """
-    Processa um DataFrame Dask em lotes.
+    Processa um DataFrame Polars em lotes.
     
     Args:
-        df: DataFrame Dask
+        df: DataFrame Polars
         batch_operation: Função a ser aplicada
-        compute: Se deve computar o resultado imediatamente
+        compute: Flag mantida para compatibilidade (ignorada com Polars)
         
     Returns:
         Resultado processado
     """
     try:
-        result = batch_operation(df)
-        if compute:
-            return result.compute()
-        return result
+        return batch_operation(df)
     except Exception as e:
         logger.error(f"Erro no processamento em lote: {str(e)}")
         raise
@@ -146,10 +101,21 @@ def process_csv_files_parallel(
         process_function: Callable[[str], Any],
         max_workers: int = 4,
         file_filter: Optional[Callable[[str], bool]] = None,
-        memory_limit: str = '4GB'
+        memory_limit: str = '4GB'  # Parâmetro mantido para compatibilidade
 ) -> List[Any]:
     """
-    Versão otimizada para processamento paralelo usando Dask.
+    Processa arquivos CSV em paralelo usando ThreadPoolExecutor.
+    
+    Args:
+        csv_files: Lista de nomes de arquivos CSV
+        base_path: Diretório base onde os arquivos estão
+        process_function: Função para processar cada arquivo
+        max_workers: Número máximo de workers
+        file_filter: Função opcional para filtrar arquivos
+        memory_limit: Parâmetro mantido para compatibilidade (ignorado)
+        
+    Returns:
+        Lista de resultados
     """
     results = []
     full_paths = [os.path.join(base_path, f) for f in csv_files]
@@ -161,24 +127,30 @@ def process_csv_files_parallel(
         logger.warning("Nenhum arquivo encontrado para processamento")
         return results
 
-    logger.info(f"Iniciando processamento de {len(full_paths)} arquivos com Dask")
+    logger.info(f"Iniciando processamento de {len(full_paths)} arquivos em paralelo")
     
     try:
-        # Configura client Dask
-        with setup_dask_client(max_workers, memory_limit) as client:
-            # Cria futures para cada arquivo
-            futures = [
-                client.submit(process_function, path) 
+        # Usa ProcessPoolExecutor para processamento paralelo
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # Submete jobs
+            future_to_path = {
+                executor.submit(process_function, path): path 
                 for path in full_paths
-            ]
+            }
             
-            # Coleta resultados
-            results = client.gather(futures)
-            
+            # Coleta resultados à medida que são completados
+            for future in concurrent.futures.as_completed(future_to_path):
+                path = future_to_path[future]
+                try:
+                    result = future.result()
+                    if result is not None:
+                        results.append(result)
+                except Exception as e:
+                    logger.error(f"Erro processando {os.path.basename(path)}: {str(e)}")
     except Exception as e:
         logger.error(f"Erro no processamento paralelo: {str(e)}")
-        
+    
     finally:
         logger.info(f"Processamento concluído. Resultados: {len(results)}")
-        
-    return [r for r in results if r is not None]
+    
+    return results
