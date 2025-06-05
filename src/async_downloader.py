@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from urllib.parse import urljoin
 
 # Bibliotecas de terceiros
@@ -1485,6 +1485,60 @@ def format_elapsed_time(seconds: float) -> str:
         return f"{hours}h {minutes}m {secs:.1f}s"
 
 
+async def _run_network_test() -> Dict[str, any]:
+    """
+    Executa o teste de rede uma única vez e retorna os resultados.
+    
+    Returns:
+        Dict com os resultados do teste de rede e recomendações
+    """
+    try:
+        from .utils.network import adaptive_network_test
+        network_results = await adaptive_network_test()
+        
+        if not network_results["connected"]:
+            logger.error(f"❌ Sem conectividade de rede: {network_results['message']}")
+            print(f"❌ Sem conectividade de rede: {network_results['message']}")
+            return network_results
+        
+        return network_results
+        
+    except ImportError:
+        logger.warning("Módulo de teste de rede não disponível, usando configurações padrão")
+        return {
+            "connected": True,
+            "recommendations": {
+                "max_concurrent_downloads": 6,
+                "timeout_multiplier": 1.0
+            }
+        }
+    except Exception as e:
+        logger.warning(f"Erro no teste de rede: {e}. Usando configurações padrão")
+        return {
+            "connected": True,
+            "recommendations": {
+                "max_concurrent_downloads": 6,
+                "timeout_multiplier": 1.0
+            }
+        }
+
+# Cache para armazenar resultado do teste de rede
+_network_test_cache = None
+
+async def get_network_test_results() -> Dict[str, any]:
+    """
+    Retorna os resultados do teste de rede, usando cache se disponível.
+    
+    Returns:
+        Dict com os resultados do teste de rede e recomendações
+    """
+    global _network_test_cache
+    
+    if _network_test_cache is None:
+        _network_test_cache = await _run_network_test()
+    
+    return _network_test_cache
+
 async def download_multiple_files(
     urls: List[str], 
     path_zip: str, 
@@ -1497,22 +1551,35 @@ async def download_multiple_files(
     show_pending_files: bool = False
 ) -> Tuple[List[str], List[Tuple[str, Exception]]]:
     """
-    Baixa múltiplos arquivos de forma assíncrona com pipeline otimizado e controle de falhas.
+    Downloads e processa múltiplos arquivos de forma assíncrona e otimizada.
+    
+    Esta função implementa um pipeline de download e processamento completo com:
+    - Downloads paralelos controlados
+    - Processamento assíncrono de arquivos baixados
+    - Monitoramento de recursos do sistema
+    - Sistema robusto de retry e recuperação
+    - Interface visual rica (opcional)
+    - Controle de falhas críticas
     
     Args:
         urls: Lista de URLs para download
         path_zip: Diretório onde salvar os arquivos baixados
-        path_unzip: Diretório para arquivos descompactados
-        path_parquet: Diretório para arquivos parquet processados
-        force_download: Se True, força o download mesmo se o arquivo já existir
+        path_unzip: Diretório temporário para extração
+        path_parquet: Diretório de saída dos arquivos Parquet
+        force_download: Se True, força o download mesmo que o arquivo já exista
         max_concurrent_downloads: Número máximo de downloads simultâneos
         max_concurrent_processing: Número máximo de processamentos simultâneos
-        show_progress_bar: Se True, exibe barras de progresso visuais (padrão: False)
-        show_pending_files: Se True, exibe lista de arquivos pendentes/em progresso (padrão: False)
+        show_progress_bar: Se True, exibe barra de progresso visual
+        show_pending_files: Se True, exibe lista de arquivos pendentes
         
     Returns:
-        Tupla com (lista_arquivos_baixados, lista_falhas)
+        Tupla com (arquivos_processados, falhas)
     """
+    if not urls:
+        logger.warning("Nenhuma URL fornecida para download")
+        return [], []
+    
+    # Inicializar tempo no início da função para estar disponível em todo o escopo
     start_time = time.time()
     
     # 🆕 Versão 3.0.0: Inicializar processadores na factory
@@ -1561,40 +1628,29 @@ async def download_multiple_files(
     
     # Verificar conectividade de rede antes de iniciar
     logger.info("🌐 Verificando conectividade de rede...")
-    try:
-        from .utils.network import adaptive_network_test
-        network_results = await adaptive_network_test()
-        
-        if not network_results["connected"]:
-            logger.error(f"❌ Sem conectividade de rede: {network_results['message']}")
-            print(f"❌ Sem conectividade de rede: {network_results['message']}")
-            return [], [(url, Exception("Sem conectividade de rede")) for url in urls]
-        
-        # Aplicar recomendações de rede
-        recommendations = network_results["recommendations"]
-        
-        # Ajustar configurações baseadas na qualidade da rede
-        original_max_downloads = max_concurrent_downloads
-        max_concurrent_downloads = min(max_concurrent_downloads, recommendations["max_concurrent_downloads"])
-        
-        # Ajustar timeouts baseados na qualidade da rede
-        timeout_multiplier = recommendations["timeout_multiplier"]
-        
-        logger.info(f"✅ Rede: {network_results['quality']['connection_quality']} "
-                   f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
-        logger.info(f"🔧 Configurações adaptadas: {max_concurrent_downloads} downloads simultâneos "
-                   f"(original: {original_max_downloads}), timeout x{timeout_multiplier}")
-        
-        print(f"🌐 Qualidade da rede: {network_results['quality']['connection_quality']} "
-              f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
-        print(f"🔧 Downloads simultâneos ajustados: {max_concurrent_downloads}")
-        
-    except ImportError:
-        logger.warning("Módulo de teste de rede não disponível, usando configurações padrão")
-        timeout_multiplier = 1.0
-    except Exception as e:
-        logger.warning(f"Erro no teste de rede: {e}. Usando configurações padrão")
-        timeout_multiplier = 1.0
+    network_results = await get_network_test_results()
+    
+    if not network_results["connected"]:
+        return [], [(url, Exception("Sem conectividade de rede")) for url in urls]
+    
+    # Aplicar recomendações de rede
+    recommendations = network_results["recommendations"]
+    
+    # Ajustar configurações baseadas na qualidade da rede
+    original_max_downloads = max_concurrent_downloads
+    max_concurrent_downloads = min(max_concurrent_downloads, recommendations["max_concurrent_downloads"])
+    
+    # Ajustar timeouts baseados na qualidade da rede
+    timeout_multiplier = recommendations["timeout_multiplier"]
+    
+    logger.info(f"✅ Rede: {network_results['quality']['connection_quality']} "
+               f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
+    logger.info(f"🔧 Configurações adaptadas: {max_concurrent_downloads} downloads simultâneos "
+               f"(original: {original_max_downloads}), timeout x{timeout_multiplier}")
+    
+    print(f"🌐 Qualidade da rede: {network_results['quality']['connection_quality']} "
+          f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
+    print(f"🔧 Downloads simultâneos ajustados: {max_concurrent_downloads}")
     
     # Listas para rastrear resultados
     downloaded_files = []
@@ -2084,7 +2140,13 @@ async def download_multiple_files(
         
         # Calcular estatísticas finais
         end_time = time.time()
-        total_time = end_time - start_time
+        
+        # Verificar se start_time está definido (pode não estar se erro ocorreu muito cedo)
+        try:
+            total_time = end_time - start_time
+        except NameError:
+            # Se start_time não está definido, usar o start_time da função
+            total_time = end_time - start_time if 'start_time' in locals() else 0.0
         
         # Obter estatísticas do monitor de recursos
         resource_stats = resource_monitor.get_resource_impact_summary()
@@ -2279,30 +2341,29 @@ async def download_only_files(
     show_pending_files: bool = False
 ) -> Tuple[List[str], List[Tuple[str, Exception]]]:
     """
-    Baixa múltiplos arquivos de forma assíncrona APENAS download, sem processamento.
+    Download apenas (sem processamento) de múltiplos arquivos de forma assíncrona.
     
     Args:
         urls: Lista de URLs para download
         path_zip: Diretório onde salvar os arquivos baixados
-        force_download: Se True, força o download mesmo se o arquivo já existir
+        force_download: Se True, força o download mesmo que o arquivo já exista
         max_concurrent_downloads: Número máximo de downloads simultâneos
-        show_progress_bar: Se True, exibe barras de progresso visuais (padrão: False)
-        show_pending_files: Se True, exibe lista de arquivos pendentes/em progresso (padrão: False)
+        show_progress_bar: Se True, exibe barra de progresso visual
+        show_pending_files: Se True, exibe lista de arquivos pendentes
         
     Returns:
-        Tupla contendo:
-        - Lista de arquivos baixados com sucesso
-        - Lista de tuplas (url, exceção) para falhas
+        Tupla com (arquivos_baixados, falhas)
     """
-    start_time = time.time()
+    if not urls:
+        logger.warning("Nenhuma URL fornecida para download")
+        return [], []
     
-    # Garantir que o diretório de destino existe
-    os.makedirs(path_zip, exist_ok=True)
+    # Inicializar tempo no início da função para estar disponível em todo o escopo
+    start_time = time.time()
     
     # Teste de rede adaptativo
     try:
-        from .utils.network import adaptive_network_test
-        network_results = await adaptive_network_test()
+        network_results = await get_network_test_results()
         
         if not network_results["connected"]:
             logger.error(f"❌ Sem conectividade de rede: {network_results['message']}")
@@ -2644,7 +2705,13 @@ async def download_only_files(
     finally:
         # Calcular estatísticas finais
         end_time = time.time()
-        total_time = end_time - start_time
+        
+        # Verificar se start_time está definido (pode não estar se erro ocorreu muito cedo)
+        try:
+            total_time = end_time - start_time
+        except NameError:
+            # Se start_time não está definido, usar valor padrão
+            total_time = 0.0
         
         # Relatório final
         print(f"\n📊 === RELATÓRIO FINAL DE DOWNLOADS ===")

@@ -147,13 +147,17 @@ import aiohttp
 from dotenv import load_dotenv
 from rich.logging import RichHandler
 
+# CARREGAR VARIÁVEIS DE AMBIENTE ANTES DAS IMPORTAÇÕES QUE DEPENDEM DELAS
+load_dotenv()
+
 from src.async_downloader import (
     download_multiple_files, 
     get_latest_month_zip_urls, 
     get_remote_folders, 
     get_latest_remote_folder,
     _filter_urls_by_type,
-    download_only_files
+    download_only_files,
+    get_network_test_results
 )
 from src.config import config
 from src.database import create_duckdb_file
@@ -355,22 +359,21 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
     """Executa todo o processo de download de forma assíncrona.
     
     Args:
-        tipos_desejados: Lista de tipos de arquivos para baixar (ex: ['Empresas', 'Estabelecimentos'])
-        remote_folder: Nome da pasta remota específica para baixar (ex: '2024-01')
-        all_folders: Se True, baixa de todas as pastas remotas disponíveis
-        from_folder: Se especificado com all_folders, baixa da pasta especificada até a mais atual
-        quiet: Modo silencioso (desativa interface visual)
-        verbose_ui: Modo verboso (ativa interface visual completa)
-        show_progress: Força exibição de barras de progresso
-        hide_progress: Força ocultação de barras de progresso
-        show_pending: Força exibição da lista de arquivos pendentes
-        hide_pending: Força ocultação da lista de arquivos pendentes
+        tipos_desejados: Lista de tipos de arquivo desejados (opcional)
+        remote_folder: Pasta remota específica para download (opcional)
+        all_folders: Se True, baixa de todas as pastas remotas
+        from_folder: Pasta local para processar arquivos já baixados
+        quiet: Se True, reduz output no console
+        verbose_ui: Se True, mostra interface detalhada
+        show_progress: Se True, força exibição da barra de progresso
+        hide_progress: Se True, força ocultação da barra de progresso
+        show_pending: Se True, força exibição da lista de arquivos pendentes
+        hide_pending: Se True, força ocultação da lista de arquivos pendentes
     """
     try:
         # Importar e executar teste de rede adaptativo
-        from src.utils.network import adaptive_network_test
         try:
-            network_results = await adaptive_network_test()
+            network_results = await get_network_test_results()
             if network_results and not network_results.get("connected"):
                 logger.warning("⚠️ Teste de rede indicou problemas de conectividade")
         except Exception as e:
@@ -1012,7 +1015,7 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
 
 def main():
     """Função principal de execução."""
-    start_time = time.time()
+    start_time = time.time()  # Inicialização da variável aqui
     
     # Inicializar coleta de estatísticas
     global_stats.start_session()
@@ -1340,6 +1343,11 @@ def main():
         # Verificar se aplicação deve continuar antes de iniciar download
         if not should_continue_processing():
             logger.critical("🛑 Download cancelado pelo circuit breaker")
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
             return False, ""
         
         # Verificar conectividade antes de iniciar
@@ -1349,6 +1357,11 @@ def main():
                 "Sem conexão com a internet para download",
                 "MAIN_DOWNLOAD"
             )
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+            logger.info("STATUS FINAL: FALHA")
+            logger.info("=" * 50)
             return False, ""
         
         # Configurar para forçar o download se necessário

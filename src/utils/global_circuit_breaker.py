@@ -91,7 +91,7 @@ class GlobalCircuitBreaker:
             FailureType.PERMISSIONS: 1,    # Imediato
             FailureType.DATA_CORRUPTION: 5,
             FailureType.SYSTEM_RESOURCE: 2,
-            FailureType.PROCESSING_FAILURE: 10,
+            FailureType.PROCESSING_FAILURE: 3,  # Reduzido de 10 para 3
             FailureType.DOWNLOAD_FAILURE: 8,
         }
         

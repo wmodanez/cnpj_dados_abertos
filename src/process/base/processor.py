@@ -176,7 +176,14 @@ class BaseProcessor(ABC):
             Dict mapeando colunas antigas para nomes das entidades
         """
         entity_class = self.get_entity_class()
-        entity_columns = entity_class.get_column_names()
+        all_columns = entity_class.get_column_names()
+        
+        # Para empresas, o cpf_extraido é calculado, não vem do CSV
+        if hasattr(entity_class, '__name__') and entity_class.__name__ == 'Empresa':
+            entity_columns = [col for col in all_columns if col != 'cpf_extraido']
+        else:
+            entity_columns = all_columns
+            
         df_columns = df.columns
         
         mapping = {}
@@ -257,12 +264,47 @@ class BaseProcessor(ABC):
     ) -> pl.DataFrame:
         """Aplica uma transformação específica baseada na entidade."""
         try:
-            # Aqui você pode implementar transformações específicas
-            # Por enquanto, retorna o DataFrame sem modificação
-            # TODO: Implementar transformações baseadas no nome
+            if transformation == 'extract_cpf':
+                # Extrair CPF da razão social para empresas
+                if 'razao_social' in df.columns:
+                    df = df.with_columns([
+                        pl.col('razao_social').str.extract(r'(\d{11})', 1).alias('cpf_extraido')
+                    ])
+                    self.logger.debug("CPF extraído da razão social")
             
-            if transformation == 'convert_dates':
-                # Exemplo de transformação de datas - verificar se já é datetime
+            elif transformation == 'clean_razao_social':
+                # Limpar razão social removendo CPF
+                if 'razao_social' in df.columns:
+                    df = df.with_columns([
+                        pl.col('razao_social').str.replace_all(r'\d{11}', '').str.strip_chars().alias('razao_social')
+                    ])
+                    self.logger.debug("Razão social limpa (CPF removido)")
+            
+            elif transformation == 'convert_capital_social':
+                # Converter capital social para float
+                if 'capital_social' in df.columns:
+                    df = df.with_columns([
+                        pl.col('capital_social').cast(pl.Utf8).str.replace_all(r'[^\d.,]', '').str.replace(',', '.').cast(pl.Float64, strict=False).alias('capital_social')
+                    ])
+            
+            elif transformation == 'normalize_strings':
+                # Normalizar strings
+                string_fields = ['razao_social', 'ente_federativo_responsavel']
+                for field in string_fields:
+                    if field in df.columns:
+                        df = df.with_columns([
+                            pl.col(field).str.strip_chars().str.to_uppercase().alias(field)
+                        ])
+            
+            elif transformation == 'validate_cnpj_basico':
+                # Validar e corrigir CNPJ básico
+                if 'cnpj_basico' in df.columns:
+                    df = df.with_columns([
+                        pl.col('cnpj_basico').str.replace_all(r'[^\d]', '').str.zfill(8).str.slice(0, 8).alias('cnpj_basico')
+                    ])
+            
+            elif transformation == 'convert_dates':
+                # Transformação de datas - verificar se já é datetime
                 date_columns = ['data_entrada_sociedade', 'data_situacao_cadastral', 'data_inicio_atividade']
                 for col in date_columns:
                     if col in df.columns:
@@ -275,7 +317,7 @@ class BaseProcessor(ABC):
                         # Se já é datetime, manter como está
             
             elif transformation == 'validate_cpf_cnpj':
-                # Exemplo de limpeza de CPF/CNPJ
+                # Limpeza de CPF/CNPJ
                 cpf_cnpj_columns = ['cnpj_cpf_socio', 'representante_legal', 'cnpj_basico']
                 for col in cpf_cnpj_columns:
                     if col in df.columns:
@@ -303,7 +345,15 @@ class BaseProcessor(ABC):
         """
         try:
             entity_class = self.get_entity_class()
-            column_names = [f"column_{i+1}" for i in range(len(entity_class.get_column_names()))]
+            all_columns = entity_class.get_column_names()
+            
+            # Para empresas, o cpf_extraido é calculado, não vem do CSV
+            if hasattr(entity_class, '__name__') and entity_class.__name__ == 'Empresa':
+                csv_columns = [col for col in all_columns if col != 'cpf_extraido']
+            else:
+                csv_columns = all_columns
+            
+            column_names = [f"column_{i+1}" for i in range(len(csv_columns))]
             
             # Verificar se é arquivo de texto
             if not self._is_text_file(data_path):
@@ -366,11 +416,11 @@ class BaseProcessor(ABC):
         partition_size: int = 500_000
     ) -> bool:
         """
-        Salva DataFrame como Parquet com particionamento automático.
+        Salva DataFrame como Parquet com particionamento automático e organização por tipo.
         
         Args:
             df: DataFrame a ser salvo
-            output_path: Caminho de saída
+            output_path: Caminho de saída base
             zip_prefix: Prefixo do arquivo ZIP original
             partition_size: Tamanho máximo de cada partição
             
@@ -386,16 +436,22 @@ class BaseProcessor(ABC):
                 self.logger.warning("DataFrame vazio, não salvando arquivo")
                 return False
             
+            # Criar subpasta por tipo de entidade
+            entity_folder = self.get_processor_name().lower()
+            organized_output_path = os.path.join(output_path, entity_folder)
+            
             # Garantir que o diretório existe
-            os.makedirs(output_path, exist_ok=True)
+            os.makedirs(organized_output_path, exist_ok=True)
+            
+            self.logger.info(f"Salvando arquivos em: {organized_output_path}")
             
             # Se o DataFrame é pequeno, salvar como arquivo único
             if df.height <= partition_size:
-                filename = f"{zip_prefix}_{self.get_processor_name().lower()}.parquet"
-                file_path = os.path.join(output_path, filename)
+                filename = f"{zip_prefix}.parquet"
+                file_path = os.path.join(organized_output_path, filename)
                 
                 df.write_parquet(file_path, compression='snappy')
-                self.logger.info(f"Arquivo Parquet salvo: {filename} ({df.height} linhas)")
+                self.logger.info(f"Arquivo Parquet salvo: {entity_folder}/{filename} ({df.height} linhas)")
                 return True
             
             # Para DataFrames grandes, particionar
@@ -406,13 +462,13 @@ class BaseProcessor(ABC):
                 end_idx = min((i + 1) * partition_size, df.height)
                 
                 partition_df = df.slice(start_idx, end_idx - start_idx)
-                filename = f"{zip_prefix}_{self.get_processor_name().lower()}_part_{i+1:03d}.parquet"
-                file_path = os.path.join(output_path, filename)
+                filename = f"{zip_prefix}_part_{i+1:03d}.parquet"
+                file_path = os.path.join(organized_output_path, filename)
                 
                 partition_df.write_parquet(file_path, compression='snappy')
-                self.logger.debug(f"Partição salva: {filename} ({partition_df.height} linhas)")
+                self.logger.debug(f"Partição salva: {entity_folder}/{filename} ({partition_df.height} linhas)")
             
-            self.logger.info(f"DataFrame particionado salvo: {num_partitions} arquivos ({df.height} linhas total)")
+            self.logger.info(f"DataFrame particionado salvo: {num_partitions} arquivos em {entity_folder}/ ({df.height} linhas total)")
             return True
             
         except Exception as e:
@@ -534,7 +590,7 @@ class BaseProcessor(ABC):
                     FailureType.PROCESSING_FAILURE,
                     f"Falha no processamento do arquivo {zip_file}",
                     self.get_processor_name(),
-                    CriticalityLevel.WARNING,
+                    CriticalityLevel.MODERATE,
                     {'zip_file': zip_file, 'paths': {'zip': path_zip, 'unzip': path_unzip, 'parquet': path_parquet}}
                 )
                 

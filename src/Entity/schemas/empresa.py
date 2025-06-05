@@ -26,8 +26,7 @@ class EmpresaSchema(BaseModel):
                                         description="Porte da empresa (1-5)")
     ente_federativo_responsavel: Optional[str] = Field(None, max_length=100, 
                                                       description="Ente federativo responsável")
-    cpf_extraido: Optional[str] = Field(None, pattern=r'^\d{11}$', 
-                                       description="CPF extraído da razão social")
+    # cpf_extraido será adicionado durante o processamento como campo calculado
     
     class Config:
         # Permitir campos extras durante parsing
@@ -49,23 +48,6 @@ class EmpresaSchema(BaseModel):
                 "cpf_extraido": None
             }
         }
-    
-    @validator('cpf_extraido')
-    def validate_cpf(cls, v):
-        """Valida CPF extraído"""
-        if v is None:
-            return v
-            
-        invalid_cpfs = [
-            "00000000000", "11111111111", "22222222222", "33333333333",
-            "44444444444", "55555555555", "66666666666", "77777777777",
-            "88888888888", "99999999999"
-        ]
-        
-        if v in invalid_cpfs:
-            raise ValueError(f'CPF inválido: {v}')
-        
-        return v
     
     @validator('razao_social')
     def validate_razao_social(cls, v):

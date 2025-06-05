@@ -68,8 +68,7 @@ class Empresa(BaseEntity):
             'qualificacao_responsavel': pl.Int32,
             'capital_social': pl.Float64,
             'porte_empresa': pl.Int32,
-            'ente_federativo_responsavel': pl.Utf8,
-            'cpf_extraido': pl.Utf8
+            'ente_federativo_responsavel': pl.Utf8
         }
     
     @classmethod
