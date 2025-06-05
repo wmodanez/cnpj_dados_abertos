@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import time
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from urllib.parse import urljoin
 
 # Bibliotecas de terceiros
@@ -43,6 +43,16 @@ from .utils.time_utils import format_elapsed_time
 from .utils.statistics import global_stats
 from .utils.cache import DownloadCache  # Corrigir import do cache
 from src.utils.processing_cache import processing_cache
+
+# Import do Circuit Breaker Global
+from .utils.global_circuit_breaker import (
+    circuit_breaker,
+    FailureType,
+    CriticalityLevel,
+    should_continue_processing,
+    report_critical_failure,
+    report_fatal_failure
+)
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
@@ -2258,4 +2268,415 @@ async def _attempt_recovery_downloads(
     
     logger.info(f"Recuperação concluída: {len(recovered_files)} sucessos, {len(remaining_failures)} falhas restantes")
     return recovered_files, remaining_failures
+
+
+async def download_only_files(
+    urls: List[str], 
+    path_zip: str, 
+    force_download: bool = False,
+    max_concurrent_downloads: int = 6,
+    show_progress_bar: bool = False,
+    show_pending_files: bool = False
+) -> Tuple[List[str], List[Tuple[str, Exception]]]:
+    """
+    Baixa múltiplos arquivos de forma assíncrona APENAS download, sem processamento.
+    
+    Args:
+        urls: Lista de URLs para download
+        path_zip: Diretório onde salvar os arquivos baixados
+        force_download: Se True, força o download mesmo se o arquivo já existir
+        max_concurrent_downloads: Número máximo de downloads simultâneos
+        show_progress_bar: Se True, exibe barras de progresso visuais (padrão: False)
+        show_pending_files: Se True, exibe lista de arquivos pendentes/em progresso (padrão: False)
+        
+    Returns:
+        Tupla contendo:
+        - Lista de arquivos baixados com sucesso
+        - Lista de tuplas (url, exceção) para falhas
+    """
+    start_time = time.time()
+    
+    # Garantir que o diretório de destino existe
+    os.makedirs(path_zip, exist_ok=True)
+    
+    # Teste de rede adaptativo
+    try:
+        from .utils.network import adaptive_network_test
+        network_results = await adaptive_network_test()
+        
+        if not network_results["connected"]:
+            logger.error(f"❌ Sem conectividade de rede: {network_results['message']}")
+            print(f"❌ Sem conectividade de rede: {network_results['message']}")
+            return [], [(url, Exception("Sem conectividade de rede")) for url in urls]
+        
+        # Aplicar recomendações de rede
+        recommendations = network_results["recommendations"]
+        
+        # Ajustar configurações baseadas na qualidade da rede
+        original_max_downloads = max_concurrent_downloads
+        max_concurrent_downloads = min(max_concurrent_downloads, recommendations["max_concurrent_downloads"])
+        
+        # Ajustar timeouts baseados na qualidade da rede
+        timeout_multiplier = recommendations["timeout_multiplier"]
+        
+        logger.info(f"✅ Rede: {network_results['quality']['connection_quality']} "
+                   f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
+        logger.info(f"🔧 Configurações adaptadas: {max_concurrent_downloads} downloads simultâneos "
+                   f"(original: {original_max_downloads}), timeout x{timeout_multiplier}")
+        
+        print(f"🌐 Qualidade da rede: {network_results['quality']['connection_quality']} "
+              f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
+        print(f"🔧 Downloads simultâneos ajustados: {max_concurrent_downloads}")
+        
+    except ImportError:
+        logger.warning("Módulo de teste de rede não disponível, usando configurações padrão")
+        timeout_multiplier = 1.0
+    except Exception as e:
+        logger.warning(f"Erro no teste de rede: {e}. Usando configurações padrão")
+        timeout_multiplier = 1.0
+    
+    # Listas para rastrear resultados
+    downloaded_files = []
+    failed_downloads = []
+    
+    # Controle de falhas críticas
+    consecutive_failures = 0
+    max_consecutive_failures = 8
+    total_failures = 0
+    max_failure_rate = 0.7
+    
+    # Configurar semáforos
+    download_semaphore = asyncio.Semaphore(max_concurrent_downloads)
+    
+    # Ordenar URLs por tamanho (menores primeiro)
+    try:
+        logger.info("📏 Ordenando arquivos por tamanho para otimizar downloads...")
+        sorted_urls_with_sizes = await get_file_sizes_and_sort(urls)
+        sorted_urls = [url for url, _ in sorted_urls_with_sizes]
+        
+        # Log da ordenação
+        logger.info("Arquivos ordenados por tamanho (menor → maior):")
+        for i, (url, size) in enumerate(sorted_urls_with_sizes[:10]):
+            filename = os.path.basename(url)
+            size_mb = size / (1024 * 1024)
+            logger.info(f"   {i+1:2d}. {filename}: {size_mb:.1f}MB")
+        if len(sorted_urls_with_sizes) > 10:
+            logger.info(f"   ... e mais {len(sorted_urls_with_sizes) - 10} arquivos")
+        logger.info("✅ Arquivos ordenados por tamanho (menores primeiro)")
+    except Exception as e:
+        logger.warning(f"Erro ao ordenar arquivos por tamanho: {e}. Usando ordem original.")
+        sorted_urls = urls
+    
+    print(f"\n🚀 Iniciando downloads para {len(sorted_urls)} arquivos")
+    print(f"📊 Configuração: {max_concurrent_downloads} downloads simultâneos")
+    print(f"🛡️ Controle de falhas: máx {max_consecutive_failures} consecutivas, {max_failure_rate*100:.0f}% taxa máxima")
+    print(f"🔄 Retry robusto: 5 tentativas por arquivo com backoff exponencial")
+    print(f"✅ Validação de integridade: ativada")
+    print(f"🌐 Conectividade: verificada")
+    print(f"📊 Barra de progresso: {'✅ ativada' if show_progress_bar else '❌ desativada'}")
+    print(f"📋 Lista de arquivos pendentes: {'✅ ativada' if show_pending_files else '❌ desativada'}")
+    
+    # Criar instância da lista de arquivos pendentes (se solicitado)
+    pending_files_list = PendingFilesList(sorted_urls) if show_pending_files else None
+    
+    # Criar objeto Progress do rich para downloads (se solicitado)
+    if show_progress_bar:
+        progress = Progress(
+            TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
+            BarColumn(bar_width=None),
+            "[progress.percentage]{task.percentage:>3.1f}%",
+            "•",
+            DownloadColumn(),
+            "•",
+            TransferSpeedColumn(),
+            "•",
+            TimeRemainingColumn(),
+            console=console,
+            expand=True,
+        )
+    else:
+        # Criar um objeto Progress "dummy" que não exibe nada
+        class DummyProgress:
+            def __init__(self):
+                self._task_counter = 0
+                self.tasks = {}  # Simular o atributo tasks do Progress real
+                
+            def add_task(self, description, **kwargs):
+                self._task_counter += 1
+                # Simular um objeto task com atributos necessários
+                task = type('Task', (), {
+                    'total': kwargs.get('total', 100),
+                    'completed': 0,
+                    'description': description
+                })()
+                self.tasks[self._task_counter] = task
+                return self._task_counter
+                
+            def update(self, task_id, **kwargs):
+                if task_id in self.tasks:
+                    task = self.tasks[task_id]
+                    if 'advance' in kwargs:
+                        task.completed += kwargs['advance']
+                    if 'total' in kwargs:
+                        task.total = kwargs['total']
+                    if 'completed' in kwargs:
+                        task.completed = kwargs['completed']
+                    if 'description' in kwargs:
+                        task.description = kwargs['description']
+                
+            def start_task(self, task_id):
+                pass
+                
+            def __enter__(self):
+                return self
+                
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
+        
+        progress = DummyProgress()
+    
+    # Configurar layout e live display baseado nas opções ativadas
+    live_display = None
+    layout = None
+    if show_progress_bar or show_pending_files:
+        if show_progress_bar and show_pending_files:
+            # Ambos ativados: layout dividido
+            layout = Layout()
+            layout.split_column(
+                Layout(progress, name="progress", size=len(sorted_urls) + 2),
+                Layout(pending_files_list.create_pending_panel(), name="pending", size=15)
+            )
+            live_display = Live(layout, console=console, refresh_per_second=2)
+        elif show_progress_bar:
+            # Apenas barra de progresso
+            live_display = Live(progress, console=console, refresh_per_second=2)
+        elif show_pending_files:
+            # Apenas lista de arquivos pendentes
+            live_display = Live(pending_files_list.create_pending_panel(), console=console, refresh_per_second=2)
+    
+    print(f"\n🔄 Executando {len(sorted_urls)} downloads...")
+
+    # Função de download simples (apenas download, sem processamento)
+    async def download_only(url: str, force_download_param: bool = force_download):
+        """Baixa um arquivo SEM adicionar à fila de processamento."""
+        nonlocal consecutive_failures, total_failures
+        
+        filename = os.path.basename(url)
+        destination_path = os.path.join(path_zip, filename)
+        
+        # Atualizar lista de arquivos pendentes (marcar como em progresso)
+        if pending_files_list:
+            pending_files_list.start_file(filename)
+            # Atualizar o layout se estiver usando live display
+            if live_display and show_progress_bar and show_pending_files:
+                # Layout dividido: atualizar seção pending
+                layout["pending"].update(pending_files_list.create_pending_panel())
+            elif live_display and show_pending_files and not show_progress_bar:
+                # Apenas lista de pendentes: atualizar display completo
+                live_display.update(pending_files_list.create_pending_panel())
+        
+        # Registrar início do download no rastreador de progresso
+        progress_tracker.start_file("downloads", filename, "downloader")
+        
+        # Criar task específica no objeto Progress do rich
+        task_id = progress.add_task(f"[cyan]{filename}", filename=filename, total=100)
+        
+        try:
+            async with download_semaphore:
+                # Usar sessão HTTP compartilhada
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(
+                        total=3600 * timeout_multiplier, 
+                        connect=30 * timeout_multiplier
+                    ),
+                    connector=aiohttp.TCPConnector(limit=100, limit_per_host=20)
+                ) as session:
+                    
+                    start_time = time.time()
+                    
+                    # Usar o objeto Progress do rich
+                    result_filename, error, status = await download_file(
+                        session, url, destination_path, download_semaphore, 
+                        progress, task_id, force_download_param
+                    )
+                    elapsed_time = time.time() - start_time
+                    
+                    if error:
+                        consecutive_failures += 1
+                        total_failures += 1
+                        logger.error(f"❌ Erro no download de {filename}: {error}")
+                        progress_tracker.complete_file("downloads", filename, False, "downloader", elapsed_time)
+                        failed_downloads.append((filename, error))
+                        
+                        # Atualizar lista de arquivos pendentes (marcar como falha)
+                        if pending_files_list:
+                            pending_files_list.complete_file(filename, success=False)
+                            if live_display and show_progress_bar and show_pending_files:
+                                # Layout dividido: atualizar seção pending
+                                layout["pending"].update(pending_files_list.create_pending_panel())
+                            elif live_display and show_pending_files and not show_progress_bar:
+                                # Apenas lista de pendentes: atualizar display completo
+                                live_display.update(pending_files_list.create_pending_panel())
+                        
+                        # Marcar task como completa com erro
+                        progress.update(task_id, description=f"[red]{filename} (ERRO)", completed=100)
+                        
+                        # Verificar se devemos parar por falhas críticas
+                        if consecutive_failures >= max_consecutive_failures:
+                            logger.error(f"🛑 Parando downloads devido a {consecutive_failures} falhas consecutivas")
+                            return
+                        
+                        failure_rate = total_failures / max(1, len(downloaded_files) + total_failures)
+                        if failure_rate > max_failure_rate and len(downloaded_files) > 5:
+                            logger.error(f"🛑 Parando downloads devido a alta taxa de falhas ({failure_rate*100:.1f}%)")
+                            return
+                    else:
+                        consecutive_failures = 0  # Reset contador de falhas consecutivas
+                        downloaded_files.append(result_filename)
+                        logger.info(f"✅ Download de {filename} concluído em {elapsed_time:.2f}s")
+                        progress_tracker.complete_file("downloads", filename, True, "downloader", elapsed_time)
+                        
+                        # Atualizar lista de arquivos pendentes (marcar como sucesso)
+                        if pending_files_list:
+                            pending_files_list.complete_file(filename, success=True)
+                            if live_display and show_progress_bar and show_pending_files:
+                                # Layout dividido: atualizar seção pending
+                                layout["pending"].update(pending_files_list.create_pending_panel())
+                            elif live_display and show_pending_files and not show_progress_bar:
+                                # Apenas lista de pendentes: atualizar display completo
+                                live_display.update(pending_files_list.create_pending_panel())
+                        
+                        # Marcar task como completa com sucesso
+                        progress.update(task_id, description=f"[green]{filename} (OK)", completed=100)
+                        
+                        # Registrar estatística de download
+                        file_size = os.path.getsize(destination_path) if os.path.exists(destination_path) else 0
+                        global_stats.add_download_stat(
+                            filename=filename,
+                            url=url,
+                            size_bytes=file_size,
+                            start_time=start_time,
+                            end_time=time.time(),
+                            success=(error is None),
+                            error=str(error) if error else None
+                        )
+                        
+        except Exception as e:
+            consecutive_failures += 1
+            total_failures += 1
+            logger.error(f"❌ Erro inesperado no download de {filename}: {e}")
+            progress_tracker.complete_file("downloads", filename, False, "downloader")
+            failed_downloads.append((filename, e))
+            
+            # Atualizar lista de arquivos pendentes (marcar como falha)
+            if pending_files_list:
+                pending_files_list.complete_file(filename, success=False)
+                if live_display:
+                    layout["pending"].update(pending_files_list.create_pending_panel())
+            
+            # Marcar task como completa com erro
+            progress.update(task_id, description=f"[red]{filename} (ERRO)", completed=100)
+
+    try:
+        # Usar o objeto Progress do rich dentro de um contexto with
+        context_manager = live_display if live_display else progress
+        with context_manager:
+            # Criar tasks de download
+            download_tasks = [
+                asyncio.create_task(download_only(url, force_download))
+                for url in sorted_urls
+            ]
+            
+            print(f"\n🔄 Executando {len(download_tasks)} downloads...")
+            
+            # Aguardar todos os downloads terminarem
+            await asyncio.gather(*download_tasks, return_exceptions=True)
+            print("📥 Todos os downloads finalizados")
+            logger.info("📥 Todos os downloads finalizados")
+        
+        # Verificar se devemos continuar
+        if consecutive_failures >= max_consecutive_failures:
+            logger.error(f"🛑 Downloads interrompidos devido a {consecutive_failures} falhas consecutivas")
+            print(f"🛑 Downloads interrompidos por falhas críticas")
+        elif total_failures / max(1, len(sorted_urls)) > max_failure_rate:
+            logger.error(f"🛑 Downloads interrompidos devido a alta taxa de falhas ({total_failures}/{len(sorted_urls)})")
+            print(f"🛑 Downloads interrompidos por alta taxa de falhas")
+        
+        # Fase de recuperação automática se houver falhas
+        if failed_downloads and len(failed_downloads) <= 10:
+            logger.info(f"🔄 Iniciando fase de recuperação automática para {len(failed_downloads)} falhas...")
+            print(f"\n🔄 === FASE DE RECUPERAÇÃO AUTOMÁTICA ===")
+            
+            try:
+                # Tentar recuperar downloads que falharam
+                recovered_files, remaining_failures = await _attempt_recovery_downloads(
+                    failed_downloads, 
+                    sorted_urls,
+                    path_zip, 
+                    max_concurrent_downloads,
+                    force_download=True
+                )
+                
+                if recovered_files:
+                    # Adicionar arquivos recuperados à lista
+                    downloaded_files.extend(recovered_files)
+                    
+                    # Atualizar listas de falhas
+                    failed_downloads = remaining_failures
+                    
+                    print(f"✅ Recuperação concluída: {len(recovered_files)} arquivos recuperados")
+                    logger.info(f"Recuperação automática concluída: {len(recovered_files)} arquivos recuperados")
+                else:
+                    print(f"❌ Nenhum arquivo foi recuperado na fase de recuperação")
+                    logger.warning("Nenhum arquivo foi recuperado na fase de recuperação automática")
+                    
+            except Exception as e:
+                logger.error(f"Erro durante fase de recuperação automática: {e}")
+                print(f"❌ Erro na recuperação automática: {e}")
+        elif failed_downloads and len(failed_downloads) > 10:
+            logger.warning(f"Muitas falhas ({len(failed_downloads)}) - pulando recuperação automática")
+            print(f"⚠️ Muitas falhas ({len(failed_downloads)}) - recuperação automática desabilitada")
+        
+    except Exception as e:
+        logger.error(f"Erro no pipeline de downloads: {e}")
+        print(f"💥 Erro no pipeline de downloads: {e}")
+    
+    finally:
+        # Calcular estatísticas finais
+        end_time = time.time()
+        total_time = end_time - start_time
+        
+        # Relatório final
+        print(f"\n📊 === RELATÓRIO FINAL DE DOWNLOADS ===")
+        logger.info("📊 === RELATÓRIO FINAL DE DOWNLOADS ===")
+        print(f"⏱️  Tempo total: {format_elapsed_time(total_time)}")
+        logger.info(f"⏱️  Tempo total: {format_elapsed_time(total_time)}")
+        print(f"📥 Downloads: {len(downloaded_files)} sucessos, {len(failed_downloads)} falhas")
+        logger.info(f"📥 Downloads: {len(downloaded_files)} sucessos, {len(failed_downloads)} falhas")
+        
+        if len(downloaded_files) > 0:
+            success_rate = (len(downloaded_files) / len(sorted_urls)) * 100
+            print(f"📊 Taxa de sucesso: {success_rate:.1f}%")
+            logger.info(f"📊 Taxa de sucesso: {success_rate:.1f}%")
+            
+            # Calcular velocidade média
+            total_size = sum(os.path.getsize(os.path.join(path_zip, os.path.basename(f))) 
+                           for f in downloaded_files if os.path.exists(os.path.join(path_zip, os.path.basename(f))))
+            if total_time > 0:
+                avg_speed = (total_size / (1024 * 1024)) / total_time
+                print(f"⚡ Velocidade média: {avg_speed:.1f} MB/s")
+                logger.info(f"⚡ Velocidade média: {avg_speed:.1f} MB/s")
+        
+        # Listar falhas se existirem
+        if failed_downloads:
+            print(f"\n❌ FALHAS ({len(failed_downloads)}):")
+            for filename, error in failed_downloads[:5]:  # Mostrar apenas as primeiras 5
+                print(f"   • {filename}: {str(error)[:100]}...")
+            if len(failed_downloads) > 5:
+                print(f"   ... e mais {len(failed_downloads) - 5} falhas")
+        
+        print("=" * 50)
+        logger.info("=" * 50)
+    
+    return downloaded_files, failed_downloads
 

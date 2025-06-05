@@ -76,6 +76,38 @@ Exemplos de uso:
 25. Processamento conservador de espaço - apenas estabelecimentos com deleção de ZIPs:
     python main.py --tipos estabelecimentos --delete-zips-after-extract --output-subfolder estabelecimentos_sem_zips
 
+EXEMPLOS COM CONTROLE DE INTERFACE VISUAL:
+
+26. Download em modo silencioso (sem barras de progresso nem lista de pendentes):
+    python main.py --quiet
+
+27. Download com interface completa (barras de progresso + lista de pendentes):
+    python main.py --verbose-ui
+
+28. Download ocultando apenas as barras de progresso:
+    python main.py --hide-progress
+
+29. Download mostrando apenas as barras de progresso (oculta lista de pendentes):
+    python main.py --show-progress --hide-pending
+
+30. Processamento em modo verboso com todas as informações visuais:
+    python main.py --step process --source-zip-folder ../dados/2023-05 --output-subfolder teste --verbose-ui
+
+31. Download de todas as pastas em modo silencioso para logs limpos:
+    python main.py --all-folders --quiet
+
+32. Processamento mostrando lista de arquivos pendentes mas sem barras de progresso:
+    python main.py --tipos empresas --show-pending --hide-progress
+
+33. Download forçado com interface mínima (apenas lista de pendentes):
+    python main.py --force-download --hide-progress --show-pending
+
+34. Processamento de múltiplas pastas em modo silencioso:
+    python main.py --step process --process-all-folders --output-subfolder batch_silent --quiet
+
+35. Download de pasta específica com barras de progresso ativadas:
+    python main.py --remote-folder 2024-01 --show-progress
+
 NOTA: O download sempre salvará os arquivos em uma subpasta com o nome da pasta remota.
       Exemplo: se --remote-folder=2023-05, os arquivos serão salvos em PATH_ZIP/2023-05/.
       Ao usar --source-zip-folder, aponte diretamente para o diretório que contém os arquivos ZIP.
@@ -86,6 +118,16 @@ NOVO COMPORTAMENTO:
       - --process-all-folders agora suporta --from-folder para processamento sequencial local
       - --delete-zips-after-extract deleta arquivos ZIP após extração bem-sucedida (economiza espaço)
       - A deleção só ocorre após verificação de que a extração foi realizada com sucesso
+
+CONTROLE DE INTERFACE VISUAL:
+      - --quiet (-q): Modo silencioso - desativa barras de progresso e lista de pendentes
+      - --verbose-ui (-v): Modo verboso - ativa barras de progresso e lista de pendentes
+      - --show-progress (-pb): Força exibição de barras de progresso
+      - --hide-progress (-hp): Força ocultação de barras de progresso
+      - --show-pending (-sp): Força exibição da lista de arquivos pendentes
+      - --hide-pending (-hf): Força ocultação da lista de arquivos pendentes
+      - Argumentos específicos têm prioridade sobre modos gerais (quiet/verbose-ui)
+      - Modo silencioso tem prioridade máxima sobre todos os outros argumentos
 """
 import argparse
 import asyncio
@@ -99,6 +141,7 @@ import sys
 import time
 import socket
 import requests
+from pathlib import Path
 
 import aiohttp
 from dotenv import load_dotenv
@@ -109,7 +152,8 @@ from src.async_downloader import (
     get_latest_month_zip_urls, 
     get_remote_folders, 
     get_latest_remote_folder,
-    _filter_urls_by_type
+    _filter_urls_by_type,
+    download_only_files
 )
 from src.config import config
 from src.database import create_duckdb_file
@@ -125,6 +169,17 @@ from src.utils.statistics import global_stats
 
 # Configurar logger global
 logger = logging.getLogger(__name__)
+
+# Imports do circuit breaker
+from src.utils.global_circuit_breaker import (
+    circuit_breaker,
+    FailureType,
+    CriticalityLevel,
+    should_continue_processing,
+    report_critical_failure,
+    report_fatal_failure,
+    register_stop_callback
+)
 
 def check_internet_connection() -> bool:
     """
@@ -296,7 +351,7 @@ def print_error(text: str):
     logger.error(f"✗ {text}")
 
 
-async def run_download_process(tipos_desejados: list[str] | None = None, remote_folder: str | None = None, all_folders: bool = False, from_folder: str | None = None):
+async def run_download_process(tipos_desejados: list[str] | None = None, remote_folder: str | None = None, all_folders: bool = False, from_folder: str | None = None, quiet: bool = False, verbose_ui: bool = False, show_progress: bool = False, hide_progress: bool = False, show_pending: bool = False, hide_pending: bool = False):
     """Executa todo o processo de download de forma assíncrona.
     
     Args:
@@ -304,16 +359,19 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
         remote_folder: Nome da pasta remota específica para baixar (ex: '2024-01')
         all_folders: Se True, baixa de todas as pastas remotas disponíveis
         from_folder: Se especificado com all_folders, baixa da pasta especificada até a mais atual
+        quiet: Modo silencioso (desativa interface visual)
+        verbose_ui: Modo verboso (ativa interface visual completa)
+        show_progress: Força exibição de barras de progresso
+        hide_progress: Força ocultação de barras de progresso
+        show_pending: Força exibição da lista de arquivos pendentes
+        hide_pending: Força ocultação da lista de arquivos pendentes
     """
     try:
         # Importar e executar teste de rede adaptativo
         from src.utils.network import adaptive_network_test
         try:
             network_results = await adaptive_network_test()
-            if network_results and network_results.get("connected"):
-                logger.info(f"✅ Teste de rede concluído: {network_results['quality']['connection_quality']} "
-                           f"({network_results['speed']['download_speed_mbps']:.1f} Mbps)")
-            else:
+            if network_results and not network_results.get("connected"):
                 logger.warning("⚠️ Teste de rede indicou problemas de conectividade")
         except Exception as e:
             logger.warning(f"⚠️ Erro no teste de rede adaptativo: {e}. Continuando sem otimizações de rede.")
@@ -359,27 +417,27 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
         show_pending_files = config.pipeline.show_pending_files  # Valor padrão
         
         # Modo silencioso tem prioridade máxima
-        if args.quiet:
+        if quiet:
             show_progress_bar = False
             show_pending_files = False
             logger.info("🔇 Modo silencioso ativado: interface simplificada")
         
         # Modo verboso sobrescreve padrão, mas não o modo silencioso
-        elif args.verbose_ui:
+        elif verbose_ui:
             show_progress_bar = True
             show_pending_files = True
             logger.info("📊 Modo verboso ativado: interface completa")
         
         # Argumentos específicos têm prioridade sobre modos
         else:
-            if args.show_progress:
+            if show_progress:
                 show_progress_bar = True
-            elif args.hide_progress:
+            elif hide_progress:
                 show_progress_bar = False
             
-            if args.show_pending:
+            if show_pending:
                 show_pending_files = True
-            elif args.hide_pending:
+            elif hide_pending:
                 show_pending_files = False
         
         # Sobrescrever configurações no objeto config para uso nos downloaders
@@ -473,128 +531,18 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                     os.makedirs(config.cache.cache_dir, exist_ok=True)
                     logger.info(f"Diretório de cache criado: {config.cache.cache_dir}")
                 
-                # Baixar os arquivos deste diretório
+                # Usar a nova função apenas para download (sem processamento)
                 try:
-                    max_concurrent_downloads = config.n_workers
-                    
-                    # Aplicar configurações de rede se disponíveis
-                    if network_results and network_results.get("connected"):
-                        recommendations = network_results["recommendations"]
-                        max_concurrent_downloads = min(max_concurrent_downloads, recommendations["max_concurrent_downloads"])
-                        logger.info(f"🌐 Configurações ajustadas pela qualidade da rede: {max_concurrent_downloads} downloads simultâneos")
-                    
-                    # Log detalhado dos recursos do sistema e configurações do pipeline
-                    cpu_count = os.cpu_count() or 4
-                    memory_info = psutil.virtual_memory()
-                    memory_total_gb = memory_info.total / (1024**3)
-                    memory_available_gb = memory_info.available / (1024**3)
-                    memory_percent = memory_info.percent
-                    
-                    # Informações de disco
-                    try:
-                        # Usar o diretório atual ou root de forma multiplataforma
-                        if os.name == 'nt':  # Windows
-                            disk_path = os.path.splitdrive(os.getcwd())[0] + os.sep
-                        else:  # Unix/Linux
-                            disk_path = '/'
-                        
-                        disk_info = psutil.disk_usage(disk_path)
-                        disk_total_gb = disk_info.total / (1024**3)
-                        disk_free_gb = disk_info.free / (1024**3)
-                        disk_percent = (disk_info.used / disk_info.total) * 100
-                    except Exception as e:
-                        logger.warning(f"Erro ao obter informações de disco: {e}")
-                        disk_total_gb = disk_free_gb = disk_percent = 0
-                    
-                    logger.info("=" * 70)
-                    logger.info("🚀 INICIANDO PIPELINE PRINCIPAL DE CNPJ")
-                    logger.info("=" * 70)
-                    
-                    # Recursos do sistema
-                    logger.info(f"🖥️  RECURSOS DO SISTEMA:")
-                    logger.info(f"   • CPU: {cpu_count} núcleos disponíveis")
-                    logger.info(f"   • Memória: {memory_total_gb:.2f}GB total | {memory_available_gb:.2f}GB disponível ({100-memory_percent:.1f}%)")
-                    logger.info(f"   • Disco: {disk_total_gb:.2f}GB total | {disk_free_gb:.2f}GB livres ({100-disk_percent:.1f}%)")
-                    
-                    # Configurações do pipeline
-                    logger.info(f"⚙️  CONFIGURAÇÕES DO PIPELINE:")
-                    logger.info(f"   • Downloads simultâneos: {max_concurrent_downloads}")
-                    logger.info(f"   • Processamento automático: ativado (será calculado dinamicamente)")
-                    logger.info(f"   • Força download: {os.getenv('FORCE_DOWNLOAD', '').lower() == 'true'}")
-                    logger.info(f"   • Pasta remota: {remote_folder if remote_folder else 'mais recente'}")
-                    
-                    # Estimativas de capacidade
-                    min_process_workers = max(2, cpu_count // 2)
-                    if memory_total_gb >= 16:
-                        estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 3 // 4))
-                        system_category = "ALTO DESEMPENHO"
-                    elif memory_total_gb >= 8:
-                        estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 2 // 3))
-                        system_category = "DESEMPENHO MODERADO"
-                    else:
-                        estimated_process_workers = max(min_process_workers, cpu_count // 2)
-                        system_category = "CONSERVADOR"
-                    
-                    estimated_throughput = estimated_process_workers * 8  # Estimativa de arquivos por hora
-                    estimated_memory_per_worker = memory_available_gb / estimated_process_workers if estimated_process_workers > 0 else 0
-                    
-                    logger.info(f"📊 ESTIMATIVAS DE PERFORMANCE:")
-                    logger.info(f"   • Categoria do sistema: {system_category}")
-                    logger.info(f"   • Workers de processamento estimados: {estimated_process_workers}")
-                    logger.info(f"   • Throughput estimado: ~{estimated_throughput} arquivos/hora")
-                    logger.info(f"   • Memória por worker: ~{estimated_memory_per_worker:.1f}GB")
-                    logger.info(f"   • Eficiência de CPU estimada: {(estimated_process_workers/cpu_count)*100:.1f}%")
-                    
-                    # Alertas e recomendações
-                    logger.info(f"⚠️  ALERTAS E RECOMENDAÇÕES:")
-                    alerts_count = 0
-                    if memory_percent > 80:
-                        logger.warning(f"   • ATENÇÃO: Uso de memória alto ({memory_percent:.1f}%) - considere fechar outros programas")
-                        alerts_count += 1
-                    if disk_percent > 90:
-                        logger.warning(f"   • ATENÇÃO: Disco quase cheio ({disk_percent:.1f}%) - libere espaço antes de continuar")
-                        alerts_count += 1
-                    if cpu_count < 4:
-                        logger.warning(f"   • ATENÇÃO: Poucos núcleos de CPU ({cpu_count}) - performance pode ser limitada")
-                        alerts_count += 1
-                    if memory_total_gb < 4:
-                        logger.warning(f"   • ATENÇÃO: Pouca RAM ({memory_total_gb:.1f}GB) - considere aumentar memória virtual")
-                        alerts_count += 1
-                    
-                    if alerts_count == 0:
-                        logger.info(f"   • ✅ Sistema sem alertas críticos detectados")
-                    
-                    # Recomendações de otimização
-                    if memory_total_gb >= 16 and cpu_count >= 8:
-                        logger.info(f"   • ✅ Sistema otimizado para processamento intensivo de dados CNPJ")
-                    elif memory_total_gb >= 8 and cpu_count >= 4:
-                        logger.info(f"   • ✅ Sistema adequado para processamento de dados CNPJ")
-                    else:
-                        logger.info(f"   • ⚠️ Sistema básico - considere upgrade de hardware para melhor performance")
-                    
-                    logger.info("=" * 70)
-                    
-                    # Calcular max_concurrent_processing baseado no hardware se None
-                    optimal_processing_workers = max(2, cpu_count // 2)
-                    if memory_total_gb >= 16:
-                        optimal_processing_workers = min(cpu_count, max(optimal_processing_workers, cpu_count * 3 // 4))
-                    elif memory_total_gb >= 8:
-                        optimal_processing_workers = min(cpu_count, max(optimal_processing_workers, cpu_count * 2 // 3))
-                    
-                    # Usar a nova função otimizada com pipeline completo
-                    processed, failed = await download_multiple_files(
+                    downloaded, failed = await download_only_files(
                         zip_urls,
                         folder_download_path,  # path_zip
-                        PATH_UNZIP,           # path_unzip
-                        PATH_PARQUET,         # path_parquet
                         force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
-                        max_concurrent_downloads=max_concurrent_downloads,
-                        max_concurrent_processing=optimal_processing_workers,
+                        max_concurrent_downloads=config.n_workers,
                         show_progress_bar=config.pipeline.show_progress_bar,
                         show_pending_files=config.pipeline.show_pending_files
                     )
                     
-                    downloaded_files_count += len(processed)
+                    downloaded_files_count += len(downloaded)
                     failed_downloads_count += len(failed)
                     
                     if failed:
@@ -654,149 +602,28 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
                 os.makedirs(config.cache.cache_dir, exist_ok=True)
                 logger.info(f"Diretório de cache criado: {config.cache.cache_dir}")
 
-            # Baixar os arquivos
-            try:
-                max_concurrent_downloads = config.n_workers
-                
-                # Aplicar configurações de rede se disponíveis
-                if network_results and network_results.get("connected"):
-                    recommendations = network_results["recommendations"]
-                    max_concurrent_downloads = min(max_concurrent_downloads, recommendations["max_concurrent_downloads"])
-                    logger.info(f"🌐 Configurações ajustadas pela qualidade da rede: {max_concurrent_downloads} downloads simultâneos")
-                
-                # Log detalhado dos recursos do sistema e configurações do pipeline
-                cpu_count = os.cpu_count() or 4
-                memory_info = psutil.virtual_memory()
-                memory_total_gb = memory_info.total / (1024**3)
-                memory_available_gb = memory_info.available / (1024**3)
-                memory_percent = memory_info.percent
-                
-                # Informações de disco
-                try:
-                    # Usar o diretório atual ou root de forma multiplataforma
-                    if os.name == 'nt':  # Windows
-                        disk_path = os.path.splitdrive(os.getcwd())[0] + os.sep
-                    else:  # Unix/Linux
-                        disk_path = '/'
+            # Usar a nova função apenas para download (sem processamento)
+            downloaded, failed = await download_only_files(
+                zip_urls,
+                folder_download_path,  # path_zip
+                force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
+                max_concurrent_downloads=config.n_workers,
+                show_progress_bar=config.pipeline.show_progress_bar,
+                show_pending_files=config.pipeline.show_pending_files
+            )
+            
+            downloaded_files_count = len(downloaded)
+            failed_downloads_count = len(failed)
+            
+            if failed:
+                logger.warning(f"{len(failed)} downloads/processamentos falharam.")
+                all_successful = False
                     
-                    disk_info = psutil.disk_usage(disk_path)
-                    disk_total_gb = disk_info.total / (1024**3)
-                    disk_free_gb = disk_info.free / (1024**3)
-                    disk_percent = (disk_info.used / disk_info.total) * 100
-                except Exception as e:
-                    logger.warning(f"Erro ao obter informações de disco: {e}")
-                    disk_total_gb = disk_free_gb = disk_percent = 0
-                
-                logger.info("=" * 70)
-                logger.info("🚀 INICIANDO PIPELINE PRINCIPAL DE CNPJ")
-                logger.info("=" * 70)
-                
-                # Recursos do sistema
-                logger.info(f"🖥️  RECURSOS DO SISTEMA:")
-                logger.info(f"   • CPU: {cpu_count} núcleos disponíveis")
-                logger.info(f"   • Memória: {memory_total_gb:.2f}GB total | {memory_available_gb:.2f}GB disponível ({100-memory_percent:.1f}%)")
-                logger.info(f"   • Disco: {disk_total_gb:.2f}GB total | {disk_free_gb:.2f}GB livres ({100-disk_percent:.1f}%)")
-                
-                # Configurações do pipeline
-                logger.info(f"⚙️  CONFIGURAÇÕES DO PIPELINE:")
-                logger.info(f"   • Downloads simultâneos: {max_concurrent_downloads}")
-                logger.info(f"   • Processamento automático: ativado (será calculado dinamicamente)")
-                logger.info(f"   • Força download: {os.getenv('FORCE_DOWNLOAD', '').lower() == 'true'}")
-                logger.info(f"   • Pasta remota: {remote_folder if remote_folder else 'mais recente'}")
-                
-                # Estimativas de capacidade
-                min_process_workers = max(2, cpu_count // 2)
-                if memory_total_gb >= 16:
-                    estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 3 // 4))
-                    system_category = "ALTO DESEMPENHO"
-                elif memory_total_gb >= 8:
-                    estimated_process_workers = min(cpu_count, max(min_process_workers, cpu_count * 2 // 3))
-                    system_category = "DESEMPENHO MODERADO"
-                else:
-                    estimated_process_workers = max(min_process_workers, cpu_count // 2)
-                    system_category = "CONSERVADOR"
-                
-                estimated_throughput = estimated_process_workers * 8  # Estimativa de arquivos por hora
-                estimated_memory_per_worker = memory_available_gb / estimated_process_workers if estimated_process_workers > 0 else 0
-                
-                logger.info(f"📊 ESTIMATIVAS DE PERFORMANCE:")
-                logger.info(f"   • Categoria do sistema: {system_category}")
-                logger.info(f"   • Workers de processamento estimados: {estimated_process_workers}")
-                logger.info(f"   • Throughput estimado: ~{estimated_throughput} arquivos/hora")
-                logger.info(f"   • Memória por worker: ~{estimated_memory_per_worker:.1f}GB")
-                logger.info(f"   • Eficiência de CPU estimada: {(estimated_process_workers/cpu_count)*100:.1f}%")
-                
-                # Alertas e recomendações
-                logger.info(f"⚠️  ALERTAS E RECOMENDAÇÕES:")
-                alerts_count = 0
-                if memory_percent > 80:
-                    logger.warning(f"   • ATENÇÃO: Uso de memória alto ({memory_percent:.1f}%) - considere fechar outros programas")
-                    alerts_count += 1
-                if disk_percent > 90:
-                    logger.warning(f"   • ATENÇÃO: Disco quase cheio ({disk_percent:.1f}%) - libere espaço antes de continuar")
-                    alerts_count += 1
-                if cpu_count < 4:
-                    logger.warning(f"   • ATENÇÃO: Poucos núcleos de CPU ({cpu_count}) - performance pode ser limitada")
-                    alerts_count += 1
-                if memory_total_gb < 4:
-                    logger.warning(f"   • ATENÇÃO: Pouca RAM ({memory_total_gb:.1f}GB) - considere aumentar memória virtual")
-                    alerts_count += 1
-                
-                if alerts_count == 0:
-                    logger.info(f"   • ✅ Sistema sem alertas críticos detectados")
-                
-                # Recomendações de otimização
-                if memory_total_gb >= 16 and cpu_count >= 8:
-                    logger.info(f"   • ✅ Sistema otimizado para processamento intensivo de dados CNPJ")
-                elif memory_total_gb >= 8 and cpu_count >= 4:
-                    logger.info(f"   • ✅ Sistema adequado para processamento de dados CNPJ")
-                else:
-                    logger.info(f"   • ⚠️ Sistema básico - considere upgrade de hardware para melhor performance")
-                
-                logger.info("=" * 70)
-                
-                # Calcular max_concurrent_processing baseado no hardware se None
-                optimal_processing_workers = max(2, cpu_count // 2)
-                if memory_total_gb >= 16:
-                    optimal_processing_workers = min(cpu_count, max(optimal_processing_workers, cpu_count * 3 // 4))
-                elif memory_total_gb >= 8:
-                    optimal_processing_workers = min(cpu_count, max(optimal_processing_workers, cpu_count * 2 // 3))
-                
-                # Usar a nova função otimizada com pipeline completo
-                processed, failed = await download_multiple_files(
-                    zip_urls,
-                    folder_download_path,  # path_zip
-                    PATH_UNZIP,           # path_unzip
-                    PATH_PARQUET,         # path_parquet
-                    force_download=os.getenv('FORCE_DOWNLOAD', '').lower() == 'true',
-                    max_concurrent_downloads=max_concurrent_downloads,
-                    max_concurrent_processing=optimal_processing_workers,
-                    show_progress_bar=config.pipeline.show_progress_bar,
-                    show_pending_files=config.pipeline.show_pending_files
-                )
-                
-                downloaded_files_count = len(processed)
-                failed_downloads_count = len(failed)
-                
-                if failed:
-                    logger.warning(f"{len(failed)} downloads/processamentos falharam.")
-                    all_successful = False
-                    
-            except aiohttp.ClientError as e:
-                logger.error(f"Erro de conexão durante downloads: {e}")
-                return False, ""
-            except asyncio.TimeoutError as e:
-                logger.error(f"Timeout durante downloads: {e}")
-                return False, ""
-            except Exception as e:
-                logger.error(f"Erro inesperado durante downloads: {e}")
-                return False, ""
-
             logger.info("Processo de download concluído.")
 
             if failed:
                 logger.error(f"{len(failed)} downloads falharam. Verifique os logs acima.")
-                if not processed:  # Se nenhum arquivo foi baixado com sucesso
+                if not downloaded:  # Se nenhum arquivo foi baixado com sucesso
                     return False, ""
                 logger.warning("Continuando processamento com os arquivos baixados com sucesso.")
 
@@ -1190,6 +1017,23 @@ def main():
     # Inicializar coleta de estatísticas
     global_stats.start_session()
     
+    # Inicializar variáveis de controle que podem ser usadas no retorno
+    overall_success = True
+    date_folders = []
+    latest_folder = ""
+    
+    # Registrar callbacks de parada de emergência para componentes assíncronos
+    async_downloads_stop_flag = {'stop': False}
+    
+    def emergency_stop_main():
+        """Callback de parada de emergência para o main."""
+        logger.critical("🚨 PARADA DE EMERGÊNCIA ACIONADA NO MAIN!")
+        async_downloads_stop_flag['stop'] = True
+        # Aqui podemos adicionar mais lógica de parada se necessário
+    
+    # Registrar callback no circuit breaker
+    register_stop_callback(emergency_stop_main)
+    
     parser = argparse.ArgumentParser(description='Realizar download e processamento dos dados de CNPJ')
     parser.add_argument('--tipos', '-t', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
                         default=[], help='Tipos de dados a serem processados. Se não especificado, processa todos (relevante para steps \'process\' e \'all\').')
@@ -1338,43 +1182,6 @@ def main():
     # Verificando pastas básicas
     check_basic_folders([PATH_ZIP, PATH_UNZIP, PATH_PARQUET])
     
-    # Processar argumentos de interface (barra de progresso e arquivos pendentes)
-    # Determinar configurações de interface baseadas nos argumentos
-    show_progress_bar = config.pipeline.show_progress_bar  # Valor padrão
-    show_pending_files = config.pipeline.show_pending_files  # Valor padrão
-    
-    # Modo silencioso tem prioridade máxima
-    if args.quiet:
-        show_progress_bar = False
-        show_pending_files = False
-        logger.info("🔇 Modo silencioso ativado: interface simplificada")
-    
-    # Modo verboso sobrescreve padrão, mas não o modo silencioso
-    elif args.verbose_ui:
-        show_progress_bar = True
-        show_pending_files = True
-        logger.info("📊 Modo verboso ativado: interface completa")
-    
-    # Argumentos específicos têm prioridade sobre modos
-    else:
-        if args.show_progress:
-            show_progress_bar = True
-        elif args.hide_progress:
-            show_progress_bar = False
-        
-        if args.show_pending:
-            show_pending_files = True
-        elif args.hide_pending:
-            show_pending_files = False
-    
-    # Sobrescrever configurações no objeto config para uso nos downloaders
-    config.pipeline.show_progress_bar = show_progress_bar
-    config.pipeline.show_pending_files = show_pending_files
-    
-    # Log das configurações finais de interface
-    logger.info(f"📊 Barra de progresso: {'✅ ativada' if show_progress_bar else '❌ desativada'}")
-    logger.info(f"📋 Lista de arquivos pendentes: {'✅ ativada' if show_pending_files else '❌ desativada'}")
-    
     # 🆕 Versão 3.0.0: Inicializar nova arquitetura de processadores
     print_section("Inicializando arquitetura refatorada (v3.0.0)...")
     if not initialize_processors():
@@ -1386,7 +1193,6 @@ def main():
     download_time = 0.0
     process_time = 0.0
     db_time = 0.0
-    latest_folder = ""
     
     # Determinar o modo de processamento
     if args.step == 'process':
@@ -1531,6 +1337,20 @@ def main():
     elif args.step == 'download':
         print_header("Modo de Download")
         
+        # Verificar se aplicação deve continuar antes de iniciar download
+        if not should_continue_processing():
+            logger.critical("🛑 Download cancelado pelo circuit breaker")
+            return False, ""
+        
+        # Verificar conectividade antes de iniciar
+        if not check_internet_connection():
+            report_critical_failure(
+                FailureType.CONNECTIVITY,
+                "Sem conexão com a internet para download",
+                "MAIN_DOWNLOAD"
+            )
+            return False, ""
+        
         # Configurar para forçar o download se necessário
         if args.force_download:
             # Definir variável de ambiente para o módulo async_downloader
@@ -1546,7 +1366,13 @@ def main():
             tipos_desejados=tipos_desejados,
             remote_folder=remote_folder_param,
             all_folders=args.all_folders,
-            from_folder=from_folder_param
+            from_folder=from_folder_param,
+            quiet=args.quiet,
+            verbose_ui=args.verbose_ui,
+            show_progress=args.show_progress,
+            hide_progress=args.hide_progress,
+            show_pending=args.show_pending,
+            hide_pending=args.hide_pending
         ))
         
         if not download_ok:
@@ -1624,7 +1450,13 @@ def main():
             tipos_desejados=tipos_desejados,
             remote_folder=remote_folder_param,
             all_folders=args.all_folders,
-            from_folder=from_folder_param
+            from_folder=from_folder_param,
+            quiet=args.quiet,
+            verbose_ui=args.verbose_ui,
+            show_progress=args.show_progress,
+            hide_progress=args.hide_progress,
+            show_pending=args.show_pending,
+            hide_pending=args.hide_pending
         ))
         
         download_time = time.time() - download_start_time
@@ -1764,7 +1596,7 @@ def main():
     except Exception as e:
         logger.error(f"Erro ao salvar estatísticas: {e}")
     
-    return overall_success, date_folders[-1] if date_folders else ""
+    return overall_success, latest_folder
 
 
 if __name__ == '__main__':

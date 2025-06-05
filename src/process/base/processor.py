@@ -18,6 +18,16 @@ import zipfile
 from ...Entity.base import BaseEntity
 from ...Entity import Empresa, Estabelecimento, Socio, Simples
 
+# Import do Circuit Breaker Global
+from ...utils.global_circuit_breaker import (
+    circuit_breaker, 
+    FailureType, 
+    CriticalityLevel,
+    should_continue_processing,
+    report_critical_failure,
+    report_fatal_failure
+)
+
 # Import condicional da config
 try:
     from ...config import config
@@ -68,8 +78,20 @@ class BaseProcessor(ABC):
         # Configurar logging
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         
+        # Registrar callback de parada no circuit breaker
+        circuit_breaker.register_stop_callback(self._emergency_stop)
+        
         # Validar opções
         self._validate_options()
+        
+        # Verificar recursos críticos do sistema
+        if not self._check_system_resources():
+            report_fatal_failure(
+                FailureType.SYSTEM_RESOURCE,
+                "Recursos do sistema insuficientes para inicialização",
+                self.get_processor_name()
+            )
+            return
         
         # Inicializar componentes unificados
         self.resource_monitor = ResourceMonitor()
@@ -115,7 +137,19 @@ class BaseProcessor(ABC):
         path_parquet: str, 
         **kwargs
     ) -> bool:
-        """Implementação específica do processamento de um ZIP."""
+        """
+        Implementação específica do processamento de um único arquivo ZIP.
+        
+        Args:
+            zip_file: Nome do arquivo ZIP
+            path_zip: Diretório com arquivos ZIP
+            path_unzip: Diretório para extração
+            path_parquet: Diretório de saída
+            **kwargs: Opções adicionais específicas do processador
+            
+        Returns:
+            bool: True se processamento foi bem-sucedido, False caso contrário
+        """
         pass
     
     # Métodos concretos compartilhados
@@ -228,13 +262,17 @@ class BaseProcessor(ABC):
             # TODO: Implementar transformações baseadas no nome
             
             if transformation == 'convert_dates':
-                # Exemplo de transformação de datas
+                # Exemplo de transformação de datas - verificar se já é datetime
                 date_columns = ['data_entrada_sociedade', 'data_situacao_cadastral', 'data_inicio_atividade']
                 for col in date_columns:
                     if col in df.columns:
-                        df = df.with_columns([
-                            pl.col(col).str.strptime(pl.Date, "%Y%m%d", strict=False).alias(col)
-                        ])
+                        # Verificar se a coluna já é do tipo datetime
+                        col_dtype = df[col].dtype
+                        if col_dtype == pl.Utf8:  # Só converter se for string
+                            df = df.with_columns([
+                                pl.col(col).str.strptime(pl.Date, "%Y%m%d", strict=False).alias(col)
+                            ])
+                        # Se já é datetime, manter como está
             
             elif transformation == 'validate_cpf_cnpj':
                 # Exemplo de limpeza de CPF/CNPJ
@@ -474,12 +512,13 @@ class BaseProcessor(ABC):
             bool: True se processado com sucesso, False caso contrário
         """
         try:
-            # Extrair o ZIP
-            with zipfile.ZipFile(os.path.join(path_zip, zip_file), 'r') as zip_ref:
-                zip_ref.extractall(path_unzip)
+            # Verificar se aplicação deve continuar
+            if not should_continue_processing():
+                self.logger.warning(f"🛑 Processamento interrompido pelo circuit breaker: {zip_file}")
+                return False
             
-            # Processar o conteúdo extraído
-            df = self.process_single_zip_impl(
+            # Chamar a implementação específica do processador
+            success = self.process_single_zip_impl(
                 zip_file,
                 path_zip,
                 path_unzip,
@@ -487,22 +526,141 @@ class BaseProcessor(ABC):
                 **kwargs
             )
             
-            if df is None:
+            if not success:
                 self.logger.error(f"Erro ao processar {zip_file}")
+                
+                # Reportar falha de processamento
+                circuit_breaker.report_failure(
+                    FailureType.PROCESSING_FAILURE,
+                    f"Falha no processamento do arquivo {zip_file}",
+                    self.get_processor_name(),
+                    CriticalityLevel.WARNING,
+                    {'zip_file': zip_file, 'paths': {'zip': path_zip, 'unzip': path_unzip, 'parquet': path_parquet}}
+                )
+                
                 return False
             
-            # Salvar o resultado no formato Parquet
-            if not self.create_parquet_output(df, path_parquet, zip_file):
-                self.logger.error(f"Erro ao salvar {zip_file}")
-                return False
-            
-            # Deletar o ZIP após processamento
+            # Deletar o ZIP após processamento se solicitado
             if self.delete_zips_after_extract:
-                delete_zip_after_extraction(os.path.join(path_zip, zip_file))
+                zip_path = os.path.join(path_zip, zip_file)
+                try:
+                    os.remove(zip_path)
+                    self.logger.info(f"ZIP deletado após processamento: {zip_file}")
+                except Exception as e:
+                    self.logger.warning(f"Erro ao deletar ZIP {zip_file}: {e}")
+                    # Falha na limpeza não é crítica
+                    circuit_breaker.report_failure(
+                        FailureType.SYSTEM_RESOURCE,
+                        f"Erro ao deletar ZIP {zip_file}: {e}",
+                        self.get_processor_name(),
+                        CriticalityLevel.WARNING,
+                        {'zip_file': zip_file, 'zip_path': zip_path}
+                    )
             
-            self.logger.info(f"Processado {zip_file}")
             return True
             
         except Exception as e:
             self.logger.error(f"Erro ao processar {zip_file}: {str(e)}")
+            
+            # Reportar erro inesperado como falha crítica
+            circuit_breaker.report_failure(
+                FailureType.PROCESSING_FAILURE,
+                f"Erro inesperado ao processar {zip_file}: {str(e)}",
+                self.get_processor_name(),
+                CriticalityLevel.MODERATE,
+                {'zip_file': zip_file, 'error': str(e), 'error_type': type(e).__name__}
+            )
+            
+            return False
+
+    def _emergency_stop(self) -> None:
+        """
+        Callback de parada de emergência acionado pelo circuit breaker.
+        """
+        try:
+            self.logger.critical("🚨 PARADA DE EMERGÊNCIA ACIONADA!")
+            
+            # Parar processamento da fila
+            if hasattr(self, 'queue_manager') and self.queue_manager:
+                self.queue_manager.stop_all_workers()
+                self.logger.info("⏹️  Workers de processamento interrompidos")
+            
+            # Sinalizar parada para outros componentes
+            self.logger.info("🔴 Processador em modo de parada de emergência")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Erro durante parada de emergência: {e}")
+    
+    def _check_system_resources(self) -> bool:
+        """
+        Verifica se há recursos suficientes do sistema para operação.
+        
+        Returns:
+            bool: True se recursos suficientes, False caso contrário
+        """
+        try:
+            import psutil
+            
+            # Verificar espaço em disco (pelo menos 1GB livre)
+            try:
+                disk_usage = psutil.disk_usage(self.path_parquet)
+                free_gb = disk_usage.free / (1024**3)
+                
+                if free_gb < 1.0:
+                    self.logger.error(f"💾 Espaço insuficiente em disco: {free_gb:.2f} GB livre")
+                    report_critical_failure(
+                        FailureType.DISK_SPACE,
+                        f"Apenas {free_gb:.2f} GB livres em {self.path_parquet}",
+                        self.get_processor_name(),
+                        {'free_gb': free_gb, 'path': self.path_parquet}
+                    )
+                    return False
+                    
+            except Exception as e:
+                self.logger.warning(f"⚠️ Não foi possível verificar espaço em disco: {e}")
+            
+            # Verificar memória (pelo menos 1GB disponível)
+            try:
+                memory = psutil.virtual_memory()
+                available_gb = memory.available / (1024**3)
+                
+                if available_gb < 1.0:
+                    self.logger.error(f"🧠 Memória insuficiente: {available_gb:.2f} GB disponível")
+                    report_critical_failure(
+                        FailureType.MEMORY,
+                        f"Apenas {available_gb:.2f} GB de memória disponível",
+                        self.get_processor_name(),
+                        {'available_gb': available_gb, 'total_gb': memory.total / (1024**3)}
+                    )
+                    return False
+                    
+            except Exception as e:
+                self.logger.warning(f"⚠️ Não foi possível verificar memória: {e}")
+            
+            # Verificar permissões de escrita
+            test_paths = [self.path_zip, self.path_unzip, self.path_parquet]
+            for path in test_paths:
+                try:
+                    os.makedirs(path, exist_ok=True)
+                    
+                    # Tentar criar arquivo de teste
+                    test_file = os.path.join(path, '.test_permissions')
+                    with open(test_file, 'w') as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    
+                except Exception as e:
+                    self.logger.error(f"📂 Erro de permissão em {path}: {e}")
+                    report_critical_failure(
+                        FailureType.PERMISSIONS,
+                        f"Sem permissão de escrita em {path}",
+                        self.get_processor_name(),
+                        {'path': path, 'error': str(e)}
+                    )
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Erro ao verificar recursos do sistema: {e}")
             return False 

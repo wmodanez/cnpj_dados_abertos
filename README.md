@@ -251,6 +251,38 @@ python main.py --step process --process-all-folders --output-subfolder economiza
 
 # 19. NOVO: Processamento conservador de espaço - apenas estabelecimentos com deleção de ZIPs:
 python main.py --tipos estabelecimentos --delete-zips-after-extract --output-subfolder estabelecimentos_sem_zips
+
+# EXEMPLOS COM CONTROLE DE INTERFACE VISUAL:
+
+# 20. Download em modo silencioso (sem barras de progresso nem lista de pendentes):
+python main.py --quiet
+
+# 21. Download com interface completa (barras de progresso + lista de pendentes):
+python main.py --verbose-ui
+
+# 22. Download ocultando apenas as barras de progresso:
+python main.py --hide-progress
+
+# 23. Download mostrando apenas as barras de progresso (oculta lista de pendentes):
+python main.py --show-progress --hide-pending
+
+# 24. Processamento em modo verboso com todas as informações visuais:
+python main.py --step process --source-zip-folder ../dados/2023-05 --output-subfolder teste --verbose-ui
+
+# 25. Download de todas as pastas em modo silencioso para logs limpos:
+python main.py --all-folders --quiet
+
+# 26. Processamento mostrando lista de arquivos pendentes mas sem barras de progresso:
+python main.py --tipos empresas --show-pending --hide-progress
+
+# 27. Download forçado com interface mínima (apenas lista de pendentes):
+python main.py --force-download --hide-progress --show-pending
+
+# 28. Processamento de múltiplas pastas em modo silencioso:
+python main.py --step process --process-all-folders --output-subfolder batch_silent --quiet
+
+# 29. Download de pasta específica com barras de progresso ativadas:
+python main.py --remote-folder 2024-01 --show-progress
 ```
 
 **Argumentos Principais:**
@@ -268,6 +300,20 @@ python main.py --tipos estabelecimentos --delete-zips-after-extract --output-sub
 *   `--delete-zips-after-extract`: 🆕 Deleta arquivos ZIP após extração bem-sucedida para economizar espaço.
 *   `--force-download`: Força download mesmo que arquivos já existam localmente ou no cache.
 *   `--log-level <NÍVEL>`: Ajusta o nível de log (padrão: `INFO`).
+
+**Argumentos de Controle de Interface Visual:**
+
+*   `--quiet (-q)`: 🆕 Modo silencioso - desativa barras de progresso e lista de pendentes.
+*   `--verbose-ui (-v)`: 🆕 Modo verboso - ativa barras de progresso e lista de pendentes.
+*   `--show-progress (-pb)`: 🆕 Força exibição de barras de progresso.
+*   `--hide-progress (-hp)`: 🆕 Força ocultação de barras de progresso.
+*   `--show-pending (-sp)`: 🆕 Força exibição da lista de arquivos pendentes.
+*   `--hide-pending (-hf)`: 🆕 Força ocultação da lista de arquivos pendentes.
+
+**Prioridade dos Argumentos de Interface:**
+- Modo silencioso (`--quiet`) tem prioridade máxima sobre todos os outros
+- Argumentos específicos (`--show-progress`, `--hide-progress`, etc.) têm prioridade sobre modos gerais
+- Modo verboso (`--verbose-ui`) sobrescreve configurações padrão
 
 ### Gerenciamento de Cache
 
@@ -546,6 +592,54 @@ O fluxo de execução é controlado pelo argumento `--step`, permitindo executar
 *   **Subsets Opcionais:** Criação de subsets por UF (`--criar-subset-uf`) ou para empresas privadas (`--criar-empresa-privada`).
 *   **Logging Detalhado:** Logs estruturados em arquivo e console formatado com Rich.
 *   **Resiliência:** Sistema robusto de recuperação de falhas e limpeza automática de recursos.
+*   **🛡️ Circuit Breaker Global:** 🆕 Sistema inteligente de interrupção coordenada que detecta falhas críticas e para toda a aplicação para evitar desperdício de recursos.
+*   **🎨 Controle de Interface Visual:** 🆕 Controle granular de barras de progresso e listas de arquivos pendentes com modos silencioso (`--quiet`), verboso (`--verbose-ui`) e argumentos específicos.
+
+## 🛡️ Sistema de Circuit Breaker Global
+
+🆕 **Novidade da v3.0**: O sistema agora inclui um sistema avançado de circuit breaker global para **interrupção coordenada** quando falhas críticas são detectadas, evitando desperdício de recursos em processamentos que não podem ser completados:
+
+### **Funcionalidades Principais**
+
+- **🚨 Detecção Inteligente de Falhas**: Monitora conectividade, espaço em disco, memória, permissões, corrupção de dados e falhas de processamento
+- **⚡ Interrupção Coordenada**: Para **toda a aplicação** quando detecta falhas que impedem a conclusão do processamento
+- **📊 Monitoramento Contínuo**: Verifica recursos do sistema durante toda a execução
+- **🔄 Janelas de Tempo**: Falhas são avaliadas em janelas de 10 minutos para detecção de padrões
+- **🎯 Níveis de Criticidade**: Warning, Moderate, Critical, Fatal - cada um com thresholds específicos
+
+### **Tipos de Falhas Monitoradas**
+
+| Tipo de Falha | Threshold | Ação | Descrição |
+|---------------|-----------|------|-----------|
+| **Espaço em Disco** | 1 falha | ⛔ Parada imediata | Espaço insuficiente para continuar |
+| **Permissões** | 1 falha | ⛔ Parada imediata | Sem permissões necessárias |
+| **Memória** | 2 falhas | ⛔ Parada imediata | Memória RAM insuficiente |
+| **Conectividade** | 3 falhas/10min | ⛔ Parada coordenada | Falhas de rede persistentes |
+| **Downloads** | 8 falhas/10min | ⛔ Parada coordenada | Taxa de falha alta em downloads |
+| **Processamento** | 10 falhas/10min | ⛔ Parada coordenada | Taxa de falha alta em processamento |
+| **Falhas Cascata** | 5 falhas/2+ tipos/2+ componentes | ⛔ Parada imediata | Múltiplas falhas sistêmicas |
+
+### **Benefícios**
+
+- **💰 Economia de Recursos**: Evita processamento desnecessário quando não é possível completar o workflow
+- **⏱️ Economia de Tempo**: Interrupção rápida em vez de falhas lentas
+- **🧠 Inteligência**: Aprende padrões de falha e age proativamente
+- **🔍 Transparência**: Logs detalhados sobre o motivo da interrupção
+- **🏗️ Arquitetura Preparada**: Sistema preparado para expansão com novos tipos de monitoramento
+
+### **Exemplo de Uso**
+
+```bash
+# O circuit breaker funciona automaticamente em todas as execuções
+python main.py --all-folders --from-folder 2023-01
+
+# Exemplo de log quando circuit breaker atua:
+# 🚨 CIRCUIT BREAKER ATIVADO: 5 falhas de conectividade em 10 minutos
+# 🛑 Interrompendo downloads para evitar desperdício de recursos
+# ⚡ Parada coordenada de todos os componentes
+```
+
+**Sistema Robusto**: O circuit breaker é thread-safe, funciona com processamento paralelo e garante que todos os componentes sejam notificados simultaneamente para uma parada coordenada e eficiente.
 
 ## 🔄 Atualizações Recentes
 
@@ -634,109 +728,40 @@ python main.py --step process --process-all-folders --output-subfolder economiza
 - **Bugs**: 85% menos bugs por sprint
 - **Satisfação**: +50% satisfação da equipe de desenvolvimento
 
-### 🔧 **Março de 2025 - Versão 2.0 - Otimizações e Melhorias de Performance**
+### 🛡️ **Dezembro de 2024 - Versão 3.1 - Sistema de Circuit Breaker Global e Controle de Interface**
 
-#### **1. Paralelização e Desempenho**
+#### **🚨 Sistema de Circuit Breaker Global**
+- ✅ **Detecção Inteligente de Falhas**: Monitora 8 tipos de falhas críticas (conectividade, disco, memória, etc.)
+- ✅ **Interrupção Coordenada**: Para toda a aplicação quando detecta falhas que impedem conclusão
+- ✅ **Thresholds Configuráveis**: Diferentes limites para cada tipo de falha (1-10 falhas/10min)
+- ✅ **Thread-Safe**: Funciona perfeitamente com processamento paralelo
+- ✅ **Economia de Recursos**: Evita desperdício de processamento em falhas irrecuperáveis
 
-##### **Downloads Assíncronos**
-- ✅ Implementar downloads paralelos com `asyncio` e `aiohttp`
-- ✅ Redução de 60-80% no tempo de download total
-- ✅ Funciona em conjunto com o cache de metadados
+#### **🎨 Controle Granular de Interface Visual**
+- ✅ **Modo Silencioso**: `--quiet` para execução sem interface visual (ideal para automação)
+- ✅ **Modo Verboso**: `--verbose-ui` para interface completa com progresso e pendências
+- ✅ **Controles Específicos**: `--show-progress`, `--hide-progress`, `--show-pending`, `--hide-pending`
+- ✅ **Priorização Inteligente**: Sistema de prioridades que respeita preferências do usuário
+- ✅ **Logs Limpos**: Interface otimizada para diferentes cenários de uso
 
-##### **Descompactação em Paralelo**
-- ✅ Usar `concurrent.futures` para extrair múltiplos arquivos simultaneamente
-- ✅ Redução significativa no tempo de extração
+#### **💡 Benefícios Práticos**
+- **🤖 Automação**: Modo silencioso ideal para execução em servidores e scripts automatizados
+- **👨‍💻 Desenvolvimento**: Modo verboso com informações detalhadas para debug e monitoramento
+- **⚡ Performance**: Circuit breaker evita processamentos fadados ao fracasso
+- **📊 Flexibilidade**: Controle fino sobre que informações são exibidas
 
-##### **Cache de Metadados**
-- ✅ Implementar cache de metadados (SQLite ou arquivo JSON)
-- ✅ Evitar reprocessamento desnecessário, processando apenas o que mudou
+#### **🔧 Exemplos de Uso Novos**
 
-#### **2. Otimizações de Processamento**
+```bash
+# Execução silenciosa para automação
+python main.py --all-folders --quiet
 
-##### **Substituição de Pandas**
-- ✅ Identificar todas as partes do código que usam Pandas diretamente
-- ✅ Converter operações Pandas para processamento otimizado
-- ✅ Garantir que toda a pipeline de dados aproveite o processamento paralelo
+# Debug com interface completa
+python main.py --tipos empresas --verbose-ui
 
-##### **Refatoração de Código para Processamento Lazy**
-- ✅ Implementar padrões de processamento lazy/tardio
-- ✅ Evitar materialização desnecessária de DataFrames
-- ✅ Otimizar cadeia de transformações
-
-#### **3. Otimizações de Performance**
-
-##### **Configuração Otimizada**
-- ✅ Melhorar a configuração e utilização do processamento
-- ✅ Implementar particionamento otimizado
-- ✅ Utilizar funcionalidades avançadas para processamento inicial
-
-## ⚡ Otimizações de Processamento
-
-Este projeto foi otimizado para lidar com grandes volumes de dados de maneira eficiente. 
-As seguintes otimizações foram implementadas:
-
-### Processamento sequencial de arquivos ZIP
-
-Em vez de descompactar todos os arquivos de uma vez (o que poderia consumir muito espaço em disco), 
-o processamento agora é feito sequencialmente:
-
-1. Cada arquivo ZIP é descompactado individualmente
-2. Os arquivos CSV resultantes são processados em paralelo
-3. Os arquivos temporários são excluídos imediatamente
-4. Só então o próximo arquivo ZIP é processado
-
-Essa abordagem tem as seguintes vantagens:
-- Reduz significativamente o uso de espaço em disco
-- Previne vazamentos de memória durante o processamento
-- Mantém o diretório de trabalho limpo
-- Permite processamento de conjuntos de dados maiores sem esgotar o armazenamento
-
-### Sistema de Cache para Downloads
-
-- Evita baixar novamente arquivos já processados recentemente
-- Configurável via parâmetros de tempo de expiração
-- Fornece comandos para gerenciar o cache (visualizar informações e limpar)
-
-### Paralelização do Processamento de CSV
-
-- Os arquivos CSV dentro de cada ZIP são processados em paralelo
-- Utiliza ThreadPoolExecutor e processamento otimizado para eficiência
-- Número de workers configurável dinamicamente
-
-### Tratamento Específico de Exceções
-
-- Implementado tratamento específico para diferentes tipos de exceções
-- Mensagens de erro detalhadas para facilitar a depuração
-- Melhor robustez e recuperação de falhas
-
-### Verificações de Segurança
-
-- Verificação de espaço em disco antes de iniciar o processamento
-- Verificação de espaço antes de descompactar cada arquivo ZIP
-- Verificação de conexão com a internet antes de iniciar downloads
-- Estimativa do tamanho de arquivos após descompactação
-
-### Limpeza de arquivos temporários
-
-Todos os arquivos temporários descompactados são excluídos após o processamento, mesmo em caso de erro,
-garantindo que não fiquem arquivos residuais no sistema.
-
-### Economia de Espaço em Disco
-
-🆕 **Nova funcionalidade para otimização de armazenamento:**
-
-- **Deleção Automática de ZIPs**: Com `--delete-zips-after-extract`, os arquivos ZIP são automaticamente deletados após extração e processamento bem-sucedido
-- **Verificação de Integridade**: Antes da deleção, o sistema verifica se a extração foi realizada corretamente
-- **Log de Economia**: Registra quanto espaço foi economizado com cada arquivo deletado
-- **Segurança**: Falha graciosamente se não conseguir deletar, sem interromper o processamento
-- **Compatibilidade Total**: Funciona com todos os modos (`download`, `process`, `database`, `all`) e mantém o processamento paralelo
-- **Processamento Híbrido**: Combina economia de espaço com máxima performance através de workers paralelos
-
-**Uso recomendado:** Ideal para sistemas com limitações de armazenamento ou processamento de grandes volumes de dados onde o espaço em disco é uma restrição.
-
-**Exemplo:** Um arquivo ZIP de 500MB, após processamento paralelo por múltiplos workers, pode ser automaticamente removido, economizando espaço para os próximos processamentos.
-
-**Arquitetura:** O sistema processa cada ZIP com múltiplos workers paralelos, verifica a integridade, e só então remove o arquivo original, mantendo máxima performance e segurança.
+# Controle específico de elementos
+python main.py --show-progress --hide-pending
+```
 
 ## 🛠️ Processamento e Regras de Negócio
 
@@ -788,3 +813,31 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 
 ---
 *Desenvolvido com ❤️ e Python 3.9+! Otimizado com arquitetura híbrida para máxima performance e economia de recursos. Funciona perfeitamente em Windows, Linux e macOS! 🌐*
+
+## ⚡ Otimizações de Processamento
+
+Este projeto foi otimizado para lidar com grandes volumes de dados de maneira eficiente:
+
+### **Processamento Híbrido Inteligente**
+- **Sequencial por ZIP**: Cada arquivo ZIP é processado individualmente para economizar espaço em disco
+- **Paralelo por CSV**: Arquivos CSV dentro de cada ZIP são processados em paralelo para máxima performance
+- **Limpeza Automática**: Arquivos temporários são removidos imediatamente após processamento
+
+### **Sistema de Cache Avançado**
+- Cache de metadados para evitar reprocessamento desnecessário
+- Configurável via parâmetros de tempo de expiração
+- Comandos integrados para gerenciamento (`cache-info`, `clear-cache`)
+
+### **Verificações de Segurança Proativas**
+- Verificação de espaço em disco antes de iniciar processamento
+- Verificação de conexão com internet antes de downloads
+- Estimativa de tamanho de arquivos após descompactação
+- **Circuit breaker integrado** para detecção de falhas sistêmicas
+
+### **Economia de Espaço Inteligente**
+- **`--delete-zips-after-extract`**: Deleção automática após verificação de integridade
+- **Verificação robusta**: Confirma sucesso da extração antes de deletar
+- **Logs informativos**: Registra espaço economizado
+- **Compatibilidade total**: Funciona com processamento paralelo e todos os modos
+
+## 🛠️ Processamento e Regras de Negócio
