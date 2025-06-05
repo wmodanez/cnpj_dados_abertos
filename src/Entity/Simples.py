@@ -53,11 +53,11 @@ class Simples(BaseEntity):
         return {
             'cnpj_basico': pl.Utf8,
             'opcao_simples': pl.Utf8,
-            'data_opcao_simples': pl.Datetime,
-            'data_exclusao_simples': pl.Datetime,
+            'data_opcao_simples': pl.Date,
+            'data_exclusao_simples': pl.Date,
             'opcao_mei': pl.Utf8,
-            'data_opcao_mei': pl.Datetime,
-            'data_exclusao_mei': pl.Datetime
+            'data_opcao_mei': pl.Date,
+            'data_exclusao_mei': pl.Date
         }
     
     @classmethod

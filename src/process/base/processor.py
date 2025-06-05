@@ -293,7 +293,7 @@ class BaseProcessor(ABC):
                         truncate_ragged_lines=True
                     )
                     
-                    if not df.is_empty():
+                    if isinstance(df, pl.DataFrame) and not df.is_empty():
                         self.logger.debug(f"Arquivo {os.path.basename(data_path)} processado com separador '{sep}'")
                         return df
                         
@@ -340,6 +340,10 @@ class BaseProcessor(ABC):
             bool: True se sucesso, False caso contrário
         """
         try:
+            if not isinstance(df, pl.DataFrame):
+                self.logger.error("Objeto passado não é um DataFrame válido")
+                return False
+                
             if df.is_empty():
                 self.logger.warning("DataFrame vazio, não salvando arquivo")
                 return False

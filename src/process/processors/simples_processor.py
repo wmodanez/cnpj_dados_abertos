@@ -12,7 +12,7 @@ import zipfile
 import polars as pl
 import tempfile
 import shutil
-from typing import List, Type
+from typing import List, Type, Optional, Union
 
 from ...Entity.Simples import Simples
 from ...Entity.base import BaseEntity
@@ -94,8 +94,9 @@ class SimplesProcessor(BaseProcessor):
                         .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
                         .map_elements(
                             lambda x: self._convert_date_simples(x),
-                            return_dtype=pl.Date
+                            return_dtype=pl.Utf8
                         )
+                        .str.strptime(pl.Date, format="%Y-%m-%d", strict=False)
                         .alias(col)
                     ])
             
@@ -131,7 +132,7 @@ class SimplesProcessor(BaseProcessor):
             self.logger.error(f"Erro ao aplicar transformações específicas: {str(e)}")
             return df
     
-    def _normalize_opcao_to_int(self, value: str) -> int:
+    def _normalize_opcao_to_int(self, value: str) -> Optional[int]:
         """
         Normaliza valores de opção para 0/1 (melhor performance que S/N).
         
@@ -157,7 +158,7 @@ class SimplesProcessor(BaseProcessor):
         # Valor não reconhecido -> None
         return None
     
-    def _normalize_opcao(self, value: str) -> str:
+    def _normalize_opcao(self, value: str) -> Optional[str]:
         """
         DEPRECATED: Use _normalize_opcao_to_int para melhor performance.
         Mantido apenas para compatibilidade.
@@ -169,15 +170,15 @@ class SimplesProcessor(BaseProcessor):
             return 'N'
         return None
     
-    def _convert_date_simples(self, date_str: str) -> pl.Date:
+    def _convert_date_simples(self, date_str: str) -> Optional[str]:
         """
-        Converte string de data no formato YYYYMMDD para Date.
+        Converte string de data no formato YYYYMMDD para formato ISO.
         
         Args:
             date_str: String da data
             
         Returns:
-            Data convertida ou None
+            Data convertida em formato ISO (YYYY-MM-DD) ou None
         """
         if not date_str or date_str in ['0', '00000000', '']:
             return None
@@ -201,7 +202,8 @@ class SimplesProcessor(BaseProcessor):
             if day < 1 or day > 31:
                 return None
             
-            return pl.Date(year, month, day)
+            # Retornar string no formato ISO para o Polars converter
+            return f"{year:04d}-{month:02d}-{day:02d}"
             
         except Exception:
             return None
@@ -337,7 +339,7 @@ class SimplesProcessor(BaseProcessor):
                         # Processar arquivo de dados
                         df = self.process_data_file(file_path)
                         
-                        if df is not None and not df.is_empty():
+                        if df is not None and isinstance(df, pl.DataFrame) and not df.is_empty():
                             # Aplicar transformações da entidade + específicas
                             df = self.apply_entity_transformations(df)
                             all_dataframes.append(df)

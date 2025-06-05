@@ -1,7 +1,7 @@
 """
 Exemplos de uso:
 
-1. Execução padrão (Baixa todos os tipos na pasta mais recente, processa todos com Polars, salva em subpasta com nome da data baixada):
+1. Execução padrão (Baixa todos os tipos na pasta mais recente e salva em subpasta com nome da data baixada):
    python main.py
 
 2. Baixa e processa apenas Empresas e Sócios (salva em subpasta com nome da data baixada):
@@ -10,73 +10,70 @@ Exemplos de uso:
 3. Baixa e processa todos os tipos (salva em subpasta com nome da data baixada):
    python main.py
 
-4. Baixa e processa apenas Estabelecimentos usando Polars (salva em subpasta com nome da data baixada):
-   python main.py --tipos estabelecimentos --engine polars
-
-5. Pular o download e processar todos os tipos da pasta ZIP '../dados-abertos-zip/2023-05', salvando Parquet na subpasta 'meu_processamento_manual' (dentro de PATH_PARQUET):
+4. Pular o download e processar todos os tipos da pasta ZIP '../dados-abertos-zip/2023-05', salvando Parquet na subpasta 'meu_processamento_manual' (dentro de PATH_PARQUET):
    python main.py --step process --source-zip-folder ../dados-abertos-zip/2023-05 --output-subfolder meu_processamento_manual
 
-6. Pular o download, processar apenas Simples e Sócios da pasta ZIP 'D:/MeusDownloads/CNPJ_ZIPs/2023-01', salvando Parquet na subpasta 'simples_socios' (dentro de PATH_PARQUET):
+5. Pular o download, processar apenas Simples e Sócios da pasta ZIP 'D:/MeusDownloads/CNPJ_ZIPs/2023-01', salvando Parquet na subpasta 'simples_socios' (dentro de PATH_PARQUET):
    python main.py --step process --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs/2023-01" --output-subfolder simples_socios --tipos simples socios
 
-7. Baixa e processa apenas Empresas (salva em subpasta com nome da data baixada):
+6. Baixa e processa apenas Empresas (salva em subpasta com nome da data baixada):
    python main.py --tipos empresas
 
-8. Baixa e processa apenas Empresas usando Polars, salvando na subpasta 'apenas_empresas_polars' (dentro de PATH_PARQUET):
-   python main.py --tipos empresas --engine polars --output-subfolder apenas_empresas_polars
+7. Baixa e processa apenas Empresas e salvando na subpasta 'apenas_empresas' (dentro de PATH_PARQUET):
+   python main.py --tipos empresas --output-subfolder apenas_empresa
 
-9. Como o exemplo 8, mas também cria o subconjunto 'empresa_privada' no diretório de saída:
-   python main.py --tipos empresas --engine polars --output-subfolder apenas_empresas_polars --criar-empresa-privada
+8. Como o exemplo 7, mas também cria o subconjunto 'empresa_privada' no diretório de saída:
+   python main.py --tipos empresas --output-subfolder apenas_empresas --criar-empresa-privada
 
-10. Pular download E processamento, criando apenas o arquivo DuckDB a partir dos Parquets existentes na subpasta 'processamento_anterior' (dentro de PATH_PARQUET):
+9. Pular download E processamento, criando apenas o arquivo DuckDB a partir dos Parquets existentes na subpasta 'processamento_anterior' (dentro de PATH_PARQUET):
     python main.py --step database --output-subfolder processamento_anterior
 
-11. Pular download, processar, e depois criar o DuckDB, usando a pasta de origem 'meus_zips/2023-05' e salvando na subpasta 'resultado':
+10. Pular download, processar, e depois criar o DuckDB, usando a pasta de origem 'meus_zips/2023-05' e salvando na subpasta 'resultado':
     python main.py --step process --source-zip-folder meus_zips/2023-05 --output-subfolder resultado
 
-12. Processar apenas estabelecimentos com Polars, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
-    python main.py --tipos estabelecimentos --engine polars --output-subfolder process_sp --criar-subset-uf SP
+11. Processar apenas estabelecimentos, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
+    python main.py --tipos estabelecimentos --output-subfolder process_sp --criar-subset-uf SP
 
-13. Baixar e processar dados de uma pasta remota específica (2023-05) em vez da pasta mais recente:
+12. Baixar e processar dados de uma pasta remota específica (2023-05) em vez da pasta mais recente:
     python main.py --remote-folder 2023-05
 
-14. Baixar arquivos de TODOS os diretórios remotos disponíveis (salvando em subpastas separadas):
+13. Baixar arquivos de TODOS os diretórios remotos disponíveis (salvando em subpastas separadas):
     python main.py --all-folders --step download
 
-15. Processar dados de uma pasta baixada anteriormente (aponta diretamente para a subpasta com arquivos):
+14. Processar dados de uma pasta baixada anteriormente (aponta diretamente para a subpasta com arquivos):
     python main.py --step process --source-zip-folder pasta_zips/2023-05 --output-subfolder processados_2023_05
 
-16. Baixar arquivos forçando download mesmo que já existam localmente ou no cache:
+15. Baixar arquivos forçando download mesmo que já existam localmente ou no cache:
     python main.py --remote-folder 2023-05 --force-download
 
-17. Processar todas as pastas no formato AAAA-MM encontradas dentro de PATH_ZIP (útil após download com --all-folders):
+16. Processar todas as pastas no formato AAAA-MM encontradas dentro de PATH_ZIP (útil após download com --all-folders):
     python main.py --step process --process-all-folders --output-subfolder processados_completos
 
-18. Baixar arquivos de todas as pastas remotas a partir de 2023-01 até a mais atual:
+17. Baixar arquivos de todas as pastas remotas a partir de 2023-01 até a mais atual:
     python main.py --all-folders --from-folder 2023-01 --step download
 
-19. Baixar e processar arquivos de todas as pastas remotas desde a mais antiga até a mais atual:
+18. Baixar e processar arquivos de todas as pastas remotas desde a mais antiga até a mais atual:
     python main.py --all-folders
 
-20. Baixar e processar arquivos a partir de uma pasta específica (2023-06) até a mais atual:
+19. Baixar e processar arquivos a partir de uma pasta específica (2023-06) até a mais atual:
     python main.py --all-folders --from-folder 2023-06
 
-21. Processar todas as pastas locais no formato AAAA-MM a partir de 2023-03:
+20. Processar todas as pastas locais no formato AAAA-MM a partir de 2023-03:
     python main.py --step process --process-all-folders --from-folder 2023-03 --output-subfolder processados_desde_2023_03
 
-22. Baixar sequencialmente da pasta mais antiga até a mais atual, processando cada uma:
+21. Baixar sequencialmente da pasta mais antiga até a mais atual, processando cada uma:
     python main.py --all-folders --from-folder 2022-01
 
-23. Processar dados deletando os ZIPs após extração para economizar espaço:
+22. Processar dados deletando os ZIPs após extração para economizar espaço:
     python main.py --tipos empresas --delete-zips-after-extract
 
-24. Baixar e processar dados de 2023-01 até atual, deletando ZIPs após processamento:
+23. Baixar e processar dados de 2023-01 até atual, deletando ZIPs após processamento:
     python main.py --all-folders --from-folder 2023-01 --delete-zips-after-extract
 
-25. Processar todas as pastas locais deletando ZIPs para economizar espaço:
+24. Processar todas as pastas locais deletando ZIPs para economizar espaço:
     python main.py --step process --process-all-folders --output-subfolder economizando_espaco --delete-zips-after-extract
 
-26. Processamento conservador de espaço - apenas estabelecimentos com deleção de ZIPs:
+25. Processamento conservador de espaço - apenas estabelecimentos com deleção de ZIPs:
     python main.py --tipos estabelecimentos --delete-zips-after-extract --output-subfolder estabelecimentos_sem_zips
 
 NOTA: O download sempre salvará os arquivos em uma subpasta com o nome da pasta remota.
@@ -916,16 +913,15 @@ def find_date_folders(base_path: str, from_folder: str | None = None) -> list[st
     return date_folders
 
 def process_folder(source_zip_path, unzip_path, output_parquet_path, 
-                 tipos_list, engine, criar_empresa_privada, criar_subset_uf,
+                 tipos_list, criar_empresa_privada, criar_subset_uf,
                  tipos_a_processar, delete_zips_after_extract: bool = False) -> dict:
-    """Processa os arquivos da pasta, usando o engine especificado.
+    """Processa os arquivos da pasta usando a nova arquitetura v3.0.0.
     
     Args:
         source_zip_path: Caminho para os ZIPs
         unzip_path: Caminho para extrair arquivos
         output_parquet_path: Caminho para salvar parquets
         tipos_list: Lista de tipos a serem processados
-        engine: Engine a ser usado (polars)
         criar_empresa_privada: Flag para criar subset empresas privadas
         criar_subset_uf: Flag para criar subset por UF
         tipos_a_processar: Lista de tipos a processar
@@ -935,7 +931,6 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
         dict: Dicionário com o status de cada tipo e tempo de processamento
     """
     logger = logging.getLogger(__name__)
-    logger.info(f"Engine selecionado: {engine}")
     logger.info(f"Caminho para salvar parquets: {output_parquet_path}")
     
     # Extrair a pasta remota do caminho dos ZIPs (para usar na estrutura de diretórios)
@@ -980,7 +975,6 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
                 file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 logger.info(f"  {i:2d}. {zip_file}: {file_size_mb:.1f}MB")
             
-            # Agora só usamos polars
             empresas_ok = process_with_new_architecture(
                 "empresa", source_zip_path, unzip_path, output_parquet_path, 
                 delete_zips_after_extract=delete_zips_after_extract,
@@ -1162,8 +1156,6 @@ def main():
     parser = argparse.ArgumentParser(description='Realizar download e processamento dos dados de CNPJ')
     parser.add_argument('--tipos', '-t', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
                         default=[], help='Tipos de dados a serem processados. Se não especificado, processa todos (relevante para steps \'process\' e \'all\').')
-    parser.add_argument('--engine', '-e', choices=['polars'], default='polars',
-                        help='Motor de processamento a ser utilizado (relevante para steps \'process\' e \'all\'). Padrão: polars')
     parser.add_argument('--source-zip-folder', '-z', type=str, default='',
                         help='Caminho para o diretório contendo os arquivos ZIP ou suas subpastas. No modo "all", usa automaticamente a subpasta com nome da pasta remota dentro de PATH_ZIP.')
     parser.add_argument('--output-subfolder', '-o', type=str, default='',
@@ -1352,7 +1344,7 @@ def main():
                 process_results = process_folder(
                     source_folder_path, PATH_UNZIP, output_parquet_path, 
                     args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios'],
-                    args.engine, args.criar_empresa_privada, args.criar_subset_uf or '',
+                    args.criar_empresa_privada, args.criar_subset_uf or '',
                     tipos_a_processar, args.delete_zips_after_extract
                 )
                 folder_time = time.time() - folder_start_time
@@ -1410,7 +1402,7 @@ def main():
             process_results = process_folder(
                 source_folder_path, PATH_UNZIP, output_parquet_path, 
                 args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios'],
-                args.engine, args.criar_empresa_privada, args.criar_subset_uf or '',
+                args.criar_empresa_privada, args.criar_subset_uf or '',
                 tipos_a_processar, args.delete_zips_after_extract
             )
             
@@ -1575,7 +1567,7 @@ def main():
         process_results = process_folder(
             source_zip_path, PATH_UNZIP, output_parquet_path,
             args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios'],
-            args.engine, args.criar_empresa_privada, args.criar_subset_uf or '',
+            args.criar_empresa_privada, args.criar_subset_uf or '',
             tipos_a_processar, args.delete_zips_after_extract
         )
         
