@@ -64,21 +64,33 @@ class EstabelecimentoProcessor(BaseProcessor):
         try:
             # Transformações específicas para estabelecimentos
             
-            # 1. Limpar e padronizar partes do CNPJ
+            # 1. Limpar e padronizar partes do CNPJ (apenas cnpj_basico agora)
+            if 'cnpj_basico' in df.columns:
+                df = df.with_columns([
+                    pl.col('cnpj_basico')
+                    .cast(pl.Utf8)  # Garantir que é string
+                    .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
+                    .str.pad_start(8, '0')     # Garante 8 dígitos, preenchendo com zeros
+                    .alias('cnpj_basico')
+                ])
+            
+            # 2. Criar CNPJ completo (apenas com cnpj_basico + ordem + dv das colunas originais)
+            # Nota: Mantemos a criação do CNPJ completo mas removemos as colunas intermediárias depois
             cnpj_parts = ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']
             lengths = [8, 4, 2]
             
-            for part, length in zip(cnpj_parts, lengths):
+            # Limpar as partes temporariamente para criar o CNPJ completo
+            for part, length in zip(cnpj_parts[1:], lengths[1:]):  # Apenas ordem e dv
                 if part in df.columns:
                     df = df.with_columns([
                         pl.col(part)
                         .cast(pl.Utf8)  # Garantir que é string
                         .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
-                        .str.pad_start(length, '0')     # Garante dígitos corretos, preenchendo com zeros
+                        .str.pad_start(length, '0')     # Garante dígitos corretos
                         .alias(part)
                     ])
             
-            # 2. Criar CNPJ completo
+            # Criar CNPJ completo se todas as partes existirem
             if all(part in df.columns for part in cnpj_parts):
                 df = df.with_columns([
                     (pl.col('cnpj_basico') + pl.col('cnpj_ordem') + pl.col('cnpj_dv'))
@@ -145,8 +157,8 @@ class EstabelecimentoProcessor(BaseProcessor):
                     .alias('nome_fantasia')
                 ])
             
-            # 6. Normalizar outras strings
-            string_columns = ['nome_cidade_exterior', 'pais']
+            # 6. Normalizar outras strings (removido 'pais')
+            string_columns = ['nome_cidade_exterior']
             for col in string_columns:
                 if col in df.columns:
                     df = df.with_columns([
@@ -156,16 +168,16 @@ class EstabelecimentoProcessor(BaseProcessor):
                         .alias(col)
                     ])
             
-            # 7. Validar códigos situação e motivo
-            if 'codigo_situacao_cadastral' in df.columns:
+            # 7. Validar códigos situação e motivo (nomes corretos)
+            if 'codigo_situacao' in df.columns:
                 df = df.with_columns([
                     pl.when(
-                        (pl.col('codigo_situacao_cadastral') < 1) |
-                        (pl.col('codigo_situacao_cadastral') > 99)
+                        (pl.col('codigo_situacao') < 1) |
+                        (pl.col('codigo_situacao') > 99)
                     )
                     .then(None)
-                    .otherwise(pl.col('codigo_situacao_cadastral'))
-                    .alias('codigo_situacao_cadastral')
+                    .otherwise(pl.col('codigo_situacao'))
+                    .alias('codigo_situacao')
                 ])
             
             # 8. Validar matriz/filial
@@ -179,6 +191,24 @@ class EstabelecimentoProcessor(BaseProcessor):
             
             # 9. Adicionar colunas calculadas
             df = self._add_calculated_columns(df)
+            
+            # 10. Remover colunas não desejadas após processamento
+            columns_to_remove = ['cnpj_ordem', 'cnpj_dv', 'pais']
+            existing_columns_before = df.columns
+            
+            for col in columns_to_remove:
+                if col in df.columns:
+                    df = df.drop(col)
+                    self.logger.info(f"Coluna '{col}' removida com sucesso")
+                else:
+                    self.logger.debug(f"Coluna '{col}' não encontrada para remoção")
+            
+            existing_columns_after = df.columns
+            removed_columns = set(existing_columns_before) - set(existing_columns_after)
+            if removed_columns:
+                self.logger.info(f"Colunas removidas: {list(removed_columns)}")
+            else:
+                self.logger.warning("Nenhuma coluna foi removida - verificar se as colunas existem")
             
             self.logger.debug(f"Transformações específicas de estabelecimentos aplicadas. Linhas: {df.height}")
             return df
@@ -199,18 +229,18 @@ class EstabelecimentoProcessor(BaseProcessor):
         """
         try:
             # Situação cadastral descritiva
-            if 'codigo_situacao_cadastral' in df.columns:
+            if 'codigo_situacao' in df.columns:
                 try:
                     df = df.with_columns([
-                        pl.when(pl.col('codigo_situacao_cadastral') == 1)
+                        pl.when(pl.col('codigo_situacao') == 1)
                         .then(pl.lit('Nula'))
-                        .when(pl.col('codigo_situacao_cadastral') == 2)
+                        .when(pl.col('codigo_situacao') == 2)
                         .then(pl.lit('Ativa'))
-                        .when(pl.col('codigo_situacao_cadastral') == 3)
+                        .when(pl.col('codigo_situacao') == 3)
                         .then(pl.lit('Suspensa'))
-                        .when(pl.col('codigo_situacao_cadastral') == 4)
+                        .when(pl.col('codigo_situacao') == 4)
                         .then(pl.lit('Inapta'))
-                        .when(pl.col('codigo_situacao_cadastral') == 8)
+                        .when(pl.col('codigo_situacao') == 8)
                         .then(pl.lit('Baixada'))
                         .otherwise(pl.lit('Outros'))
                         .alias('situacao_descricao')
@@ -251,17 +281,27 @@ class EstabelecimentoProcessor(BaseProcessor):
                 except Exception as e:
                     self.logger.error(f"Erro ao criar cep_formatado: {e}")
             
-            # Indicador de estabelecimento ativo
-            if 'codigo_situacao_cadastral' in df.columns:
+            # Tipo de situação cadastral baseado em regras específicas
+            if 'codigo_situacao' in df.columns and 'codigo_motivo' in df.columns:
                 try:
                     df = df.with_columns([
-                        pl.when(pl.col('codigo_situacao_cadastral') == 2)
-                        .then(pl.lit(True))
-                        .otherwise(pl.lit(False))
-                        .alias('is_ativo')
+                        pl.when(pl.col('codigo_situacao') == 2)
+                        .then(pl.lit(1))  # Ativa
+                        .when(
+                            (pl.col('codigo_situacao') == 8) & 
+                            (pl.col('codigo_motivo') == 1)
+                        )
+                        .then(pl.lit(2))  # Baixa Voluntária
+                        .when(
+                            (pl.col('codigo_situacao') == 8) & 
+                            (pl.col('codigo_motivo') != 1)
+                        )
+                        .then(pl.lit(3))  # Outras Baixas
+                        .otherwise(None)
+                        .alias('tipo_situacao_cadastral')
                     ])
                 except Exception as e:
-                    self.logger.error(f"Erro ao criar is_ativo: {e}")
+                    self.logger.error(f"Erro ao criar tipo_situacao_cadastral: {e}")
             
             return df
             
@@ -533,8 +573,10 @@ class EstabelecimentoProcessor(BaseProcessor):
                 'Limpeza e validação de CEP',
                 'Normalização de UF',
                 'Limpeza de nome fantasia',
-                'Validação de códigos',
-                'Normalização de strings'
+                'Validação de códigos situação e motivo',
+                'Normalização de strings',
+                'Remoção de campos desnecessários (pais, cnpj_ordem, cnpj_dv)',
+                'Criação de tipo_situacao_cadastral com regras específicas'
             ],
             'output_format': 'Parquet particionado',
             'calculated_columns': [
@@ -542,7 +584,7 @@ class EstabelecimentoProcessor(BaseProcessor):
                 'cnpj_formatado',
                 'cep_formatado',
                 'situacao_descricao',
-                'is_ativo'
+                'tipo_situacao_cadastral'
             ],
             'special_features': [
                 'Subset por UF (uf_subset)',
