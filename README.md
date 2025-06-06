@@ -1,8 +1,8 @@
 # Processador de Dados CNPJ 🏢
 
-> **🆕 Versão 3.1.3** - Sistema Completamente Estabilizado com Pipeline Otimizado
+> **🆕 Versão 3.1.4** - Sistema Completamente Estabilizado com Pipeline Otimizado
 > 
-> Esta é a versão 3.1.3 do sistema, que representa uma **refatoração completa** com arquitetura moderna, **pipeline otimizado de processamento imediato**, eliminação total de duplicação de código e performance superior. O sistema anterior (v2.x) foi completamente reestruturado utilizando padrões de design modernos e infraestrutura unificada.
+> Esta é a versão 3.1.4 do sistema, que representa uma **refatoração completa** com arquitetura moderna, **pipeline otimizado de processamento imediato**, eliminação total de duplicação de código e performance superior. O sistema anterior (v2.x) foi completamente reestruturado utilizando padrões de design modernos e infraestrutura unificada.
 
 Este projeto automatiza o download, processamento e armazenamento dos dados públicos de CNPJ disponibilizados pela Receita Federal. Ele foi desenvolvido para ser eficiente, resiliente, modular e fácil de usar.
 
@@ -25,7 +25,7 @@ O sistema detecta automaticamente o sistema operacional e usa as APIs nativas ma
 
 Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, garantindo experiência consistente independente do sistema operacional.
 
-## 🚀 O que há de Novo na Versão 3.1.3
+## 🚀 O que há de Novo na Versão 3.1.4
 
 **🔥 REVOLUÇÃO NO PIPELINE - Pipeline Otimizado de Processamento Imediato (junho 2025):**
 - ✅ **Pipeline Revolucionário**: Implementado sistema que processa cada arquivo **imediatamente** após verificação/download
@@ -50,7 +50,7 @@ Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, g
 - ✅ **Teste de Importação 100%**: Todos os processadores importam sem falhas
 - ✅ **Correções de Runtime**: Problemas de escopo de variáveis solucionados
 
-**🛠️ Melhorias Anteriores (v3.1.2):**
+**🛠️ Melhorias Anteriores (v3.1.4):**
 - ✅ **Sistema de Testes de Rede Otimizado**: Implementado cache para evitar testes duplicados de conectividade
 - ✅ **Processador de Estabelecimentos Aprimorado**: 
   - Campo `tipo_situacao_cadastral` com classificação inteligente implementado
@@ -238,7 +238,7 @@ python main.py
 # Equivalente a:
 python main.py --step all
 
-# 🔥 NOVO: Pipeline Otimizado - Processamento Imediato (v3.1.3+)
+# 🔥 NOVO: Pipeline Otimizado - Processamento Imediato (v3.1.4+)
 # O sistema agora processa cada arquivo IMEDIATAMENTE após verificação/download
 # Performance: 70% mais rápido que versões anteriores!
 
@@ -300,7 +300,7 @@ python main.py --step process --process-all-folders --output-subfolder economiza
 # 19. NOVO: Processamento conservador de espaço - apenas estabelecimentos com deleção de ZIPs:
 python main.py --tipos estabelecimentos --delete-zips-after-extract --output-subfolder estabelecimentos_sem_zips
 
-# 🔥 EXEMPLOS DESTACANDO O PIPELINE OTIMIZADO (v3.1.3+):
+# 🔥 EXEMPLOS DESTACANDO O PIPELINE OTIMIZADO (v3.1.4+):
 
 # 20. Pipeline otimizado para máxima velocidade - apenas sócios:
 python main.py --tipos socios --quiet
@@ -508,7 +508,7 @@ python tests/test_entities.py
 
 O script `main.py` orquestra um fluxo modular com **pipeline otimizado de processamento imediato** que pode ser executado em etapas:
 
-### 🔥 **Pipeline Otimizado (v3.1.3+) - Processamento Imediato**
+### 🔥 **Pipeline Otimizado (v3.1.4+) - Processamento Imediato**
 
 O sistema agora utiliza um **pipeline revolucionário** que elimina a latência entre download e processamento:
 
@@ -551,7 +551,7 @@ O sistema agora utiliza um **pipeline revolucionário** que elimina a latência 
 | Fluxo | Tempo Total | Descrição |
 |-------|-------------|-----------|
 | **Anterior** | ~12min 26s | Download ALL (6s) → Wait → Process ALL (9min 32s) → Database |
-| **Otimizado v3.1.3** | ~3min 43s | Download + Process IMMEDIATE → Database ⚡ **70% mais rápido** |
+| **Otimizado v3.1.4** | ~3min 43s | Download + Process IMMEDIATE → Database ⚡ **70% mais rápido** |
 
 ## 📋 Fluxo do Processo
 
@@ -745,7 +745,7 @@ O fluxo de execução é controlado pelo argumento `--step`, permitindo executar
 - ✅ **Priorização Inteligente**: Sistema de prioridades que respeita preferências do usuário
 - ✅ **Logs Limpos**: Interface otimizada para diferentes cenários de uso
 
-### 🔧 **junho de 2025 - Versão 3.1.3 - Pipeline Revolucionário + Estabilização Completa**
+### 🔧 **junho de 2025 - Versão 3.1.4 - Pipeline Revolucionário + Estabilização Completa**
 
 #### **🔥 Pipeline Otimizado de Processamento Imediato**
 - ✅ **Revolução na Performance**: Sistema processa arquivos **imediatamente** após verificação/download
@@ -770,7 +770,7 @@ O fluxo de execução é controlado pelo argumento `--step`, permitindo executar
 - ✅ **Sistema de Testes de Rede Otimizado**: Cache implementado para evitar testes duplicados
 - ✅ **Mapeamento de Estabelecimentos Corrigido**: Lógica de `tipo_situacao_cadastral` funcionando corretamente
 
-#### **💡 Benefícios Transformadores da v3.1.3**
+#### **💡 Benefícios Transformadores da v3.1.4**
 - **🚀 Performance Revolucionária**: Pipeline otimizado elimina 70% do tempo de processamento
 - **⚡ Processamento Imediato**: Não há mais espera entre etapas do processo
 - **🤖 Automação Segura**: Pode ser usado em scripts automatizados sem receio de crashes
@@ -832,7 +832,7 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 
 - **🌐 Compatibilidade**: O sistema funciona identicamente em Windows, Linux e macOS
 - **🔍 Detecção Automática**: Sistema operacional e recursos de hardware são detectados automaticamente
-- **✨ Sistema Estabilizado**: Versão 3.1.3 elimina completamente erros de runtime e sintaxe
+- **✨ Sistema Estabilizado**: Versão 3.1.4 elimina completamente erros de runtime e sintaxe
 - **🛡️ Confiabilidade Total**: Todos os módulos foram validados e testados para importação e execução
 - **🔥 Pipeline Revolucionário**: Sistema processa arquivos imediatamente após verificação/download, eliminando 70% do tempo de processamento
 - O processamento utiliza **múltiplos workers paralelos** para máxima performance
@@ -866,7 +866,7 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 
 Este projeto foi otimizado para lidar com grandes volumes de dados de maneira eficiente, com **pipeline revolucionário de processamento imediato**:
 
-### **🔥 Pipeline Otimizado de Processamento Imediato (v3.1.3)**
+### **🔥 Pipeline Otimizado de Processamento Imediato (v3.1.4)**
 - **Processamento Imediato**: Cada arquivo é processado **imediatamente** após verificação/download
 - **Eliminação de Latência**: Não espera todos os downloads terminarem para iniciar processamento
 - **Performance Transformada**: 70% mais rápido que o fluxo anterior
@@ -899,7 +899,7 @@ Este projeto foi otimizado para lidar com grandes volumes de dados de maneira ef
 
 ### **Benefícios do Pipeline Otimizado**
 
-| Aspecto | Versão Anterior | Versão 3.1.3 | Melhoria |
+| Aspecto | Versão Anterior | Versão 3.1.4 | Melhoria |
 |---------|----------------|---------------|----------|
 | **Fluxo** | Download ALL → Process ALL | Download + Process IMMEDIATE | 🔥 Revolucionário |
 | **Tempo Total** | ~12min 26s | ~3min 43s | ⚡ 70% mais rápido |
