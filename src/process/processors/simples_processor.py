@@ -58,49 +58,7 @@ class SimplesProcessor(BaseProcessor):
         try:
             # Transformações específicas para Simples Nacional
             
-            # 1. Limpar e padronizar CNPJ básico
-            if 'cnpj_basico' in df.columns:
-                df = df.with_columns([
-                    pl.col('cnpj_basico')
-                    .cast(pl.Utf8)  # Garantir que é string
-                    .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
-                    .str.pad_start(8, '0')          # Garante 8 dígitos, preenchendo com zeros
-                    .alias('cnpj_basico')
-                ])
-            
-            # 2. Converter opções para 0/1 (melhor performance que S/N)
-            opcao_columns = [
-                'opcao_simples', 'opcao_mei', 'ultimo_evento'
-            ]
-            
-            for col in opcao_columns:
-                if col in df.columns:
-                    df = df.with_columns([
-                        pl.col(col)
-                        .map_elements(self._normalize_opcao_to_int, return_dtype=pl.Int8)
-                        .alias(col)
-                    ])
-            
-            # 3. Converter datas do Simples Nacional (formato YYYYMMDD)
-            date_columns = [
-                'data_opcao_simples', 'data_exclusao_simples',
-                'data_opcao_mei', 'data_exclusao_mei'
-            ]
-            
-            for col in date_columns:
-                if col in df.columns:
-                    df = df.with_columns([
-                        pl.col(col)
-                        .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
-                        .map_elements(
-                            lambda x: self._convert_date_simples(x),
-                            return_dtype=pl.Utf8
-                        )
-                        .str.strptime(pl.Date, format="%Y-%m-%d", strict=False)
-                        .alias(col)
-                    ])
-            
-            # 4. Tratar valores nulos específicos do Simples Nacional
+            # 1. Tratar valores nulos PRIMEIRO (antes de qualquer conversão)
             null_replacements = {
                 'opcao_simples': ['', '0', 'NULL', 'null'],
                 'opcao_mei': ['', '0', 'NULL', 'null'],
@@ -112,12 +70,102 @@ class SimplesProcessor(BaseProcessor):
             
             for col, null_values in null_replacements.items():
                 if col in df.columns:
+                    col_dtype = df[col].dtype
+                    
+                    # Só aplicar se ainda for string
+                    if col_dtype == pl.Utf8:
+                        df = df.with_columns([
+                            pl.when(pl.col(col).is_in(null_values))
+                            .then(None)
+                            .otherwise(pl.col(col))
+                            .alias(col)
+                        ])
+                    # Para tipos numéricos, converter valores específicos para null
+                    elif col_dtype in [pl.Int64, pl.Int32, pl.Int8]:
+                        if col.startswith('data_'):
+                            # Para datas, 0 significa null
+                            df = df.with_columns([
+                                pl.when(pl.col(col) == 0)
+                                .then(None)
+                                .otherwise(pl.col(col))
+                                .alias(col)
+                            ])
+                        else:
+                            # Para opções, 0 é um valor válido, não converter para null
+                            pass
+            
+            # 2. Limpar e padronizar CNPJ básico
+            if 'cnpj_basico' in df.columns:
+                col_dtype = df['cnpj_basico'].dtype
+                if col_dtype == pl.Utf8:
                     df = df.with_columns([
-                        pl.when(pl.col(col).is_in(null_values))
-                        .then(None)
-                        .otherwise(pl.col(col))
-                        .alias(col)
+                        pl.col('cnpj_basico')
+                        .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
+                        .str.pad_start(8, '0')          # Garante 8 dígitos, preenchendo com zeros
+                        .alias('cnpj_basico')
                     ])
+            
+            # 3. Converter opções para 0/1 (melhor performance que S/N)
+            opcao_columns = [
+                'opcao_simples', 'opcao_mei', 'ultimo_evento'
+            ]
+            
+            for col in opcao_columns:
+                if col in df.columns:
+                    col_dtype = df[col].dtype
+                    # Só converter se ainda for string
+                    if col_dtype == pl.Utf8:
+                        df = df.with_columns([
+                            pl.col(col)
+                            .map_elements(self._normalize_opcao_to_int, return_dtype=pl.Int8)
+                            .alias(col)
+                        ])
+            
+            # 4. Converter datas do Simples Nacional (formato YYYYMMDD)
+            date_columns = [
+                'data_opcao_simples', 'data_exclusao_simples',
+                'data_opcao_mei', 'data_exclusao_mei'
+            ]
+            
+            for col in date_columns:
+                if col in df.columns:
+                    col_dtype = df[col].dtype
+                    
+                    # Só aplicar conversão se ainda não for data
+                    if col_dtype != pl.Date:
+                        # Usar uma abordagem mais direta para converter datas
+                        if col_dtype == pl.Utf8:
+                            # Para strings, primeiro limpar e validar
+                            df = df.with_columns([
+                                pl.col(col)
+                                .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
+                                .map_elements(
+                                    self._convert_date_simples_to_date,
+                                    return_dtype=pl.Date
+                                )
+                                .alias(col)
+                            ])
+                        # Se for numérico (Int64, Int32), converter diretamente
+                        elif col_dtype in [pl.Int64, pl.Int32]:
+                            df = df.with_columns([
+                                pl.col(col)
+                                .map_elements(
+                                    self._convert_date_simples_to_date,
+                                    return_dtype=pl.Date
+                                )
+                                .alias(col)
+                            ])
+                        # Para outros tipos, tentar conversão via string
+                        else:
+                            df = df.with_columns([
+                                pl.col(col)
+                                .cast(pl.Utf8, strict=False)
+                                .map_elements(
+                                    self._convert_date_simples_to_date,
+                                    return_dtype=pl.Date
+                                )
+                                .alias(col)
+                            ])
             
             # 5. Validar consistência de datas
             df = self._validate_date_consistency(df)
@@ -170,22 +218,28 @@ class SimplesProcessor(BaseProcessor):
             return 'N'
         return None
     
-    def _convert_date_simples(self, date_str: str) -> Optional[str]:
+    def _convert_date_simples(self, date_str) -> Optional[str]:
         """
         Converte string de data no formato YYYYMMDD para formato ISO.
         
         Args:
-            date_str: String da data
+            date_str: String da data ou valor numérico
             
         Returns:
             Data convertida em formato ISO (YYYY-MM-DD) ou None
         """
-        if not date_str or date_str in ['0', '00000000', '']:
+        if date_str is None:
+            return None
+            
+        # Converter para string se necessário
+        date_str = str(date_str).strip()
+        
+        if not date_str or date_str in ['0', '00000000', '', 'None', 'null', 'NULL']:
             return None
         
         try:
-            # Garantir que tem 8 dígitos
-            date_str = str(date_str).zfill(8)
+            # Garantir que tem 8 dígitos (completar com zeros à esquerda)
+            date_str = date_str.zfill(8)
             
             if len(date_str) != 8 or not date_str.isdigit():
                 return None
@@ -205,7 +259,53 @@ class SimplesProcessor(BaseProcessor):
             # Retornar string no formato ISO para o Polars converter
             return f"{year:04d}-{month:02d}-{day:02d}"
             
-        except Exception:
+        except Exception as e:
+            # Log do erro seria útil mas pode ser muito verboso
+            return None
+    
+    def _convert_date_simples_to_date(self, date_str):
+        """
+        Converte string/número de data no formato YYYYMMDD para objeto date do Python.
+        
+        Args:
+            date_str: String da data ou valor numérico
+            
+        Returns:
+            Objeto date do Python ou None
+        """
+        if date_str is None:
+            return None
+            
+        # Converter para string se necessário
+        date_str = str(date_str).strip()
+        
+        if not date_str or date_str in ['0', '00000000', '', 'None', 'null', 'NULL']:
+            return None
+        
+        try:
+            # Garantir que tem 8 dígitos (completar com zeros à esquerda)
+            date_str = date_str.zfill(8)
+            
+            if len(date_str) != 8 or not date_str.isdigit():
+                return None
+            
+            year = int(date_str[:4])
+            month = int(date_str[4:6])
+            day = int(date_str[6:8])
+            
+            # Validações básicas
+            if year < 2006 or year > 2030:  # Simples Nacional criado em 2006
+                return None
+            if month < 1 or month > 12:
+                return None
+            if day < 1 or day > 31:
+                return None
+            
+            # Retornar objeto date do Python
+            from datetime import date
+            return date(year, month, day)
+            
+        except Exception as e:
             return None
     
     def _validate_date_consistency(self, df: pl.DataFrame) -> pl.DataFrame:
@@ -429,7 +529,7 @@ class SimplesProcessor(BaseProcessor):
                 data_file_path,
                 separator=';',
                 has_header=False,
-                encoding='latin1',
+                encoding='utf8-lossy',
                 ignore_errors=True,
                 truncate_ragged_lines=True
             )

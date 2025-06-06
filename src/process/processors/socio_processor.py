@@ -273,7 +273,7 @@ class SocioProcessor(BaseProcessor):
                 data_file_path,
                 separator=';',
                 has_header=False,
-                encoding='latin1',
+                encoding='utf8-lossy',
                 ignore_errors=True,
                 truncate_ragged_lines=True
             )

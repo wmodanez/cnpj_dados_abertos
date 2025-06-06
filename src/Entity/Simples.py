@@ -64,7 +64,6 @@ class Simples(BaseEntity):
     def get_transformations(cls) -> List[str]:
         """Retorna lista de transformações aplicáveis."""
         return [
-            'convert_dates',
             'normalize_opcoes',
             'validate_cnpj_basico',
             'validate_date_consistency'

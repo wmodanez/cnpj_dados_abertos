@@ -23,15 +23,23 @@ def verify_csv_integrity(csv_path: str) -> bool:
     """
     try:
         # Tenta ler as primeiras linhas para verificar integridade
-        # Especifica encoding='latin1' e delimiter=';'
-        with open(csv_path, 'r', encoding='latin1') as f:
-            reader = csv.reader(f, delimiter=';', quoting=csv.QUOTE_MINIMAL)
-            for _ in range(5):
-                next(reader, None)
-        return True
-    except UnicodeDecodeError as e:
-        logger.error(f'Erro de codificação no arquivo {os.path.basename(csv_path)}: {str(e)}')
+        # Especifica encoding='utf-8' com fallback para 'latin1'
+        encodings_to_try = ['utf-8', 'utf-8-sig', 'latin1', 'cp1252']
+        
+        for encoding in encodings_to_try:
+            try:
+                with open(csv_path, 'r', encoding=encoding) as f:
+                    reader = csv.reader(f, delimiter=';', quoting=csv.QUOTE_MINIMAL)
+                    for _ in range(5):
+                        next(reader, None)
+                return True
+            except UnicodeDecodeError:
+                continue  # Tenta próximo encoding
+                
+        # Se todos os encodings falharam
+        logger.error(f'Nenhum encoding funciona para o arquivo {os.path.basename(csv_path)}')
         return False
+        
     except csv.Error as e:
         logger.error(f'Erro de formato CSV no arquivo {os.path.basename(csv_path)}: {str(e)}')
         return False
@@ -43,7 +51,7 @@ def process_csv_to_df(csv_path: str,
                      dtype: dict, 
                      column_names: List[str],
                      separator: str = ';',
-                     encoding: str = 'latin1',
+                     encoding: str = 'utf8-lossy',
                      na_filter: bool = True) -> pl.DataFrame:
     """
     Processa um arquivo CSV usando Polars.

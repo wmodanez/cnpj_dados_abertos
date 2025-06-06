@@ -36,7 +36,7 @@ except ImportError:
     class Config:
         class file:
             separator = ';'
-            encoding = 'latin1'
+            encoding = 'utf8-lossy'
     config = Config()
 
 # Imports da infraestrutura unificada (Fase 2)
@@ -241,11 +241,37 @@ class BaseProcessor(ABC):
             type_mapping = entity_class.get_column_types()
             
             conversions = []
-            for col_name, col_type in type_mapping.items():
+            for col_name, target_type in type_mapping.items():
                 if col_name in df.columns:
-                    conversions.append(
-                        pl.col(col_name).cast(col_type, strict=False).alias(col_name)
-                    )
+                    current_type = df[col_name].dtype
+                    
+                    # Só converter se o tipo atual for diferente do tipo alvo
+                    if current_type != target_type:
+                        # ESPECIAL: Para campos de data, não converter automaticamente se são numéricos
+                        # Deixar isso para as transformações específicas de cada processador
+                        if target_type == pl.Date and current_type in [pl.Int64, pl.Int32]:
+                            # Pular conversão automática de data, será feita no processador específico
+                            continue
+                        
+                        # Para conversões de Int64 -> Int32, fazer conversão direta
+                        elif current_type == pl.Int64 and target_type == pl.Int32:
+                            conversions.append(
+                                pl.col(col_name).cast(target_type, strict=False).alias(col_name)
+                            )
+                        # Para conversões de string para numérico, tentar limpeza se necessário
+                        elif current_type == pl.Utf8 and target_type in [pl.Int32, pl.Int64, pl.Float64]:
+                            conversions.append(
+                                pl.col(col_name)
+                                .str.strip_chars('"')  # Remove aspas duplas se houver
+                                .str.strip_chars()      # Remove espaços
+                                .cast(target_type, strict=False)
+                                .alias(col_name)
+                            )
+                        # Para outras conversões, fazer conversão simples
+                        else:
+                            conversions.append(
+                                pl.col(col_name).cast(target_type, strict=False).alias(col_name)
+                            )
             
             if conversions:
                 df = df.with_columns(conversions)
@@ -371,10 +397,9 @@ class BaseProcessor(ABC):
                         encoding=config.file.encoding,
                         has_header=False,
                         new_columns=column_names,
-                        infer_schema_length=0,
-                        dtypes={col: pl.Utf8 for col in column_names},
+                        infer_schema_length=1000,  # Permitir inferência de tipos
                         ignore_errors=True,
-                        quote_char=None,
+                        quote_char='"',  # Definir aspas duplas como caractere de citação
                         null_values=["", "NULL", "null", "00000000"],
                         missing_utf8_is_empty_string=True,
                         try_parse_dates=False,
