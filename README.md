@@ -1,8 +1,8 @@
 # Processador de Dados CNPJ 🏢
 
-> **🆕 Versão 3.0.0** - Sistema Completamente Refatorado
+> **🆕 Versão 3.1.2** - Sistema Completamente Refatorado com Melhorias Recentes
 > 
-> Esta é a versão 3.0.0 do sistema, que representa uma **refatoração completa** com arquitetura moderna, eliminação total de duplicação de código e performance superior. O sistema anterior (v2.x) foi completamente reestruturado utilizando padrões de design modernos e infraestrutura unificada.
+> Esta é a versão 3.1.2 do sistema, que representa uma **refatoração completa** com arquitetura moderna, eliminação total de duplicação de código e performance superior. O sistema anterior (v2.x) foi completamente reestruturado utilizando padrões de design modernos e infraestrutura unificada.
 
 Este projeto automatiza o download, processamento e armazenamento dos dados públicos de CNPJ disponibilizados pela Receita Federal. Ele foi desenvolvido para ser eficiente, resiliente, modular e fácil de usar.
 
@@ -25,9 +25,22 @@ O sistema detecta automaticamente o sistema operacional e usa as APIs nativas ma
 
 Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, garantindo experiência consistente independente do sistema operacional.
 
-## 🚀 O que há de Novo na Versão 3.0.0
+## 🚀 O que há de Novo na Versão 3.1.2
 
-**Sistema Completamente Refatorado:**
+**🔧 Correções e Melhorias Recentes:**
+- ✅ **Sistema de Testes de Rede Otimizado**: Implementado cache para evitar testes duplicados de conectividade
+- ✅ **Processador de Estabelecimentos Aprimorado**: 
+  - Removido campo `is_ativo` (substituído por lógica mais robusta)
+  - Campos desnecessários removidos: `pais`, `cnpj_ordem`, `cnpj_dv`
+  - Restaurados nomes originais: `codigo_situacao` e `codigo_motivo`
+  - **🆕 Campo `tipo_situacao_cadastral`** com classificação inteligente:
+    - **Valor 1 (Ativa)**: `codigo_situacao = 2`
+    - **Valor 2 (Baixa Voluntária)**: `codigo_situacao = 8` E `codigo_motivo = 1`
+    - **Valor 3 (Outras Baixas)**: `codigo_situacao = 8` E `codigo_motivo ≠ 1`
+- ✅ **Sistema de Limpeza Robusto**: Funcionalidade de limpeza com verificações de segurança aprimoradas
+- ✅ **Correções de Escopo**: Resolvidos problemas de inicialização de variáveis que causavam erros em runtime
+
+**Sistema Completamente Refatorado (v3.0+):**
 - ✅ **69.2% redução de código** (5.940 → 1.725 linhas)
 - ✅ **100% eliminação de duplicação** (4.200 linhas duplicadas removidas)
 - ✅ **Arquitetura unificada** com padrões Factory, Strategy e Template Method
@@ -38,10 +51,11 @@ Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, g
 - ✅ **Documentação profissional** completa (12 documentos)
 - ✅ **🌐 Compatibilidade multiplataforma total** - Windows, Linux, macOS
 
-**🆕 Funcionalidades Avançadas (v2.1):**
+**🆕 Funcionalidades Avançadas (v2.1+):**
 - ✅ **Download Cronológico**: Download ordenado de múltiplas pastas remotas com `--all-folders` e `--from-folder`
 - ✅ **Processamento Múltiplo**: Processamento inteligente de múltiplas pastas locais com `--process-all-folders`
 - ✅ **Economia de Espaço**: Deleção automática de ZIPs após extração com `--delete-zips-after-extract`
+- ✅ **Limpeza Pós-Database**: Remoção segura de arquivos após criação do banco com `--cleanup-after-db` e `--cleanup-all-after-db`
 - ✅ **Verificação de Integridade**: Sistema robusto de verificação antes de deletar arquivos
 - ✅ **Processamento Híbrido**: Paralelização inteligente onde aumenta performance, sequenciamento onde evita problemas
 
@@ -54,6 +68,7 @@ Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, g
 - 📊 **Mais organizado**: Processamento cronológico e estruturado
 - 🧵 **Mais inteligente**: Paralelização otimizada baseada em recursos do sistema
 - 🌐 **Mais universal**: Funciona identicamente em Windows, Linux e macOS
+- 🏗️ **Mais preciso**: Sistema de entidades com validação robusta e regras de negócio atualizadas
 
 ## Navegação
 
@@ -283,6 +298,26 @@ python main.py --step process --process-all-folders --output-subfolder batch_sil
 
 # 29. Download de pasta específica com barras de progresso ativadas:
 python main.py --remote-folder 2024-01 --show-progress
+
+# EXEMPLOS COM LIMPEZA DE ARQUIVOS (🆕 ECONOMIA MÁXIMA DE ESPAÇO):
+
+# 30. Processar dados e criar banco DuckDB, removendo arquivos parquet após criação:
+python main.py --step all --tipos empresas --cleanup-after-db
+
+# 31. Processar dados e criar banco DuckDB, removendo arquivos parquet E ZIP após criação:
+python main.py --step all --tipos empresas --cleanup-all-after-db
+
+# 32. Criar banco DuckDB a partir de parquets existentes e remover os parquets:
+python main.py --step database --output-subfolder processados_2023_05 --cleanup-after-db
+
+# 33. Download, processamento e banco completo com limpeza total (economiza máximo espaço):
+python main.py --all-folders --from-folder 2023-01 --cleanup-all-after-db
+
+# 34. Processamento conservador com deleção de ZIPs durante extração e limpeza final:
+python main.py --tipos estabelecimentos --delete-zips-after-extract --cleanup-after-db
+
+# 35. Economia máxima: processar estabelecimentos com todas as opções de limpeza:
+python main.py --tipos estabelecimentos --delete-zips-after-extract --cleanup-all-after-db --output-subfolder economia_maxima
 ```
 
 **Argumentos Principais:**
@@ -298,6 +333,8 @@ python main.py --remote-folder 2024-01 --show-progress
 *   `--from-folder <pasta>`: 🆕 Especifica pasta inicial para download/processamento sequencial (formato AAAA-MM).
 *   `--process-all-folders`: 🆕 Processa todas as pastas locais no formato AAAA-MM encontradas.
 *   `--delete-zips-after-extract`: 🆕 Deleta arquivos ZIP após extração bem-sucedida para economizar espaço.
+*   `--cleanup-after-db`: 🆕 **Deleta arquivos parquet após criação bem-sucedida do banco DuckDB**.
+*   `--cleanup-all-after-db`: 🆕 **Deleta arquivos parquet E ZIP após criação bem-sucedida do banco DuckDB**.
 *   `--force-download`: Força download mesmo que arquivos já existam localmente ou no cache.
 *   `--log-level <NÍVEL>`: Ajusta o nível de log (padrão: `INFO`).
 
@@ -351,14 +388,28 @@ python exemplo_estatisticas.py
 - Relatórios em Markdown para visualização humana
 - Métricas de comparação entre execuções
 
-### 🏗️ Sistema de Entidades (Versão 3.0)
+### 🏗️ Sistema de Entidades (Versão 3.1.2)
 
-🆕 **Novidade da v3.0**: O sistema agora inclui um robusto conjunto de entidades para representar os dados da Receita Federal:
+🆕 **Melhorias na v3.1.2**: O sistema de entidades foi aprimorado com correções importantes no processador de estabelecimentos:
 
 ```bash
 # Usar entidades em código Python
 from src.Entity import Empresa, Estabelecimento, Socio, Simples
 from src.Entity import EntityFactory, EntityValidator
+
+# Criar entidade Estabelecimento com novo campo tipo_situacao_cadastral
+estabelecimento = Estabelecimento(
+    cnpj_basico="12345678",
+    cnpj_ordem="0001",
+    cnpj_dv="00",
+    codigo_situacao=2,  # Ativa
+    codigo_motivo=0
+)
+
+# O campo tipo_situacao_cadastral é calculado automaticamente:
+# 1 = Ativa (codigo_situacao = 2)
+# 2 = Baixa Voluntária (codigo_situacao = 8 E codigo_motivo = 1) 
+# 3 = Outras Baixas (codigo_situacao = 8 E codigo_motivo ≠ 1)
 
 # Criar entidade Empresa
 empresa = Empresa(
@@ -374,7 +425,7 @@ print(empresa.clean_razao_social())  # "EMPRESA EXEMPLO LTDA"
 from src.Entity.validation import EntityValidator
 
 validator = EntityValidator()
-resultado = validator.validate_dataframe(df_empresas, 'empresa')
+resultado = validator.validate_dataframe(df_estabelecimentos, 'estabelecimento')
 print(f"Taxa de sucesso: {resultado['success_rate']:.1f}%")
 
 # Ver exemplos completos
@@ -385,6 +436,14 @@ python exemplos/exemplos_entidades.py
 python tests/test_entities_simple.py
 python tests/test_entities.py
 ```
+
+**🔧 Melhorias no Processador de Estabelecimentos:**
+
+- ✅ **Campo `tipo_situacao_cadastral` Inteligente**: Classificação automática baseada em `codigo_situacao` e `codigo_motivo`
+- ✅ **Limpeza de Campos**: Removidos campos desnecessários (`pais`, `cnpj_ordem`, `cnpj_dv`, `is_ativo`)
+- ✅ **Nomes Originais Restaurados**: `codigo_situacao` e `codigo_motivo` mantêm compatibilidade
+- ✅ **Validação Robusta**: Sistema de validação atualizado para novos campos
+- ✅ **Processamento Otimizado**: Performance melhorada com estrutura simplificada
 
 **Funcionalidades principais:**
 
@@ -597,138 +656,7 @@ O fluxo de execução é controlado pelo argumento `--step`, permitindo executar
 
 ## 🛡️ Sistema de Circuit Breaker Global
 
-🆕 **Novidade da v3.0**: O sistema agora inclui um sistema avançado de circuit breaker global para **interrupção coordenada** quando falhas críticas são detectadas, evitando desperdício de recursos em processamentos que não podem ser completados:
-
-### **Funcionalidades Principais**
-
-- **🚨 Detecção Inteligente de Falhas**: Monitora conectividade, espaço em disco, memória, permissões, corrupção de dados e falhas de processamento
-- **⚡ Interrupção Coordenada**: Para **toda a aplicação** quando detecta falhas que impedem a conclusão do processamento
-- **📊 Monitoramento Contínuo**: Verifica recursos do sistema durante toda a execução
-- **🔄 Janelas de Tempo**: Falhas são avaliadas em janelas de 10 minutos para detecção de padrões
-- **🎯 Níveis de Criticidade**: Warning, Moderate, Critical, Fatal - cada um com thresholds específicos
-
-### **Tipos de Falhas Monitoradas**
-
-| Tipo de Falha | Threshold | Ação | Descrição |
-|---------------|-----------|------|-----------|
-| **Espaço em Disco** | 1 falha | ⛔ Parada imediata | Espaço insuficiente para continuar |
-| **Permissões** | 1 falha | ⛔ Parada imediata | Sem permissões necessárias |
-| **Memória** | 2 falhas | ⛔ Parada imediata | Memória RAM insuficiente |
-| **Conectividade** | 3 falhas/10min | ⛔ Parada coordenada | Falhas de rede persistentes |
-| **Downloads** | 8 falhas/10min | ⛔ Parada coordenada | Taxa de falha alta em downloads |
-| **Processamento** | 10 falhas/10min | ⛔ Parada coordenada | Taxa de falha alta em processamento |
-| **Falhas Cascata** | 5 falhas/2+ tipos/2+ componentes | ⛔ Parada imediata | Múltiplas falhas sistêmicas |
-
-### **Benefícios**
-
-- **💰 Economia de Recursos**: Evita processamento desnecessário quando não é possível completar o workflow
-- **⏱️ Economia de Tempo**: Interrupção rápida em vez de falhas lentas
-- **🧠 Inteligência**: Aprende padrões de falha e age proativamente
-- **🔍 Transparência**: Logs detalhados sobre o motivo da interrupção
-- **🏗️ Arquitetura Preparada**: Sistema preparado para expansão com novos tipos de monitoramento
-
-### **Exemplo de Uso**
-
-```bash
-# O circuit breaker funciona automaticamente em todas as execuções
-python main.py --all-folders --from-folder 2023-01
-
-# Exemplo de log quando circuit breaker atua:
-# 🚨 CIRCUIT BREAKER ATIVADO: 5 falhas de conectividade em 10 minutos
-# 🛑 Interrompendo downloads para evitar desperdício de recursos
-# ⚡ Parada coordenada de todos os componentes
-```
-
-**Sistema Robusto**: O circuit breaker é thread-safe, funciona com processamento paralelo e garante que todos os componentes sejam notificados simultaneamente para uma parada coordenada e eficiente.
-
-## 🔄 Atualizações Recentes
-
-### 🆕 **Março de 2025 - Versão 2.1 - Funcionalidades de Download Cronológico e Economia de Espaço**
-
-#### **1. Download e Processamento Cronológico**
-
-##### **Download Cronológico de Múltiplas Pastas**
-- ✅ Novo parâmetro `--from-folder` para especificar pasta inicial (formato AAAA-MM)
-- ✅ Comportamento padrão do `--all-folders`: da pasta mais antiga até a mais atual
-- ✅ Download cronológico ordenado com filtragem inteligente
-- ✅ **Processamento paralelo dentro de cada pasta** (mantém multi-threading)
-- ✅ Compatibilidade total com cache e sistema de retry
-
-##### **Processamento de Múltiplas Pastas Locais**
-- ✅ Parâmetro `--process-all-folders` para processar todas as pastas no formato AAAA-MM
-- ✅ Suporte a `--from-folder` para processamento a partir de pasta específica
-- ✅ **Múltiplos workers por pasta** (paralelização mantida)
-- ✅ Criação automática de subpastas organizadas por data
-- ✅ Relatórios consolidados de múltiplas pastas
-
-#### **2. Economia Inteligente de Espaço**
-
-##### **Deleção Automática de ZIPs**
-- ✅ Novo parâmetro `--delete-zips-after-extract` para economia de espaço
-- ✅ Verificação de integridade antes da deleção (segurança robusta)
-- ✅ Logs detalhados sobre espaço economizado
-- ✅ **Compatibilidade com processamento paralelo**
-- ✅ Compatibilidade com todos os modos de processamento
-
-##### **Funcionalidades de Segurança**
-- ✅ Verificação automática se extração foi bem-sucedida
-- ✅ Tratamento de erros robustos (permissões, corrupção, etc.)
-- ✅ Falha graciosamente sem interromper o pipeline paralelo
-- ✅ Logs informativos sobre economia de espaço
-
-#### **3. Exemplos de Uso Expandidos**
-
-```bash
-# Download cronológico com processamento paralelo interno
-python main.py --all-folders --from-folder 2023-01 --delete-zips-after-extract
-
-# Processamento com economia de espaço e múltiplos workers
-python main.py --tipos empresas --delete-zips-after-extract
-
-# Processamento múltiplas pastas com economia e paralelização
-python main.py --step process --process-all-folders --output-subfolder economizando_espaco --delete-zips-after-extract
-```
-
-### 🏗️ **Versão 3.0.0 - Maio/2025 - Refatoração Completa do Sistema**
-
-#### **🎯 Refatoração Arquitetural Completa**
-- ✅ **Eliminação Total de Duplicação**: 4.200 linhas duplicadas removidas (100% → 0%)
-- ✅ **Redução Drástica de Código**: 5.940 → 1.725 linhas (-69.2%)
-- ✅ **Arquitetura Unificada**: Padrões Factory, Strategy e Template Method implementados
-- ✅ **Infraestrutura Centralizada**: ResourceMonitor, QueueManager, ProcessorFactory
-
-#### **🏛️ Sistema de Entidades Avançado**
-- ✅ **9 Entidades Robustas**: 4 principais + 5 auxiliares com validação híbrida
-- ✅ **Pydantic 2.x Integrado**: Schemas modernos com validação declarativa
-- ✅ **Transformações Automáticas**: Aplicação transparente de regras de negócio
-- ✅ **EntityFactory Pattern**: Criação dinâmica e registro automático
-
-#### **⚡ Performance Excepcional**
-- ✅ **10-40x Mais Rápido**: Performance superior em todos os processadores
-- ✅ **Throughput Otimizado**: ~166 linhas/segundo média
-- ✅ **50% Menos Memória**: Uso otimizado de recursos do sistema
-- ✅ **100% Taxa de Sucesso**: Vs ~85% da versão anterior
-
-#### **🧪 Qualidade e Confiabilidade**
-- ✅ **100% Cobertura de Testes**: Vs ~30% anterior
-- ✅ **Testes Abrangentes**: Unitários, integração e performance
-- ✅ **Documentação Profissional**: 12 documentos técnicos completos
-- ✅ **Padrões de Produção**: Deploy, monitoramento, melhores práticas
-
-#### **🔧 Manutenibilidade Revolucionária**
-- ✅ **Centralização Total**: 1 lugar para mudanças vs 4 lugares anteriormente
-- ✅ **Extensibilidade**: Sistema preparado para novos processadores
-- ✅ **Configuração Unificada**: Interface consistente em todos os componentes
-- ✅ **Logs Estruturados**: Monitoramento e debugging aprimorados
-
-#### **📊 Impacto Mensurável**
-- **Desenvolvimento**: 75% menos tempo para novas features
-- **Manutenção**: 80% menos tempo para correções  
-- **Onboarding**: 80% menos tempo para novos desenvolvedores
-- **Bugs**: 85% menos bugs por sprint
-- **Satisfação**: +50% satisfação da equipe de desenvolvimento
-
-### 🛡️ **Dezembro de 2024 - Versão 3.1 - Sistema de Circuit Breaker Global e Controle de Interface**
+🆕 **Dezembro de 2024 - Versão 3.1 - Sistema de Circuit Breaker Global e Controle de Interface**
 
 #### **🚨 Sistema de Circuit Breaker Global**
 - ✅ **Detecção Inteligente de Falhas**: Monitora 8 tipos de falhas críticas (conectividade, disco, memória, etc.)
@@ -744,23 +672,39 @@ python main.py --step process --process-all-folders --output-subfolder economiza
 - ✅ **Priorização Inteligente**: Sistema de prioridades que respeita preferências do usuário
 - ✅ **Logs Limpos**: Interface otimizada para diferentes cenários de uso
 
+### 🔧 **Janeiro de 2025 - Versão 3.1.2 - Correções e Melhorias de Estabilidade**
+
+#### **🛠️ Correções de Sistema**
+- ✅ **Cache de Testes de Rede**: Eliminação de testes duplicados de conectividade com sistema de cache inteligente
+- ✅ **Processador de Estabelecimentos Aprimorado**: 
+  - Campo `tipo_situacao_cadastral` implementado com lógica robusta
+  - Remoção limpa de campos desnecessários (`is_ativo`, `pais`, etc.)
+  - Mapeamento correto de colunas sem conflitos
+- ✅ **Correções de Escopo**: Problemas de inicialização de variáveis resolvidos (`start_time` undefined)
+- ✅ **Limpeza Robusta**: Sistema de limpeza com verificações aprimoradas de segurança
+
 #### **💡 Benefícios Práticos**
 - **🤖 Automação**: Modo silencioso ideal para execução em servidores e scripts automatizados
 - **👨‍💻 Desenvolvimento**: Modo verboso com informações detalhadas para debug e monitoramento
 - **⚡ Performance**: Circuit breaker evita processamentos fadados ao fracasso
 - **📊 Flexibilidade**: Controle fino sobre que informações são exibidas
+- **💾 Economia**: Sistema de limpeza otimizado para máxima economia de espaço
+- **🏗️ Estabilidade**: Correções que eliminam erros de runtime e melhoram confiabilidade
 
-#### **🔧 Exemplos de Uso Novos**
+#### **🔧 Exemplos de Uso Aprimorados**
 
 ```bash
-# Execução silenciosa para automação
-python main.py --all-folders --quiet
+# Execução silenciosa para automação com limpeza máxima
+python main.py --all-folders --quiet --cleanup-all-after-db
 
-# Debug com interface completa
-python main.py --tipos empresas --verbose-ui
+# Processamento de estabelecimentos com nova lógica de situação cadastral
+python main.py --tipos estabelecimentos --verbose-ui
 
-# Controle específico de elementos
-python main.py --show-progress --hide-pending
+# Economia máxima de espaço com todas as otimizações
+python main.py --delete-zips-after-extract --cleanup-all-after-db --quiet
+
+# Controle específico de elementos para debug
+python main.py --show-progress --hide-pending --tipos empresas
 ```
 
 ## 🛠️ Processamento e Regras de Negócio
@@ -802,11 +746,15 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
   - Estabelecimentos: 8GB
   - Simples Nacional: 3GB
   - **💡 Dica**: Use `--delete-zips-after-extract` para economizar até 50% do espaço necessário
+  - **💡 Economia Máxima**: Use `--cleanup-all-after-db` para economizar até 80% do espaço total
 - **🧵 Processamento Híbrido**: O sistema usa paralelização inteligente onde aumenta performance e sequenciamento onde economiza recursos
+- **🏗️ Dados de Estabelecimentos Aprimorados**: Campo `tipo_situacao_cadastral` fornece classificação inteligente da situação das empresas
+- **🛡️ Sistema Robusto**: Cache de testes de rede e correções de escopo eliminam problemas de duplicação e runtime
 - Em caso de falhas, o sistema tentará novamente automaticamente com workers paralelos
 - Verificação de espaço em disco é realizada antes da descompactação
 - **🆕 Download Cronológico**: Use `--all-folders --from-folder AAAA-MM` para baixar dados históricos de forma organizada
 - **🆕 Economia de Espaço**: A opção `--delete-zips-after-extract` remove ZIPs automaticamente após processamento paralelo bem-sucedido
+- **🆕 Limpeza Pós-Database**: As opções `--cleanup-after-db` e `--cleanup-all-after-db` removem arquivos desnecessários após criação do banco
 - **🚀 Performance**: Sistema otimizado com 6-12 workers simultâneos baseado no hardware disponível
 - **📂 Caminhos**: O sistema normaliza automaticamente caminhos de arquivo para cada sistema operacional
 - **💾 APIs Nativas**: Usa APIs específicas do SO para máxima eficiência (Windows: `ctypes.windll`, Linux: `os.statvfs`)

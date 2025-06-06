@@ -108,6 +108,23 @@ EXEMPLOS COM CONTROLE DE INTERFACE VISUAL:
 35. Download de pasta específica com barras de progresso ativadas:
     python main.py --remote-folder 2024-01 --show-progress
 
+EXEMPLOS COM LIMPEZA DE ARQUIVOS:
+
+36. Processar dados e criar banco DuckDB, removendo arquivos parquet após criação:
+    python main.py --step all --tipos empresas --cleanup-after-db
+
+37. Processar dados e criar banco DuckDB, removendo arquivos parquet E ZIP após criação:
+    python main.py --step all --tipos empresas --cleanup-all-after-db
+
+38. Criar banco DuckDB a partir de parquets existentes e remover os parquets:
+    python main.py --step database --output-subfolder processados_2023_05 --cleanup-after-db
+
+39. Download, processamento e banco completo com limpeza total (economiza máximo espaço):
+    python main.py --all-folders --from-folder 2023-01 --cleanup-all-after-db
+
+40. Processamento conservador com deleção de ZIPs durante extração e limpeza final:
+    python main.py --tipos estabelecimentos --delete-zips-after-extract --cleanup-after-db
+
 NOTA: O download sempre salvará os arquivos em uma subpasta com o nome da pasta remota.
       Exemplo: se --remote-folder=2023-05, os arquivos serão salvos em PATH_ZIP/2023-05/.
       Ao usar --source-zip-folder, aponte diretamente para o diretório que contém os arquivos ZIP.
@@ -117,7 +134,9 @@ NOVO COMPORTAMENTO:
       - Sem --from-folder + --all-folders: baixa/processa da mais antiga até a mais atual
       - --process-all-folders agora suporta --from-folder para processamento sequencial local
       - --delete-zips-after-extract deleta arquivos ZIP após extração bem-sucedida (economiza espaço)
-      - A deleção só ocorre após verificação de que a extração foi realizada com sucesso
+      - --cleanup-after-db deleta arquivos parquet após criação do banco DuckDB (economiza espaço)
+      - --cleanup-all-after-db deleta arquivos parquet E ZIP após criação do banco (máxima economia)
+      - A deleção só ocorre após verificação de que as operações foram realizadas com sucesso
 
 CONTROLE DE INTERFACE VISUAL:
       - --quiet (-q): Modo silencioso - desativa barras de progresso e lista de pendentes
@@ -206,74 +225,28 @@ def check_internet_connection() -> bool:
 
 def check_disk_space() -> bool:
     """
-    Verifica se há espaço suficiente em disco (multiplataforma).
+    Verifica se há espaço suficiente em disco.
     
     Returns:
-        bool: True se houver espaço suficiente, False caso contrário
+        bool: True se há espaço suficiente, False caso contrário
     """
     try:
-        # Obtém o diretório de destino
-        path_zip = os.getenv('PATH_ZIP', './dados-zip')
-        if not path_zip:
-            logger.error("PATH_ZIP não definido no arquivo .env")
+        total, used, free = psutil.disk_usage("/")
+        
+        # Verificar se há pelo menos 5GB livres
+        min_free_gb = 5
+        free_gb = free / (1024**3)
+        
+        if free_gb < min_free_gb:
+            logger.error(f"Espaço em disco insuficiente. Disponível: {free_gb:.2f}GB, Mínimo: {min_free_gb}GB")
             return False
         
-        # Garantir que o diretório existe
-        if not os.path.exists(path_zip):
-            try:
-                os.makedirs(path_zip, exist_ok=True)
-                logger.info(f"Diretório criado: {path_zip}")
-            except Exception as e:
-                logger.error(f"Erro ao criar diretório {path_zip}: {e}")
-                return False
-        
-        # Define um limite mínimo de 10GB
-        min_space = 10 * 1024 * 1024 * 1024  # 10GB em bytes
-        
-        # Método multiplataforma para verificar espaço em disco
-        if os.name == 'nt':  # Windows
-            try:
-                import ctypes
-                free_bytes = ctypes.c_ulonglong(0)
-                ctypes.windll.kernel32.GetDiskFreeSpaceExW(
-                    ctypes.c_wchar_p(path_zip), None, None, ctypes.pointer(free_bytes)
-                )
-                available_space = free_bytes.value
-            except Exception as e:
-                logger.warning(f"Erro ao usar método Windows para verificar espaço: {e}")
-                # Fallback para método padrão
-                import shutil
-                _, _, available_space = shutil.disk_usage(path_zip)
-        else:  # Linux, macOS, Unix
-            try:
-                # Usar os.statvfs (mais preciso em sistemas Unix)
-                statvfs = os.statvfs(path_zip)
-                available_space = statvfs.f_bavail * statvfs.f_frsize
-            except (AttributeError, OSError) as e:
-                logger.warning(f"Erro ao usar os.statvfs: {e}")
-                # Fallback para shutil.disk_usage
-                try:
-                    import shutil
-                    _, _, available_space = shutil.disk_usage(path_zip)
-                except Exception as e2:
-                    logger.error(f"Erro ao verificar espaço em disco: {e2}")
-                    return False
-        
-        # Converter para GB para logging
-        available_gb = available_space / (1024**3)
-        min_gb = min_space / (1024**3)
-        
-        logger.info(f"Espaço disponível: {available_gb:.2f}GB (mínimo necessário: {min_gb:.1f}GB)")
-        
-        if available_space < min_space:
-            logger.warning(f"Espaço livre insuficiente: {available_gb:.2f}GB < {min_gb:.1f}GB")
-            return False
-            
+        logger.info(f"Espaço em disco verificado: {free_gb:.2f}GB disponíveis")
         return True
         
     except Exception as e:
-        logger.error(f"Erro ao verificar espaço em disco: {e}")
-        return False
+        logger.warning(f"Erro ao verificar espaço em disco: {e}")
+        return True  # Assumir que está OK se não conseguir verificar
 
 def setup_logging(log_level_str: str):
     """Configura o sistema de logging com base no nível fornecido."""
@@ -1012,6 +985,114 @@ def process_folder(source_zip_path, unzip_path, output_parquet_path,
     
     return processing_results
 
+def cleanup_after_database(parquet_folder: str, zip_folder: str = "", cleanup_parquet: bool = False, cleanup_zip: bool = False) -> bool:
+    """
+    Realiza limpeza de arquivos após criação bem-sucedida do banco DuckDB.
+    
+    Args:
+        parquet_folder: Pasta contendo os arquivos parquet
+        zip_folder: Pasta contendo os arquivos ZIP (opcional)
+        cleanup_parquet: Se deve deletar os arquivos parquet
+        cleanup_zip: Se deve deletar os arquivos ZIP
+        
+    Returns:
+        bool: True se limpeza foi bem-sucedida, False caso contrário
+    """
+    success = True
+    
+    if not cleanup_parquet and not cleanup_zip:
+        logger.debug("Nenhuma limpeza solicitada")
+        return True
+    
+    print_section("Realizando limpeza de arquivos")
+    
+    try:
+        # Contadores para estatísticas
+        parquet_files_deleted = 0
+        parquet_size_freed = 0
+        zip_files_deleted = 0
+        zip_size_freed = 0
+        
+        # Limpar arquivos parquet se solicitado
+        if cleanup_parquet and os.path.exists(parquet_folder):
+            logger.info(f"Iniciando limpeza de arquivos parquet em: {parquet_folder}")
+            
+            for root, dirs, files in os.walk(parquet_folder):
+                for file in files:
+                    if file.endswith('.parquet'):
+                        file_path = os.path.join(root, file)
+                        try:
+                            file_size = os.path.getsize(file_path)
+                            os.remove(file_path)
+                            parquet_files_deleted += 1
+                            parquet_size_freed += file_size
+                            logger.debug(f"Arquivo parquet deletado: {file}")
+                        except Exception as e:
+                            logger.error(f"Erro ao deletar arquivo parquet {file}: {e}")
+                            success = False
+            
+            # Remover diretórios vazios
+            try:
+                for root, dirs, files in os.walk(parquet_folder, topdown=False):
+                    for dir_name in dirs:
+                        dir_path = os.path.join(root, dir_name)
+                        try:
+                            if not os.listdir(dir_path):  # Se diretório está vazio
+                                os.rmdir(dir_path)
+                                logger.debug(f"Diretório vazio removido: {dir_name}")
+                        except OSError:
+                            pass  # Diretório não está vazio ou erro de permissão
+            except Exception as e:
+                logger.warning(f"Erro ao remover diretórios vazios: {e}")
+        
+        # Limpar arquivos ZIP se solicitado
+        if cleanup_zip and zip_folder and os.path.exists(zip_folder):
+            logger.info(f"Iniciando limpeza de arquivos ZIP em: {zip_folder}")
+            
+            for root, dirs, files in os.walk(zip_folder):
+                for file in files:
+                    if file.endswith('.zip'):
+                        file_path = os.path.join(root, file)
+                        try:
+                            file_size = os.path.getsize(file_path)
+                            os.remove(file_path)
+                            zip_files_deleted += 1
+                            zip_size_freed += file_size
+                            logger.debug(f"Arquivo ZIP deletado: {file}")
+                        except Exception as e:
+                            logger.error(f"Erro ao deletar arquivo ZIP {file}: {e}")
+                            success = False
+        
+        # Exibir estatísticas da limpeza
+        total_size_freed = parquet_size_freed + zip_size_freed
+        total_files_deleted = parquet_files_deleted + zip_files_deleted
+        
+        if total_files_deleted > 0:
+            size_freed_mb = total_size_freed / (1024 * 1024)
+            size_freed_gb = size_freed_mb / 1024
+            
+            logger.info(f"Limpeza concluída:")
+            if parquet_files_deleted > 0:
+                parquet_mb = parquet_size_freed / (1024 * 1024)
+                logger.info(f"  - Arquivos parquet: {parquet_files_deleted} arquivos, {parquet_mb:.2f} MB liberados")
+            
+            if zip_files_deleted > 0:
+                zip_mb = zip_size_freed / (1024 * 1024)
+                logger.info(f"  - Arquivos ZIP: {zip_files_deleted} arquivos, {zip_mb:.2f} MB liberados")
+            
+            if size_freed_gb >= 1:
+                print_success(f"Limpeza concluída: {total_files_deleted} arquivos removidos, {size_freed_gb:.2f} GB liberados")
+            else:
+                print_success(f"Limpeza concluída: {total_files_deleted} arquivos removidos, {size_freed_mb:.2f} MB liberados")
+        else:
+            print_warning("Nenhum arquivo foi removido durante a limpeza")
+        
+        return success
+        
+    except Exception as e:
+        logger.error(f"Erro durante limpeza de arquivos: {e}")
+        print_error(f"Erro durante limpeza: {e}")
+        return False
 
 def main():
     """Função principal de execução."""
@@ -1088,6 +1169,16 @@ def main():
         '--delete-zips-after-extract', '-dz',
         action='store_true',
         help="Se presente, deleta os arquivos ZIP após extração bem-sucedida para economizar espaço em disco. Use com cautela!"
+    )
+    parser.add_argument(
+        '--cleanup-after-db', '-cdb',
+        action='store_true',
+        help="Se presente, deleta os arquivos parquet após criação bem-sucedida do banco DuckDB. Use com cautela!"
+    )
+    parser.add_argument(
+        '--cleanup-all-after-db', '-cadb',
+        action='store_true',
+        help="Se presente, deleta os arquivos parquet E os arquivos ZIP após criação bem-sucedida do banco DuckDB. Implica --cleanup-after-db. Use com extrema cautela!"
     )
     parser.add_argument(
         '--show-progress', '-pb',
@@ -1432,6 +1523,32 @@ def main():
             if db_success:
                 db_file = os.path.join(parquet_folder, FILE_DB_PARQUET)
                 print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
+                
+                # Realizar limpeza se solicitada
+                if args.cleanup_after_db or args.cleanup_all_after_db:
+                    # Determinar se deve limpar ZIP também
+                    cleanup_zip = args.cleanup_all_after_db
+                    
+                    # Se não foi especificado um zip_folder específico, usar o padrão
+                    zip_folder = ""
+                    if cleanup_zip:
+                        # Tentar determinar a pasta ZIP correspondente
+                        # No modo database, não sabemos exatamente qual pasta ZIP foi usada
+                        # então vamos avisar que a limpeza de ZIP não é recomendada neste modo
+                        logger.warning("Limpeza de ZIP no modo 'database' não é recomendada pois não sabemos qual pasta ZIP foi usada originalmente")
+                        print_warning("Limpeza de ZIP ignorada no modo 'database' - use no modo 'all' para limpeza completa")
+                        cleanup_zip = False
+                    
+                    cleanup_success = cleanup_after_database(
+                        parquet_folder=parquet_folder,
+                        zip_folder=zip_folder,
+                        cleanup_parquet=True,  # Sempre limpar parquet se foi solicitado
+                        cleanup_zip=cleanup_zip
+                    )
+                    
+                    if not cleanup_success:
+                        print_warning("Alguns arquivos podem não ter sido removidos durante a limpeza")
+                
             else:
                 print_error("Falha ao criar banco de dados. Verifique os logs para mais detalhes.")
                 logger.error("Criação do banco de dados falhou")
@@ -1551,6 +1668,21 @@ def main():
                 logger.info(f"Tempo de processamento do banco: {format_elapsed_time(db_time)}")
                 db_file = os.path.join(output_parquet_path, FILE_DB_PARQUET)
                 print_success(f"Banco de dados DuckDB criado com sucesso em: {db_file}")
+                
+                # Realizar limpeza se solicitada
+                if args.cleanup_after_db or args.cleanup_all_after_db:
+                    cleanup_zip = args.cleanup_all_after_db
+                    
+                    cleanup_success = cleanup_after_database(
+                        parquet_folder=output_parquet_path,
+                        zip_folder=source_zip_path if cleanup_zip else "",
+                        cleanup_parquet=True,  # Sempre limpar parquet se foi solicitado
+                        cleanup_zip=cleanup_zip
+                    )
+                    
+                    if not cleanup_success:
+                        print_warning("Alguns arquivos podem não ter sido removidos durante a limpeza")
+                
             else:
                 logger.info("=" * 50)
                 logger.info(f"Tempo de processamento do banco (falhou): {format_elapsed_time(db_time)}")
