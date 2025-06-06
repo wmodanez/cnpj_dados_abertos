@@ -63,12 +63,11 @@ class Estabelecimento(BaseEntity):
     
     @classmethod
     def get_column_names(cls) -> List[str]:
-        """Retorna nomes das colunas da entidade."""
+        """Retorna nomes das colunas da entidade (14 campos originais)."""
         return [
             'cnpj_basico', 'matriz_filial', 'nome_fantasia', 'codigo_situacao',
-            'data_situacao_cadastral', 'codigo_motivo', 'nome_cidade_exterior',
-            'data_inicio_atividades', 'codigo_cnae', 'cnae_secundaria', 'uf',
-            'codigo_municipio', 'cep', 'cnpj_completo'
+            'data_situacao_cadastral', 'codigo_motivo', 'nome_cidade_exterior', 'data_inicio_atividades',
+            'codigo_cnae', 'cnae_secundaria', 'uf', 'codigo_municipio', 'cep', 'cnpj_completo'
         ]
     
     @classmethod

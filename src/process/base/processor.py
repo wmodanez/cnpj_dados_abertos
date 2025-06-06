@@ -186,6 +186,35 @@ class BaseProcessor(ABC):
             
         df_columns = df.columns
         
+        # ESPECIAL: Para estabelecimentos, mapear dos 30 campos do CSV para os 14 desejados
+        if hasattr(entity_class, '__name__') and entity_class.__name__ == 'Estabelecimento':
+            # Mapeamento específico das posições CSV para campos desejados
+            # Baseado na estrutura real dos dados da Receita Federal
+            estabelecimento_mapping = {
+                'column_1': 'cnpj_basico',           # posição 1
+                'column_4': 'matriz_filial',         # posição 4  
+                'column_5': 'nome_fantasia',         # posição 5
+                'column_6': 'codigo_situacao',       # posição 6
+                'column_7': 'data_situacao_cadastral', # posição 7
+                'column_8': 'codigo_motivo',         # posição 8
+                'column_9': 'nome_cidade_exterior',  # posição 9
+                'column_11': 'data_inicio_atividades', # posição 11
+                'column_12': 'codigo_cnae',          # posição 12
+                'column_13': 'cnae_secundaria',      # posição 13
+                'column_20': 'uf',                   # posição 20
+                'column_21': 'codigo_municipio',     # posição 21
+                'column_19': 'cep',                  # posição 19
+            }
+            
+            # Filtrar apenas colunas que existem no DataFrame
+            mapping = {}
+            for df_col, entity_col in estabelecimento_mapping.items():
+                if df_col in df_columns:
+                    mapping[df_col] = entity_col
+            
+            return mapping
+        
+        # Para outras entidades, usar mapeamento sequencial padrão
         mapping = {}
         for i, entity_col in enumerate(entity_columns):
             df_col = f"column_{i+1}"

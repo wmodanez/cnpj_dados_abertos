@@ -60,8 +60,6 @@ class EmpresaProcessor(BaseProcessor):
             DataFrame transformado
         """
         try:
-            # Transformações específicas para empresas
-            
             # 1. Limpar e padronizar CNPJ básico (se ainda não foi processado)
             if 'cnpj_basico' in df.columns:
                 # Verificar se ainda é string antes de aplicar transformações de string

@@ -74,28 +74,30 @@ class EstabelecimentoProcessor(BaseProcessor):
                     .alias('cnpj_basico')
                 ])
             
-            # 2. Criar CNPJ completo (apenas com cnpj_basico + ordem + dv das colunas originais)
-            # Nota: Mantemos a criação do CNPJ completo mas removemos as colunas intermediárias depois
-            cnpj_parts = ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']
-            lengths = [8, 4, 2]
-            
-            # Limpar as partes temporariamente para criar o CNPJ completo
-            for part, length in zip(cnpj_parts[1:], lengths[1:]):  # Apenas ordem e dv
-                if part in df.columns:
+            # 2. Criar CNPJ completo (usando colunas auxiliares que não serão salvas)
+            # Primeiro, garantir que temos as partes do CNPJ como colunas auxiliares
+            if 'column_1' in df.columns and 'column_2' in df.columns and 'column_3' in df.columns:
+                try:
+                    # Criar colunas auxiliares temporárias para formar o CNPJ completo
                     df = df.with_columns([
-                        pl.col(part)
-                        .cast(pl.Utf8)  # Garantir que é string
-                        .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
-                        .str.pad_start(length, '0')     # Garante dígitos corretos
-                        .alias(part)
+                        pl.col('column_1').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(8, '0').alias('_cnpj_basico_temp'),
+                        pl.col('column_2').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(4, '0').alias('_cnpj_ordem_temp'),
+                        pl.col('column_3').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(2, '0').alias('_cnpj_dv_temp')
                     ])
-            
-            # Criar CNPJ completo se todas as partes existirem
-            if all(part in df.columns for part in cnpj_parts):
-                df = df.with_columns([
-                    (pl.col('cnpj_basico') + pl.col('cnpj_ordem') + pl.col('cnpj_dv'))
-                    .alias('cnpj_completo')
-                ])
+                    
+                    # Criar CNPJ completo
+                    df = df.with_columns([
+                        (pl.col('_cnpj_basico_temp') + pl.col('_cnpj_ordem_temp') + pl.col('_cnpj_dv_temp')).alias('cnpj_completo')
+                    ])
+                    
+                    # Remover colunas auxiliares temporárias
+                    df = df.drop(['_cnpj_basico_temp', '_cnpj_ordem_temp', '_cnpj_dv_temp'])
+                    
+                    self.logger.debug("CNPJ completo criado com sucesso")
+                except Exception as e:
+                    self.logger.warning(f"Erro ao criar CNPJ completo: {str(e)}")
+            else:
+                self.logger.warning("Colunas necessárias para CNPJ completo não encontradas")
             
             # 3. Limpar e validar CEP
             if 'cep' in df.columns:
@@ -192,24 +194,6 @@ class EstabelecimentoProcessor(BaseProcessor):
             # 9. Adicionar colunas calculadas
             df = self._add_calculated_columns(df)
             
-            # 10. Remover colunas não desejadas após processamento
-            columns_to_remove = ['cnpj_ordem', 'cnpj_dv', 'pais']
-            existing_columns_before = df.columns
-            
-            for col in columns_to_remove:
-                if col in df.columns:
-                    df = df.drop(col)
-                    self.logger.info(f"Coluna '{col}' removida com sucesso")
-                else:
-                    self.logger.debug(f"Coluna '{col}' não encontrada para remoção")
-            
-            existing_columns_after = df.columns
-            removed_columns = set(existing_columns_before) - set(existing_columns_after)
-            if removed_columns:
-                self.logger.info(f"Colunas removidas: {list(removed_columns)}")
-            else:
-                self.logger.warning("Nenhuma coluna foi removida - verificar se as colunas existem")
-            
             self.logger.debug(f"Transformações específicas de estabelecimentos aplicadas. Linhas: {df.height}")
             return df
             
@@ -297,11 +281,15 @@ class EstabelecimentoProcessor(BaseProcessor):
                             (pl.col('codigo_motivo') != 1)
                         )
                         .then(pl.lit(3))  # Outras Baixas
-                        .otherwise(None)
+                        .otherwise(None)  # NULL para demais casos
                         .alias('tipo_situacao_cadastral')
                     ])
+                    
+                    self.logger.debug("Campo tipo_situacao_cadastral criado com sucesso")
                 except Exception as e:
-                    self.logger.error(f"Erro ao criar tipo_situacao_cadastral: {e}")
+                    self.logger.warning(f"Erro ao criar tipo_situacao_cadastral: {str(e)}")
+            else:
+                self.logger.warning("Campos codigo_situacao ou codigo_motivo não encontrados para criar tipo_situacao_cadastral")
             
             return df
             
