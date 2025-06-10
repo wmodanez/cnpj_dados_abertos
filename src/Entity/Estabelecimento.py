@@ -74,7 +74,7 @@ class Estabelecimento(BaseEntity):
     def get_column_types(cls) -> Dict[str, Type]:
         """Retorna tipos das colunas da entidade."""
         return {
-            'cnpj_basico': pl.Utf8,
+            'cnpj_basico': pl.Int64,
             'matriz_filial': pl.Int32,
             'nome_fantasia': pl.Utf8,
             'codigo_situacao': pl.Int32,

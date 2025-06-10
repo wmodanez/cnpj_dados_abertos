@@ -96,14 +96,14 @@ class SimplesProcessor(BaseProcessor):
             
             # 2. Limpar e padronizar CNPJ básico
             if 'cnpj_basico' in df.columns:
-                col_dtype = df['cnpj_basico'].dtype
-                if col_dtype == pl.Utf8:
-                    df = df.with_columns([
-                        pl.col('cnpj_basico')
-                        .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
-                        .str.pad_start(8, '0')          # Garante 8 dígitos, preenchendo com zeros
-                        .alias('cnpj_basico')
-                    ])
+                df = df.with_columns([
+                    pl.col('cnpj_basico')
+                    .cast(pl.Utf8, strict=False)        # Converter para string primeiro
+                    .str.replace_all(r'[^\d]', '')      # Remove não-dígitos
+                    .str.pad_start(8, '0')              # Garante 8 dígitos, preenchendo com zeros
+                    .cast(pl.Int64, strict=False)       # Converte para bigint (Int64)
+                    .alias('cnpj_basico')
+                ])
             
             # 3. Converter opções para 0/1 (melhor performance que S/N)
             opcao_columns = [

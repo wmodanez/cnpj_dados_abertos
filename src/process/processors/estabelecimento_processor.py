@@ -68,9 +68,10 @@ class EstabelecimentoProcessor(BaseProcessor):
             if 'cnpj_basico' in df.columns:
                 df = df.with_columns([
                     pl.col('cnpj_basico')
-                    .cast(pl.Utf8)  # Garantir que é string
-                    .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
-                    .str.pad_start(8, '0')     # Garante 8 dígitos, preenchendo com zeros
+                    .cast(pl.Utf8, strict=False)        # Converter para string primeiro
+                    .str.replace_all(r'[^\d]', '')      # Remove não-dígitos
+                    .str.pad_start(8, '0')              # Garante 8 dígitos, preenchendo com zeros
+                    .cast(pl.Int64, strict=False)       # Converte para bigint (Int64)
                     .alias('cnpj_basico')
                 ])
             

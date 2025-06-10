@@ -1441,8 +1441,6 @@ async def async_main():
         )
         return False, ""
     
-    # 🆕 Versão 3.0.0: Inicializar nova arquitetura de processadores
-    print_section("Inicializando arquitetura refatorada (v3.0.0)...")
     if not initialize_processors():
         print_error("Falha ao inicializar nova arquitetura. Verifique os logs.")
         return False, ""

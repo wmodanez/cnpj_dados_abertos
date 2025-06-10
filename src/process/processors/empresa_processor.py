@@ -62,15 +62,14 @@ class EmpresaProcessor(BaseProcessor):
         try:
             # 1. Limpar e padronizar CNPJ básico (se ainda não foi processado)
             if 'cnpj_basico' in df.columns:
-                # Verificar se ainda é string antes de aplicar transformações de string
-                col_dtype = df['cnpj_basico'].dtype
-                if col_dtype == pl.Utf8:
-                    df = df.with_columns([
-                        pl.col('cnpj_basico')
-                        .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
-                        .str.pad_start(8, '0')          # Garante 8 dígitos, preenchendo com zeros
-                        .alias('cnpj_basico')
-                    ])
+                df = df.with_columns([
+                    pl.col('cnpj_basico')
+                    .cast(pl.Utf8, strict=False)        # Converter para string primeiro
+                    .str.replace_all(r'[^\d]', '')      # Remove não-dígitos
+                    .str.pad_start(8, '0')              # Garante 8 dígitos, preenchendo com zeros
+                    .cast(pl.Int64, strict=False)       # Converte para bigint (Int64)
+                    .alias('cnpj_basico')
+                ])
             
             # 2. Extrair CPF da razão social (se ainda não foi processado)
             if 'razao_social' in df.columns and 'cpf_extraido' not in df.columns:

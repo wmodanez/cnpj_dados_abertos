@@ -51,7 +51,7 @@ class Simples(BaseEntity):
     def get_column_types(cls) -> Dict[str, Type]:
         """Retorna tipos das colunas da entidade."""
         return {
-            'cnpj_basico': pl.Utf8,
+            'cnpj_basico': pl.Int64,
             'opcao_simples': pl.Utf8,
             'data_opcao_simples': pl.Date,
             'data_exclusao_simples': pl.Date,
