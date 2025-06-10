@@ -234,11 +234,11 @@ def check_disk_space() -> bool:
         bool: True se há espaço suficiente, False caso contrário
     """
     try:
-        total, used, free = psutil.disk_usage("/")
+        disk_usage = psutil.disk_usage("/")
         
         # Verificar se há pelo menos 5GB livres
         min_free_gb = 5
-        free_gb = free / (1024**3)
+        free_gb = disk_usage.free / (1024**3)
         
         if free_gb < min_free_gb:
             logger.error(f"Espaço em disco insuficiente. Disponível: {free_gb:.2f}GB, Mínimo: {min_free_gb}GB")
@@ -784,31 +784,27 @@ async def optimized_download_and_process_pipeline(
                     await process_file_immediately(destination_path, filename)
                     return
                 
-                # Criar um progress dummy para o download_file
-                class DummyProgress:
-                    def add_task(self, description, **kwargs):
-                        return 0
-                    def update(self, task_id, **kwargs):
-                        pass
-                
-                # Fazer download
+                # Fazer download diretamente sem usar download_file problemático
                 logger.info(f"📥 Baixando {filename}...")
-                progress = DummyProgress()
-                result_filename, error, status = await download_file(
-                    session, url, destination_path, download_semaphore, 
-                    progress, 0, force_download
-                )
-                
-                if error:
-                    logger.error(f"❌ Erro no download de {filename}: {error}")
-                    failed_downloads.append((filename, error))
-                else:
-                    logger.info(f"✅ Download de {filename} concluído")
-                    successful_downloads.append(result_filename)
-                    
-                    # Processar imediatamente após download
-                    await process_file_immediately(destination_path, filename)
-                    
+                try:
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            with open(destination_path, 'wb') as f:
+                                async for chunk in response.content.iter_chunked(8192):
+                                    f.write(chunk)
+                            logger.info(f"✅ Download de {filename} concluído")
+                            successful_downloads.append(destination_path)
+                            
+                            # Processar imediatamente após download
+                            await process_file_immediately(destination_path, filename)
+                        else:
+                            error_msg = f"HTTP {response.status}"
+                            logger.error(f"❌ Erro no download de {filename}: {error_msg}")
+                            failed_downloads.append((filename, error_msg))
+                except Exception as download_error:
+                    logger.error(f"❌ Erro no download de {filename}: {download_error}")
+                    failed_downloads.append((filename, str(download_error)))
+            
         except Exception as e:
             logger.error(f"❌ Erro inesperado com {filename}: {e}")
             failed_downloads.append((filename, e))
@@ -1343,6 +1339,12 @@ async def async_main():
     
     start_time = time.time()  # Definir start_time no início
     
+    # Inicializar variáveis de tempo para evitar erros
+    download_time = 0.0
+    process_time = 0.0
+    db_time = 0.0
+    latest_folder = ""
+    
     # Parser de argumentos
     parser = argparse.ArgumentParser(
         description="Sistema de Processamento de Dados CNPJ v3.0.0"
@@ -1402,11 +1404,6 @@ async def async_main():
         print("\n🛑 SINAL DE EMERGÊNCIA RECEBIDO!")
         print("⚠️ Interrompendo execução...")
         logger.critical("🛑 Execução interrompida por sinal de emergência")
-        report_critical_failure(
-            FailureType.SYSTEM_ERROR,
-            "Sinal de emergência recebido (Ctrl+C)",
-            "MAIN_EMERGENCY"
-        )
         global overall_success
         overall_success = False
         sys.exit(1)
@@ -1434,11 +1431,6 @@ async def async_main():
     else:
         print_error("Erro ao carregar variáveis de ambiente. Verifique o arquivo .env")
         logger.error("Variáveis de ambiente PATH_ZIP, PATH_UNZIP ou PATH_PARQUET não definidas")
-        report_critical_failure(
-            FailureType.CONFIGURATION_ERROR,
-            "Variáveis de ambiente não configuradas corretamente",
-            "MAIN_ENV_VARS"
-        )
         return False, ""
     
     if not initialize_processors():
@@ -1542,6 +1534,10 @@ async def async_main():
         from src.async_downloader import get_latest_month_zip_urls, _filter_urls_by_type
         
         base_url = os.getenv('BASE_URL')
+        if not base_url:
+            logger.error("BASE_URL não definida no arquivo .env")
+            return False, ""
+            
         zip_urls, _ = get_latest_month_zip_urls(base_url, latest_folder)
         
         # Filtrar URLs por tipos desejados
