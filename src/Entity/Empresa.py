@@ -62,14 +62,13 @@ class Empresa(BaseEntity):
     def get_column_types(cls) -> Dict[str, Type]:
         """Retorna tipos das colunas da entidade."""
         return {
-            'cnpj_basico': pl.Utf8,
+            'cnpj_basico': pl.Int64,
             'razao_social': pl.Utf8,
             'natureza_juridica': pl.Int32,
             'qualificacao_responsavel': pl.Int32,
             'capital_social': pl.Float64,
             'porte_empresa': pl.Int32,
-            'ente_federativo_responsavel': pl.Utf8,
-            'cpf_extraido': pl.Utf8
+            'ente_federativo_responsavel': pl.Utf8
         }
     
     @classmethod

@@ -3,11 +3,19 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 import polars as pl
 
+# Carregar variáveis de ambiente do arquivo .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # Se python-dotenv não estiver instalado, continuar sem carregar
+    pass
+
 
 @dataclass
 class FileConfig:
     separator: str = ';'
-    encoding: str = 'latin1'
+    encoding: str = 'utf8-lossy'
     KB: int = 1024
 
 

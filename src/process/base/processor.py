@@ -18,6 +18,16 @@ import zipfile
 from ...Entity.base import BaseEntity
 from ...Entity import Empresa, Estabelecimento, Socio, Simples
 
+# Import do Circuit Breaker Global
+from ...utils.global_circuit_breaker import (
+    circuit_breaker, 
+    FailureType, 
+    CriticalityLevel,
+    should_continue_processing,
+    report_critical_failure,
+    report_fatal_failure
+)
+
 # Import condicional da config
 try:
     from ...config import config
@@ -26,7 +36,7 @@ except ImportError:
     class Config:
         class file:
             separator = ';'
-            encoding = 'latin1'
+            encoding = 'utf8-lossy'
     config = Config()
 
 # Imports da infraestrutura unificada (Fase 2)
@@ -68,8 +78,20 @@ class BaseProcessor(ABC):
         # Configurar logging
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         
+        # Registrar callback de parada no circuit breaker
+        circuit_breaker.register_stop_callback(self._emergency_stop)
+        
         # Validar opções
         self._validate_options()
+        
+        # Verificar recursos críticos do sistema
+        if not self._check_system_resources():
+            report_fatal_failure(
+                FailureType.SYSTEM_RESOURCE,
+                "Recursos do sistema insuficientes para inicialização",
+                self.get_processor_name()
+            )
+            return
         
         # Inicializar componentes unificados
         self.resource_monitor = ResourceMonitor()
@@ -115,7 +137,19 @@ class BaseProcessor(ABC):
         path_parquet: str, 
         **kwargs
     ) -> bool:
-        """Implementação específica do processamento de um ZIP."""
+        """
+        Implementação específica do processamento de um único arquivo ZIP.
+        
+        Args:
+            zip_file: Nome do arquivo ZIP
+            path_zip: Diretório com arquivos ZIP
+            path_unzip: Diretório para extração
+            path_parquet: Diretório de saída
+            **kwargs: Opções adicionais específicas do processador
+            
+        Returns:
+            bool: True se processamento foi bem-sucedido, False caso contrário
+        """
         pass
     
     # Métodos concretos compartilhados
@@ -142,9 +176,45 @@ class BaseProcessor(ABC):
             Dict mapeando colunas antigas para nomes das entidades
         """
         entity_class = self.get_entity_class()
-        entity_columns = entity_class.get_column_names()
+        all_columns = entity_class.get_column_names()
+        
+        # Para empresas, o cpf_extraido é calculado, não vem do CSV
+        if hasattr(entity_class, '__name__') and entity_class.__name__ == 'Empresa':
+            entity_columns = [col for col in all_columns if col != 'cpf_extraido']
+        else:
+            entity_columns = all_columns
+            
         df_columns = df.columns
         
+        # ESPECIAL: Para estabelecimentos, mapear dos 30 campos do CSV para os 14 desejados
+        if hasattr(entity_class, '__name__') and entity_class.__name__ == 'Estabelecimento':
+            # Mapeamento específico das posições CSV para campos desejados
+            # Baseado na estrutura real dos dados da Receita Federal
+            estabelecimento_mapping = {
+                'column_1': 'cnpj_basico',           # posição 1
+                'column_4': 'matriz_filial',         # posição 4  
+                'column_5': 'nome_fantasia',         # posição 5
+                'column_6': 'codigo_situacao',       # posição 6
+                'column_7': 'data_situacao_cadastral', # posição 7
+                'column_8': 'codigo_motivo',         # posição 8
+                'column_9': 'nome_cidade_exterior',  # posição 9
+                'column_11': 'data_inicio_atividades', # posição 11
+                'column_12': 'codigo_cnae',          # posição 12
+                'column_13': 'cnae_secundaria',      # posição 13
+                'column_20': 'uf',                   # posição 20
+                'column_21': 'codigo_municipio',     # posição 21
+                'column_19': 'cep',                  # posição 19
+            }
+            
+            # Filtrar apenas colunas que existem no DataFrame
+            mapping = {}
+            for df_col, entity_col in estabelecimento_mapping.items():
+                if df_col in df_columns:
+                    mapping[df_col] = entity_col
+            
+            return mapping
+        
+        # Para outras entidades, usar mapeamento sequencial padrão
         mapping = {}
         for i, entity_col in enumerate(entity_columns):
             df_col = f"column_{i+1}"
@@ -200,11 +270,37 @@ class BaseProcessor(ABC):
             type_mapping = entity_class.get_column_types()
             
             conversions = []
-            for col_name, col_type in type_mapping.items():
+            for col_name, target_type in type_mapping.items():
                 if col_name in df.columns:
-                    conversions.append(
-                        pl.col(col_name).cast(col_type, strict=False).alias(col_name)
-                    )
+                    current_type = df[col_name].dtype
+                    
+                    # Só converter se o tipo atual for diferente do tipo alvo
+                    if current_type != target_type:
+                        # ESPECIAL: Para campos de data, não converter automaticamente se são numéricos
+                        # Deixar isso para as transformações específicas de cada processador
+                        if target_type == pl.Date and current_type in [pl.Int64, pl.Int32]:
+                            # Pular conversão automática de data, será feita no processador específico
+                            continue
+                        
+                        # Para conversões de Int64 -> Int32, fazer conversão direta
+                        elif current_type == pl.Int64 and target_type == pl.Int32:
+                            conversions.append(
+                                pl.col(col_name).cast(target_type, strict=False).alias(col_name)
+                            )
+                        # Para conversões de string para numérico, tentar limpeza se necessário
+                        elif current_type == pl.Utf8 and target_type in [pl.Int32, pl.Int64, pl.Float64]:
+                            conversions.append(
+                                pl.col(col_name)
+                                .str.strip_chars('"')  # Remove aspas duplas se houver
+                                .str.strip_chars()      # Remove espaços
+                                .cast(target_type, strict=False)
+                                .alias(col_name)
+                            )
+                        # Para outras conversões, fazer conversão simples
+                        else:
+                            conversions.append(
+                                pl.col(col_name).cast(target_type, strict=False).alias(col_name)
+                            )
             
             if conversions:
                 df = df.with_columns(conversions)
@@ -223,21 +319,60 @@ class BaseProcessor(ABC):
     ) -> pl.DataFrame:
         """Aplica uma transformação específica baseada na entidade."""
         try:
-            # Aqui você pode implementar transformações específicas
-            # Por enquanto, retorna o DataFrame sem modificação
-            # TODO: Implementar transformações baseadas no nome
+            if transformation == 'extract_cpf':
+                # Extrair CPF da razão social para empresas
+                if 'razao_social' in df.columns:
+                    df = df.with_columns([
+                        pl.col('razao_social').str.extract(r'(\d{11})', 1).alias('cpf_extraido')
+                    ])
+                    self.logger.debug("CPF extraído da razão social")
             
-            if transformation == 'convert_dates':
-                # Exemplo de transformação de datas
+            elif transformation == 'clean_razao_social':
+                # Limpar razão social removendo CPF
+                if 'razao_social' in df.columns:
+                    df = df.with_columns([
+                        pl.col('razao_social').str.replace_all(r'\d{11}', '').str.strip_chars().alias('razao_social')
+                    ])
+                    self.logger.debug("Razão social limpa (CPF removido)")
+            
+            elif transformation == 'convert_capital_social':
+                # Converter capital social para float
+                if 'capital_social' in df.columns:
+                    df = df.with_columns([
+                        pl.col('capital_social').cast(pl.Utf8).str.replace_all(r'[^\d.,]', '').str.replace(',', '.').cast(pl.Float64, strict=False).alias('capital_social')
+                    ])
+            
+            elif transformation == 'normalize_strings':
+                # Normalizar strings
+                string_fields = ['razao_social', 'ente_federativo_responsavel']
+                for field in string_fields:
+                    if field in df.columns:
+                        df = df.with_columns([
+                            pl.col(field).str.strip_chars().str.to_uppercase().alias(field)
+                        ])
+            
+            elif transformation == 'validate_cnpj_basico':
+                # Validar e corrigir CNPJ básico
+                if 'cnpj_basico' in df.columns:
+                    df = df.with_columns([
+                        pl.col('cnpj_basico').str.replace_all(r'[^\d]', '').str.zfill(8).str.slice(0, 8).alias('cnpj_basico')
+                    ])
+            
+            elif transformation == 'convert_dates':
+                # Transformação de datas - verificar se já é datetime
                 date_columns = ['data_entrada_sociedade', 'data_situacao_cadastral', 'data_inicio_atividade']
                 for col in date_columns:
                     if col in df.columns:
-                        df = df.with_columns([
-                            pl.col(col).str.strptime(pl.Date, "%Y%m%d", strict=False).alias(col)
-                        ])
+                        # Verificar se a coluna já é do tipo datetime
+                        col_dtype = df[col].dtype
+                        if col_dtype == pl.Utf8:  # Só converter se for string
+                            df = df.with_columns([
+                                pl.col(col).str.strptime(pl.Date, "%Y%m%d", strict=False).alias(col)
+                            ])
+                        # Se já é datetime, manter como está
             
             elif transformation == 'validate_cpf_cnpj':
-                # Exemplo de limpeza de CPF/CNPJ
+                # Limpeza de CPF/CNPJ
                 cpf_cnpj_columns = ['cnpj_cpf_socio', 'representante_legal', 'cnpj_basico']
                 for col in cpf_cnpj_columns:
                     if col in df.columns:
@@ -265,7 +400,15 @@ class BaseProcessor(ABC):
         """
         try:
             entity_class = self.get_entity_class()
-            column_names = [f"column_{i+1}" for i in range(len(entity_class.get_column_names()))]
+            all_columns = entity_class.get_column_names()
+            
+            # Para empresas, o cpf_extraido é calculado, não vem do CSV
+            if hasattr(entity_class, '__name__') and entity_class.__name__ == 'Empresa':
+                csv_columns = [col for col in all_columns if col != 'cpf_extraido']
+            else:
+                csv_columns = all_columns
+            
+            column_names = [f"column_{i+1}" for i in range(len(csv_columns))]
             
             # Verificar se é arquivo de texto
             if not self._is_text_file(data_path):
@@ -283,10 +426,9 @@ class BaseProcessor(ABC):
                         encoding=config.file.encoding,
                         has_header=False,
                         new_columns=column_names,
-                        infer_schema_length=0,
-                        dtypes={col: pl.Utf8 for col in column_names},
+                        infer_schema_length=1000,  # Permitir inferência de tipos
                         ignore_errors=True,
-                        quote_char=None,
+                        quote_char='"',  # Definir aspas duplas como caractere de citação
                         null_values=["", "NULL", "null", "00000000"],
                         missing_utf8_is_empty_string=True,
                         try_parse_dates=False,
@@ -328,11 +470,11 @@ class BaseProcessor(ABC):
         partition_size: int = 500_000
     ) -> bool:
         """
-        Salva DataFrame como Parquet com particionamento automático.
+        Salva DataFrame como Parquet com particionamento automático e organização por tipo.
         
         Args:
             df: DataFrame a ser salvo
-            output_path: Caminho de saída
+            output_path: Caminho de saída base
             zip_prefix: Prefixo do arquivo ZIP original
             partition_size: Tamanho máximo de cada partição
             
@@ -348,16 +490,22 @@ class BaseProcessor(ABC):
                 self.logger.warning("DataFrame vazio, não salvando arquivo")
                 return False
             
+            # Criar subpasta por tipo de entidade
+            entity_folder = self.get_processor_name().lower()
+            organized_output_path = os.path.join(output_path, entity_folder)
+            
             # Garantir que o diretório existe
-            os.makedirs(output_path, exist_ok=True)
+            os.makedirs(organized_output_path, exist_ok=True)
+            
+            self.logger.info(f"Salvando arquivos em: {organized_output_path}")
             
             # Se o DataFrame é pequeno, salvar como arquivo único
             if df.height <= partition_size:
-                filename = f"{zip_prefix}_{self.get_processor_name().lower()}.parquet"
-                file_path = os.path.join(output_path, filename)
+                filename = f"{zip_prefix}.parquet"
+                file_path = os.path.join(organized_output_path, filename)
                 
                 df.write_parquet(file_path, compression='snappy')
-                self.logger.info(f"Arquivo Parquet salvo: {filename} ({df.height} linhas)")
+                self.logger.info(f"Arquivo Parquet salvo: {entity_folder}/{filename} ({df.height} linhas)")
                 return True
             
             # Para DataFrames grandes, particionar
@@ -368,13 +516,13 @@ class BaseProcessor(ABC):
                 end_idx = min((i + 1) * partition_size, df.height)
                 
                 partition_df = df.slice(start_idx, end_idx - start_idx)
-                filename = f"{zip_prefix}_{self.get_processor_name().lower()}_part_{i+1:03d}.parquet"
-                file_path = os.path.join(output_path, filename)
+                filename = f"{zip_prefix}_part_{i+1:03d}.parquet"
+                file_path = os.path.join(organized_output_path, filename)
                 
                 partition_df.write_parquet(file_path, compression='snappy')
-                self.logger.debug(f"Partição salva: {filename} ({partition_df.height} linhas)")
+                self.logger.debug(f"Partição salva: {entity_folder}/{filename} ({partition_df.height} linhas)")
             
-            self.logger.info(f"DataFrame particionado salvo: {num_partitions} arquivos ({df.height} linhas total)")
+            self.logger.info(f"DataFrame particionado salvo: {num_partitions} arquivos em {entity_folder}/ ({df.height} linhas total)")
             return True
             
         except Exception as e:
@@ -474,12 +622,13 @@ class BaseProcessor(ABC):
             bool: True se processado com sucesso, False caso contrário
         """
         try:
-            # Extrair o ZIP
-            with zipfile.ZipFile(os.path.join(path_zip, zip_file), 'r') as zip_ref:
-                zip_ref.extractall(path_unzip)
+            # Verificar se aplicação deve continuar
+            if not should_continue_processing():
+                self.logger.warning(f"🛑 Processamento interrompido pelo circuit breaker: {zip_file}")
+                return False
             
-            # Processar o conteúdo extraído
-            df = self.process_single_zip_impl(
+            # Chamar a implementação específica do processador
+            success = self.process_single_zip_impl(
                 zip_file,
                 path_zip,
                 path_unzip,
@@ -487,22 +636,141 @@ class BaseProcessor(ABC):
                 **kwargs
             )
             
-            if df is None:
+            if not success:
                 self.logger.error(f"Erro ao processar {zip_file}")
+                
+                # Reportar falha de processamento
+                circuit_breaker.report_failure(
+                    FailureType.PROCESSING_FAILURE,
+                    f"Falha no processamento do arquivo {zip_file}",
+                    self.get_processor_name(),
+                    CriticalityLevel.MODERATE,
+                    {'zip_file': zip_file, 'paths': {'zip': path_zip, 'unzip': path_unzip, 'parquet': path_parquet}}
+                )
+                
                 return False
             
-            # Salvar o resultado no formato Parquet
-            if not self.create_parquet_output(df, path_parquet, zip_file):
-                self.logger.error(f"Erro ao salvar {zip_file}")
-                return False
-            
-            # Deletar o ZIP após processamento
+            # Deletar o ZIP após processamento se solicitado
             if self.delete_zips_after_extract:
-                delete_zip_after_extraction(os.path.join(path_zip, zip_file))
+                zip_path = os.path.join(path_zip, zip_file)
+                try:
+                    os.remove(zip_path)
+                    self.logger.info(f"ZIP deletado após processamento: {zip_file}")
+                except Exception as e:
+                    self.logger.warning(f"Erro ao deletar ZIP {zip_file}: {e}")
+                    # Falha na limpeza não é crítica
+                    circuit_breaker.report_failure(
+                        FailureType.SYSTEM_RESOURCE,
+                        f"Erro ao deletar ZIP {zip_file}: {e}",
+                        self.get_processor_name(),
+                        CriticalityLevel.WARNING,
+                        {'zip_file': zip_file, 'zip_path': zip_path}
+                    )
             
-            self.logger.info(f"Processado {zip_file}")
             return True
             
         except Exception as e:
             self.logger.error(f"Erro ao processar {zip_file}: {str(e)}")
+            
+            # Reportar erro inesperado como falha crítica
+            circuit_breaker.report_failure(
+                FailureType.PROCESSING_FAILURE,
+                f"Erro inesperado ao processar {zip_file}: {str(e)}",
+                self.get_processor_name(),
+                CriticalityLevel.MODERATE,
+                {'zip_file': zip_file, 'error': str(e), 'error_type': type(e).__name__}
+            )
+            
+            return False
+
+    def _emergency_stop(self) -> None:
+        """
+        Callback de parada de emergência acionado pelo circuit breaker.
+        """
+        try:
+            self.logger.critical("🚨 PARADA DE EMERGÊNCIA ACIONADA!")
+            
+            # Parar processamento da fila
+            if hasattr(self, 'queue_manager') and self.queue_manager:
+                self.queue_manager.stop_all_workers()
+                self.logger.info("⏹️  Workers de processamento interrompidos")
+            
+            # Sinalizar parada para outros componentes
+            self.logger.info("🔴 Processador em modo de parada de emergência")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Erro durante parada de emergência: {e}")
+    
+    def _check_system_resources(self) -> bool:
+        """
+        Verifica se há recursos suficientes do sistema para operação.
+        
+        Returns:
+            bool: True se recursos suficientes, False caso contrário
+        """
+        try:
+            import psutil
+            
+            # Verificar espaço em disco (pelo menos 1GB livre)
+            try:
+                disk_usage = psutil.disk_usage(self.path_parquet)
+                free_gb = disk_usage.free / (1024**3)
+                
+                if free_gb < 1.0:
+                    self.logger.error(f"💾 Espaço insuficiente em disco: {free_gb:.2f} GB livre")
+                    report_critical_failure(
+                        FailureType.DISK_SPACE,
+                        f"Apenas {free_gb:.2f} GB livres em {self.path_parquet}",
+                        self.get_processor_name(),
+                        {'free_gb': free_gb, 'path': self.path_parquet}
+                    )
+                    return False
+                    
+            except Exception as e:
+                self.logger.warning(f"⚠️ Não foi possível verificar espaço em disco: {e}")
+            
+            # Verificar memória (pelo menos 1GB disponível)
+            try:
+                memory = psutil.virtual_memory()
+                available_gb = memory.available / (1024**3)
+                
+                if available_gb < 1.0:
+                    self.logger.error(f"🧠 Memória insuficiente: {available_gb:.2f} GB disponível")
+                    report_critical_failure(
+                        FailureType.MEMORY,
+                        f"Apenas {available_gb:.2f} GB de memória disponível",
+                        self.get_processor_name(),
+                        {'available_gb': available_gb, 'total_gb': memory.total / (1024**3)}
+                    )
+                    return False
+                    
+            except Exception as e:
+                self.logger.warning(f"⚠️ Não foi possível verificar memória: {e}")
+            
+            # Verificar permissões de escrita
+            test_paths = [self.path_zip, self.path_unzip, self.path_parquet]
+            for path in test_paths:
+                try:
+                    os.makedirs(path, exist_ok=True)
+                    
+                    # Tentar criar arquivo de teste
+                    test_file = os.path.join(path, '.test_permissions')
+                    with open(test_file, 'w') as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    
+                except Exception as e:
+                    self.logger.error(f"📂 Erro de permissão em {path}: {e}")
+                    report_critical_failure(
+                        FailureType.PERMISSIONS,
+                        f"Sem permissão de escrita em {path}",
+                        self.get_processor_name(),
+                        {'path': path, 'error': str(e)}
+                    )
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Erro ao verificar recursos do sistema: {e}")
             return False 

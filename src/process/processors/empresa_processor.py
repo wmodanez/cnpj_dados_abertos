@@ -60,20 +60,19 @@ class EmpresaProcessor(BaseProcessor):
             DataFrame transformado
         """
         try:
-            # Transformações específicas para empresas
-            
-            # 1. Limpar e padronizar CNPJ básico
+            # 1. Limpar e padronizar CNPJ básico (se ainda não foi processado)
             if 'cnpj_basico' in df.columns:
                 df = df.with_columns([
                     pl.col('cnpj_basico')
-                    .cast(pl.Utf8)  # Garantir que é string
-                    .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
-                    .str.pad_start(8, '0')          # Garante 8 dígitos, preenchendo com zeros
+                    .cast(pl.Utf8, strict=False)        # Converter para string primeiro
+                    .str.replace_all(r'[^\d]', '')      # Remove não-dígitos
+                    .str.pad_start(8, '0')              # Garante 8 dígitos, preenchendo com zeros
+                    .cast(pl.Int64, strict=False)       # Converte para bigint (Int64)
                     .alias('cnpj_basico')
                 ])
             
-            # 2. Extrair CPF da razão social
-            if 'razao_social' in df.columns:
+            # 2. Extrair CPF da razão social (se ainda não foi processado)
+            if 'razao_social' in df.columns and 'cpf_extraido' not in df.columns:
                 df = df.with_columns([
                     pl.col('razao_social')
                     .str.extract(r'(\d{11})', group_index=1)  # Extrai CPF
@@ -89,26 +88,21 @@ class EmpresaProcessor(BaseProcessor):
                     .alias('razao_social')
                 ])
             
-            # 3. Normalizar strings
+            # 3. Normalizar strings (apenas se ainda são strings)
             string_columns = ['razao_social', 'ente_federativo_responsavel']
             for col in string_columns:
                 if col in df.columns:
-                    df = df.with_columns([
-                        pl.col(col)
-                        .str.strip_chars()
-                        .str.to_uppercase()
-                        .alias(col)
-                    ])
+                    col_dtype = df[col].dtype
+                    if col_dtype == pl.Utf8:  # Só aplicar se ainda for string
+                        df = df.with_columns([
+                            pl.col(col)
+                            .str.strip_chars()
+                            .str.to_uppercase()
+                            .alias(col)
+                        ])
             
-            # 4. Converter capital social
-            if 'capital_social' in df.columns:
-                df = df.with_columns([
-                    pl.col('capital_social')
-                    .str.replace_all(r'[^\d.,]', '')  # Remove caracteres não numéricos
-                    .str.replace(',', '.')           # Vírgula para ponto
-                    .cast(pl.Float64, strict=False)  # Converter para float
-                    .alias('capital_social')
-                ])
+            # 4. Capital social já foi processado pela entidade base, não reprocessar
+            # A transformação 'convert_capital_social' já converteu para Float64
             
             # 5. Validar CPF extraído
             if 'cpf_extraido' in df.columns:
@@ -120,6 +114,7 @@ class EmpresaProcessor(BaseProcessor):
                 
                 df = df.with_columns([
                     pl.when(
+                        pl.col('cpf_extraido').is_null() |
                         (pl.col('cpf_extraido').str.len_chars() != 11) |
                         (pl.col('cpf_extraido').is_in(invalid_cpfs))
                     )
@@ -160,50 +155,44 @@ class EmpresaProcessor(BaseProcessor):
         Returns:
             DataFrame com colunas adicionais
         """
-        # Classificação por porte
-        if 'porte_empresa' in df.columns:
-            df = df.with_columns([
-                pl.when(pl.col('porte_empresa') == 1)
-                .then('Microempresa')
-                .when(pl.col('porte_empresa') == 2)
-                .then('Pequena Empresa')
-                .when(pl.col('porte_empresa') == 3)
-                .then('Empresa de Médio Porte')
-                .when(pl.col('porte_empresa') == 4)
-                .then('Grande Empresa')
-                .when(pl.col('porte_empresa') == 5)
-                .then('Empresa de Grande Porte')
-                .otherwise('Não Informado')
-                .alias('porte_descricao')
-            ])
-        
-        # Indicador de empresa privada (tem CPF extraído)
-        if 'cpf_extraido' in df.columns:
-            df = df.with_columns([
-                pl.when(pl.col('cpf_extraido').is_not_null())
-                .then(True)
-                .otherwise(False)
-                .alias('is_empresa_privada')
-            ])
-        
-        # Classificação de capital social
-        if 'capital_social' in df.columns:
-            df = df.with_columns([
-                pl.when(pl.col('capital_social').is_null())
-                .then('Não Informado')
-                .when(pl.col('capital_social') == 0)
-                .then('Zero')
-                .when(pl.col('capital_social') <= 100_000)
-                .then('Baixo (até 100k)')
-                .when(pl.col('capital_social') <= 1_000_000)
-                .then('Médio (até 1M)')
-                .when(pl.col('capital_social') <= 10_000_000)
-                .then('Alto (até 10M)')
-                .otherwise('Muito Alto (acima 10M)')
-                .alias('capital_categoria')
-            ])
-        
-        return df
+        try:
+            # Classificação por porte
+            if 'porte_empresa' in df.columns:
+                try:
+                    df = df.with_columns([
+                        pl.when(pl.col('porte_empresa') == 1)
+                        .then(pl.lit('Microempresa'))
+                        .when(pl.col('porte_empresa') == 2)
+                        .then(pl.lit('Pequena Empresa'))
+                        .when(pl.col('porte_empresa') == 3)
+                        .then(pl.lit('Empresa de Médio Porte'))
+                        .when(pl.col('porte_empresa') == 4)
+                        .then(pl.lit('Grande Empresa'))
+                        .when(pl.col('porte_empresa') == 5)
+                        .then(pl.lit('Empresa de Grande Porte'))
+                        .otherwise(pl.lit('Não Informado'))
+                        .alias('porte_descricao')
+                    ])
+                except Exception as e:
+                    self.logger.error(f"Erro ao criar porte_descricao: {e}")
+            
+            # Indicador de empresa privada (tem CPF extraído)
+            if 'cpf_extraido' in df.columns:
+                try:
+                    df = df.with_columns([
+                        pl.when(pl.col('cpf_extraido').is_not_null())
+                        .then(pl.lit(True))
+                        .otherwise(pl.lit(False))
+                        .alias('is_empresa_privada')
+                    ])
+                except Exception as e:
+                    self.logger.error(f"Erro ao criar is_empresa_privada: {e}")
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Erro geral em _add_calculated_columns: {e}")
+            return df
     
     def create_private_subset(self, df: pl.DataFrame, output_path: str, zip_prefix: str) -> bool:
         """
@@ -419,7 +408,7 @@ class EmpresaProcessor(BaseProcessor):
                 data_file_path,
                 separator=';',
                 has_header=False,
-                encoding='latin1',
+                encoding='utf8-lossy',
                 ignore_errors=True,
                 truncate_ragged_lines=True
             )
@@ -498,13 +487,11 @@ class EmpresaProcessor(BaseProcessor):
             'calculated_columns': [
                 'cpf_extraido',
                 'porte_descricao',
-                'is_empresa_privada',
-                'capital_categoria'
+                'is_empresa_privada'
             ],
             'special_features': [
                 'Subset de empresas privadas (create_private)',
                 'Extração automática de CPF',
-                'Classificação por porte e capital'
             ]
         }
         

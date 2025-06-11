@@ -23,15 +23,12 @@ class Estabelecimento(BaseEntity):
     
     Attributes:
         cnpj_basico: CNPJ básico (8 dígitos)
-        cnpj_ordem: Ordem do estabelecimento (4 dígitos)
-        cnpj_dv: Dígito verificador (2 dígitos)
         matriz_filial: 1=Matriz, 2=Filial
         nome_fantasia: Nome fantasia do estabelecimento
-        codigo_situacao_cadastral: Código da situação cadastral
+        codigo_situacao: Código da situação cadastral
         data_situacao_cadastral: Data da situação cadastral
-        codigo_motivo_situacao_cadastral: Motivo da situação
+        codigo_motivo: Motivo da situação
         nome_cidade_exterior: Cidade no exterior
-        pais: País
         data_inicio_atividades: Data de início das atividades
         codigo_cnae: Código CNAE principal
         cnae_secundaria: CNAEs secundários
@@ -42,15 +39,12 @@ class Estabelecimento(BaseEntity):
     """
     
     cnpj_basico: str
-    cnpj_ordem: str
-    cnpj_dv: str
     matriz_filial: Optional[int] = None
     nome_fantasia: Optional[str] = None
-    codigo_situacao_cadastral: Optional[int] = None
+    codigo_situacao: Optional[int] = None
     data_situacao_cadastral: Optional[datetime] = None
-    codigo_motivo_situacao_cadastral: Optional[int] = None
+    codigo_motivo: Optional[int] = None
     nome_cidade_exterior: Optional[str] = None
-    pais: Optional[str] = None
     data_inicio_atividades: Optional[datetime] = None
     codigo_cnae: Optional[int] = None
     cnae_secundaria: Optional[str] = None
@@ -61,36 +55,32 @@ class Estabelecimento(BaseEntity):
     
     def __post_init__(self):
         """Executa processamento após inicialização."""
-        # Calcular CNPJ completo
-        self.cnpj_completo = self._calculate_cnpj_completo()
+        # CNPJ completo agora é criado no processador a partir das partes originais
+        # Aqui apenas validamos se já foi criado
         
         # Chamar método da classe pai
         super().__post_init__()
     
     @classmethod
     def get_column_names(cls) -> List[str]:
-        """Retorna nomes das colunas da entidade."""
+        """Retorna nomes das colunas da entidade (14 campos originais)."""
         return [
-            'cnpj_basico', 'cnpj_ordem', 'cnpj_dv', 'matriz_filial', 'nome_fantasia',
-            'codigo_situacao_cadastral', 'data_situacao_cadastral', 'codigo_motivo_situacao_cadastral',
-            'nome_cidade_exterior', 'pais', 'data_inicio_atividades', 'codigo_cnae',
-            'cnae_secundaria', 'uf', 'codigo_municipio', 'cep', 'cnpj_completo'
+            'cnpj_basico', 'matriz_filial', 'nome_fantasia', 'codigo_situacao',
+            'data_situacao_cadastral', 'codigo_motivo', 'nome_cidade_exterior', 'data_inicio_atividades',
+            'codigo_cnae', 'cnae_secundaria', 'uf', 'codigo_municipio', 'cep', 'cnpj_completo'
         ]
     
     @classmethod
     def get_column_types(cls) -> Dict[str, Type]:
         """Retorna tipos das colunas da entidade."""
         return {
-            'cnpj_basico': pl.Utf8,
-            'cnpj_ordem': pl.Utf8,
-            'cnpj_dv': pl.Utf8,
+            'cnpj_basico': pl.Int64,
             'matriz_filial': pl.Int32,
             'nome_fantasia': pl.Utf8,
-            'codigo_situacao_cadastral': pl.Int32,
+            'codigo_situacao': pl.Int32,
             'data_situacao_cadastral': pl.Datetime,
-            'codigo_motivo_situacao_cadastral': pl.Int32,
+            'codigo_motivo': pl.Int32,
             'nome_cidade_exterior': pl.Utf8,
-            'pais': pl.Utf8,
             'data_inicio_atividades': pl.Datetime,
             'codigo_cnae': pl.Int32,
             'cnae_secundaria': pl.Utf8,
@@ -121,12 +111,12 @@ class Estabelecimento(BaseEntity):
         """
         self._validation_errors.clear()
         
-        # Validar partes do CNPJ
+        # Validar CNPJ básico
         if not self._validate_cnpj_parts():
             return False
         
-        # Validar CNPJ completo usando algoritmo
-        if not self._validate_cnpj_algorithm():
+        # Validar CNPJ completo usando algoritmo (se disponível)
+        if self.cnpj_completo and not self._validate_cnpj_algorithm():
             return False
         
         # Validar UF
@@ -150,20 +140,12 @@ class Estabelecimento(BaseEntity):
     
     def _validate_cnpj_parts(self) -> bool:
         """Valida partes do CNPJ."""
-        if not all([self.cnpj_basico, self.cnpj_ordem, self.cnpj_dv]):
-            self._validation_errors.append("CNPJ básico, ordem e DV são obrigatórios")
+        if not self.cnpj_basico:
+            self._validation_errors.append("CNPJ básico é obrigatório")
             return False
         
         if len(self.cnpj_basico) != 8 or not self.cnpj_basico.isdigit():
             self._validation_errors.append("CNPJ básico deve ter 8 dígitos")
-            return False
-        
-        if len(self.cnpj_ordem) != 4 or not self.cnpj_ordem.isdigit():
-            self._validation_errors.append("CNPJ ordem deve ter 4 dígitos")
-            return False
-        
-        if len(self.cnpj_dv) != 2 or not self.cnpj_dv.isdigit():
-            self._validation_errors.append("CNPJ DV deve ter 2 dígitos")
             return False
         
         return True
@@ -261,8 +243,8 @@ class Estabelecimento(BaseEntity):
     
     def _calculate_cnpj_completo(self) -> Optional[str]:
         """Calcula CNPJ completo."""
-        if all([self.cnpj_basico, self.cnpj_ordem, self.cnpj_dv]):
-            return f"{self.cnpj_basico.zfill(8)}{self.cnpj_ordem.zfill(4)}{self.cnpj_dv.zfill(2)}"
+        # CNPJ completo agora é criado no processador a partir das partes originais do CSV
+        # que são removidas após o processamento
         return None
     
     def get_cnpj_formatado(self) -> str:
@@ -283,7 +265,7 @@ class Estabelecimento(BaseEntity):
     
     def is_ativo(self) -> bool:
         """Verifica se está ativo (situação cadastral 2)."""
-        return self.codigo_situacao_cadastral == 2
+        return self.codigo_situacao == 2
     
     def get_cep_formatado(self) -> str:
         """Retorna CEP formatado (XXXXX-XXX)."""
@@ -296,12 +278,8 @@ class Estabelecimento(BaseEntity):
     
     def _transform_create_cnpj_completo(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Transformação: criar CNPJ completo."""
-        if all(key in data for key in ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']):
-            cnpj_basico = str(data['cnpj_basico']).zfill(8)
-            cnpj_ordem = str(data['cnpj_ordem']).zfill(4)
-            cnpj_dv = str(data['cnpj_dv']).zfill(2)
-            data['cnpj_completo'] = f"{cnpj_basico}{cnpj_ordem}{cnpj_dv}"
-        
+        # Esta transformação é feita no processador agora
+        # Aqui apenas retornamos os dados sem modificação
         return data
     
     def _transform_clean_cep(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -329,7 +307,7 @@ class Estabelecimento(BaseEntity):
     
     def _transform_normalize_strings(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Transformação: normalizar strings."""
-        string_fields = ['nome_fantasia', 'nome_cidade_exterior', 'pais', 'uf']
+        string_fields = ['nome_fantasia', 'nome_cidade_exterior']
         
         for field in string_fields:
             if field in data and data[field]:
@@ -339,16 +317,10 @@ class Estabelecimento(BaseEntity):
     
     def _transform_validate_cnpj_parts(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Transformação: validar e corrigir partes do CNPJ."""
-        cnpj_fields = [
-            ('cnpj_basico', 8),
-            ('cnpj_ordem', 4),
-            ('cnpj_dv', 2)
-        ]
-        
-        for field, length in cnpj_fields:
-            if field in data and data[field]:
-                value = re.sub(r'[^\d]', '', str(data[field]))
-                data[field] = value.zfill(length)[:length]
+        # Apenas validar cnpj_basico agora
+        if 'cnpj_basico' in data and data['cnpj_basico']:
+            value = re.sub(r'[^\d]', '', str(data['cnpj_basico']))
+            data['cnpj_basico'] = value.zfill(8)[:8]
         
         return data
     

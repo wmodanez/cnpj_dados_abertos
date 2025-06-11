@@ -64,26 +64,41 @@ class EstabelecimentoProcessor(BaseProcessor):
         try:
             # Transformações específicas para estabelecimentos
             
-            # 1. Limpar e padronizar partes do CNPJ
-            cnpj_parts = ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']
-            lengths = [8, 4, 2]
-            
-            for part, length in zip(cnpj_parts, lengths):
-                if part in df.columns:
-                    df = df.with_columns([
-                        pl.col(part)
-                        .cast(pl.Utf8)  # Garantir que é string
-                        .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
-                        .str.pad_start(length, '0')     # Garante dígitos corretos, preenchendo com zeros
-                        .alias(part)
-                    ])
-            
-            # 2. Criar CNPJ completo
-            if all(part in df.columns for part in cnpj_parts):
+            # 1. Limpar e padronizar partes do CNPJ (apenas cnpj_basico agora)
+            if 'cnpj_basico' in df.columns:
                 df = df.with_columns([
-                    (pl.col('cnpj_basico') + pl.col('cnpj_ordem') + pl.col('cnpj_dv'))
-                    .alias('cnpj_completo')
+                    pl.col('cnpj_basico')
+                    .cast(pl.Utf8, strict=False)        # Converter para string primeiro
+                    .str.replace_all(r'[^\d]', '')      # Remove não-dígitos
+                    .str.pad_start(8, '0')              # Garante 8 dígitos, preenchendo com zeros
+                    .cast(pl.Int64, strict=False)       # Converte para bigint (Int64)
+                    .alias('cnpj_basico')
                 ])
+            
+            # 2. Criar CNPJ completo (usando colunas auxiliares que não serão salvas)
+            # Primeiro, garantir que temos as partes do CNPJ como colunas auxiliares
+            if 'column_1' in df.columns and 'column_2' in df.columns and 'column_3' in df.columns:
+                try:
+                    # Criar colunas auxiliares temporárias para formar o CNPJ completo
+                    df = df.with_columns([
+                        pl.col('column_1').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(8, '0').alias('_cnpj_basico_temp'),
+                        pl.col('column_2').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(4, '0').alias('_cnpj_ordem_temp'),
+                        pl.col('column_3').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(2, '0').alias('_cnpj_dv_temp')
+                    ])
+                    
+                    # Criar CNPJ completo
+                    df = df.with_columns([
+                        (pl.col('_cnpj_basico_temp') + pl.col('_cnpj_ordem_temp') + pl.col('_cnpj_dv_temp')).alias('cnpj_completo')
+                    ])
+                    
+                    # Remover colunas auxiliares temporárias
+                    df = df.drop(['_cnpj_basico_temp', '_cnpj_ordem_temp', '_cnpj_dv_temp'])
+                    
+                    self.logger.debug("CNPJ completo criado com sucesso")
+                except Exception as e:
+                    self.logger.warning(f"Erro ao criar CNPJ completo: {str(e)}")
+            else:
+                self.logger.warning("Colunas necessárias para CNPJ completo não encontradas")
             
             # 3. Limpar e validar CEP
             if 'cep' in df.columns:
@@ -145,8 +160,8 @@ class EstabelecimentoProcessor(BaseProcessor):
                     .alias('nome_fantasia')
                 ])
             
-            # 6. Normalizar outras strings
-            string_columns = ['nome_cidade_exterior', 'pais']
+            # 6. Normalizar outras strings (removido 'pais')
+            string_columns = ['nome_cidade_exterior']
             for col in string_columns:
                 if col in df.columns:
                     df = df.with_columns([
@@ -156,16 +171,16 @@ class EstabelecimentoProcessor(BaseProcessor):
                         .alias(col)
                     ])
             
-            # 7. Validar códigos situação e motivo
-            if 'codigo_situacao_cadastral' in df.columns:
+            # 7. Validar códigos situação e motivo (nomes corretos)
+            if 'codigo_situacao' in df.columns:
                 df = df.with_columns([
                     pl.when(
-                        (pl.col('codigo_situacao_cadastral') < 1) |
-                        (pl.col('codigo_situacao_cadastral') > 99)
+                        (pl.col('codigo_situacao') < 1) |
+                        (pl.col('codigo_situacao') > 99)
                     )
                     .then(None)
-                    .otherwise(pl.col('codigo_situacao_cadastral'))
-                    .alias('codigo_situacao_cadastral')
+                    .otherwise(pl.col('codigo_situacao'))
+                    .alias('codigo_situacao')
                 ])
             
             # 8. Validar matriz/filial
@@ -197,71 +212,91 @@ class EstabelecimentoProcessor(BaseProcessor):
         Returns:
             DataFrame com colunas adicionais
         """
-        # Tipo de estabelecimento (matriz/filial)
-        if 'matriz_filial' in df.columns:
-            df = df.with_columns([
-                pl.when(pl.col('matriz_filial') == 1)
-                .then('Matriz')
-                .when(pl.col('matriz_filial') == 2)
-                .then('Filial')
-                .otherwise('Não Informado')
-                .alias('tipo_estabelecimento')
-            ])
-        
-        # Situação cadastral descritiva
-        if 'codigo_situacao_cadastral' in df.columns:
-            df = df.with_columns([
-                pl.when(pl.col('codigo_situacao_cadastral') == 1)
-                .then('Nula')
-                .when(pl.col('codigo_situacao_cadastral') == 2)
-                .then('Ativa')
-                .when(pl.col('codigo_situacao_cadastral') == 3)
-                .then('Suspensa')
-                .when(pl.col('codigo_situacao_cadastral') == 4)
-                .then('Inapta')
-                .when(pl.col('codigo_situacao_cadastral') == 8)
-                .then('Baixada')
-                .otherwise('Outros')
-                .alias('situacao_descricao')
-            ])
-        
-        # CNPJ formatado (XX.XXX.XXX/XXXX-XX)
-        if 'cnpj_completo' in df.columns:
-            df = df.with_columns([
-                pl.when(pl.col('cnpj_completo').str.len_chars() == 14)
-                .then(
-                    pl.col('cnpj_completo').str.slice(0, 2) + "." +
-                    pl.col('cnpj_completo').str.slice(2, 3) + "." +
-                    pl.col('cnpj_completo').str.slice(5, 3) + "/" +
-                    pl.col('cnpj_completo').str.slice(8, 4) + "-" +
-                    pl.col('cnpj_completo').str.slice(12, 2)
-                )
-                .otherwise(None)
-                .alias('cnpj_formatado')
-            ])
-        
-        # CEP formatado (XXXXX-XXX)
-        if 'cep' in df.columns:
-            df = df.with_columns([
-                pl.when(pl.col('cep').str.len_chars() == 8)
-                .then(
-                    pl.col('cep').str.slice(0, 5) + "-" +
-                    pl.col('cep').str.slice(5, 3)
-                )
-                .otherwise(None)
-                .alias('cep_formatado')
-            ])
-        
-        # Indicador de estabelecimento ativo
-        if 'codigo_situacao_cadastral' in df.columns:
-            df = df.with_columns([
-                pl.when(pl.col('codigo_situacao_cadastral') == 2)
-                .then(True)
-                .otherwise(False)
-                .alias('is_ativo')
-            ])
-        
-        return df
+        try:
+            # Situação cadastral descritiva
+            if 'codigo_situacao' in df.columns:
+                try:
+                    df = df.with_columns([
+                        pl.when(pl.col('codigo_situacao') == 1)
+                        .then(pl.lit('Nula'))
+                        .when(pl.col('codigo_situacao') == 2)
+                        .then(pl.lit('Ativa'))
+                        .when(pl.col('codigo_situacao') == 3)
+                        .then(pl.lit('Suspensa'))
+                        .when(pl.col('codigo_situacao') == 4)
+                        .then(pl.lit('Inapta'))
+                        .when(pl.col('codigo_situacao') == 8)
+                        .then(pl.lit('Baixada'))
+                        .otherwise(pl.lit('Outros'))
+                        .alias('situacao_descricao')
+                    ])
+                except Exception as e:
+                    self.logger.error(f"Erro ao criar situacao_descricao: {e}")
+            
+            # CNPJ formatado (XX.XXX.XXX/XXXX-XX)
+            if 'cnpj_completo' in df.columns:
+                try:
+                    df = df.with_columns([
+                        pl.when(pl.col('cnpj_completo').str.len_chars() == 14)
+                        .then(
+                            pl.col('cnpj_completo').str.slice(0, 2) + pl.lit(".") +
+                            pl.col('cnpj_completo').str.slice(2, 3) + pl.lit(".") +
+                            pl.col('cnpj_completo').str.slice(5, 3) + pl.lit("/") +
+                            pl.col('cnpj_completo').str.slice(8, 4) + pl.lit("-") +
+                            pl.col('cnpj_completo').str.slice(12, 2)
+                        )
+                        .otherwise(None)
+                        .alias('cnpj_formatado')
+                    ])
+                except Exception as e:
+                    self.logger.error(f"Erro ao criar cnpj_formatado: {e}")
+            
+            # CEP formatado (XXXXX-XXX)
+            if 'cep' in df.columns:
+                try:
+                    df = df.with_columns([
+                        pl.when(pl.col('cep').str.len_chars() == 8)
+                        .then(
+                            pl.col('cep').str.slice(0, 5) + pl.lit("-") +
+                            pl.col('cep').str.slice(5, 3)
+                        )
+                        .otherwise(None)
+                        .alias('cep_formatado')
+                    ])
+                except Exception as e:
+                    self.logger.error(f"Erro ao criar cep_formatado: {e}")
+            
+            # Tipo de situação cadastral baseado em regras específicas
+            if 'codigo_situacao' in df.columns and 'codigo_motivo' in df.columns:
+                try:
+                    df = df.with_columns([
+                        pl.when(pl.col('codigo_situacao') == 2)
+                        .then(pl.lit(1))  # Ativa
+                        .when(
+                            (pl.col('codigo_situacao') == 8) & 
+                            (pl.col('codigo_motivo') == 1)
+                        )
+                        .then(pl.lit(2))  # Baixa Voluntária
+                        .when(
+                            (pl.col('codigo_situacao') == 8) & 
+                            (pl.col('codigo_motivo') != 1)
+                        )
+                        .then(pl.lit(3))  # Outras Baixas
+                        .otherwise(None)  # NULL para demais casos
+                        .alias('tipo_situacao_cadastral')
+                    ])
+                    
+                    self.logger.debug("Campo tipo_situacao_cadastral criado com sucesso")
+                except Exception as e:
+                    self.logger.warning(f"Erro ao criar tipo_situacao_cadastral: {str(e)}")
+            else:
+                self.logger.warning("Campos codigo_situacao ou codigo_motivo não encontrados para criar tipo_situacao_cadastral")
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Erro geral em _add_calculated_columns: {e}")
+            return df
     
     def create_uf_subset(self, df: pl.DataFrame, output_path: str, zip_prefix: str, uf: str) -> bool:
         """
@@ -290,26 +325,22 @@ class EstabelecimentoProcessor(BaseProcessor):
                 self.logger.warning(f"Nenhum estabelecimento encontrado para UF {uf} em {zip_prefix}")
                 return True
             
-            # Criar subdiretório para a UF
-            uf_output_path = os.path.join(output_path, f"uf_{uf.lower()}")
+            # Criar subpasta para subsets UF dentro da pasta da entidade
+            entity_folder = self.get_processor_name().lower()
+            base_output_path = os.path.join(output_path, entity_folder)
+            uf_output_path = os.path.join(base_output_path, f"uf_{uf.lower()}")
             os.makedirs(uf_output_path, exist_ok=True)
             
             self.logger.info(f"Criando subset UF {uf}: {df_uf.height} estabelecimentos")
             
-            # Salvar subset
-            success = self.create_parquet_output(
-                df_uf, 
-                uf_output_path, 
-                f"{zip_prefix}_{uf.lower()}",
-                partition_size=500_000
-            )
+            # Salvar subset usando padrão da entidade
+            subset_filename = f"{zip_prefix}_{uf.lower()}.parquet"
+            subset_path = os.path.join(uf_output_path, subset_filename)
             
-            if success:
-                self.logger.info(f"Subset UF {uf} salvo com sucesso")
-            else:
-                self.logger.error(f"Falha ao salvar subset UF {uf}")
+            df_uf.write_parquet(subset_path, compression='snappy')
             
-            return success
+            self.logger.info(f"Subset UF {uf} salvo: {entity_folder}/uf_{uf.lower()}/{subset_filename}")
+            return True
             
         except Exception as e:
             self.logger.error(f"Erro ao criar subset UF {uf}: {e}")
@@ -445,12 +476,17 @@ class EstabelecimentoProcessor(BaseProcessor):
             chunk_counter = 0
             uf_chunks = []  # Para acumular chunks da UF
             
+            # Criar subpasta por tipo de entidade (padrão do sistema)
+            entity_folder = self.get_processor_name().lower()
+            organized_output_path = os.path.join(output_dir, entity_folder)
+            os.makedirs(organized_output_path, exist_ok=True)
+            
             # Usar scan_csv para processamento lazy
             lazy_df = pl.scan_csv(
                 data_file_path,
                 separator=';',
                 has_header=False,
-                encoding='latin1',
+                encoding='utf8-lossy',
                 ignore_errors=True,
                 truncate_ragged_lines=True
             )
@@ -481,9 +517,9 @@ class EstabelecimentoProcessor(BaseProcessor):
                         self.logger.debug(f"Chunk {i+1} vazio após filtro UF {uf_subset}")
                         continue
                 
-                # Salvar chunk principal
-                chunk_filename = f"{zip_prefix}_estabelecimento_chunk_{i+1:03d}.parquet"
-                chunk_path = os.path.join(output_dir, chunk_filename)
+                # Salvar chunk principal usando padrão igual aos outros processadores
+                chunk_filename = f"{zip_prefix}_part_{i+1:03d}.parquet"
+                chunk_path = os.path.join(organized_output_path, chunk_filename)
                 
                 chunk_df.write_parquet(chunk_path, compression='snappy')
                 chunk_counter += 1
@@ -492,14 +528,14 @@ class EstabelecimentoProcessor(BaseProcessor):
                 if uf_subset and chunk_df.height > 0:
                     uf_chunks.append(chunk_df)
                 
-                self.logger.debug(f"Chunk {i+1}/{num_chunks} salvo: {chunk_df.height} linhas")
+                self.logger.debug(f"Chunk {i+1}/{num_chunks} salvo: {entity_folder}/{chunk_filename} ({chunk_df.height} linhas)")
             
             # Criar subset por UF se solicitado e há dados
             if uf_subset and uf_chunks:
                 combined_uf = pl.concat(uf_chunks, how="vertical_relaxed")
                 self.create_uf_subset(combined_uf, output_dir, zip_prefix, uf_subset)
             
-            self.logger.info(f"Processamento em chunks concluído: {chunk_counter} chunks")
+            self.logger.info(f"Processamento em chunks concluído: {chunk_counter} chunks em {entity_folder}/")
             return chunk_counter
             
         except Exception as e:
@@ -526,17 +562,18 @@ class EstabelecimentoProcessor(BaseProcessor):
                 'Limpeza e validação de CEP',
                 'Normalização de UF',
                 'Limpeza de nome fantasia',
-                'Validação de códigos',
-                'Normalização de strings'
+                'Validação de códigos situação e motivo',
+                'Normalização de strings',
+                'Remoção de campos desnecessários (pais, cnpj_ordem, cnpj_dv)',
+                'Criação de tipo_situacao_cadastral com regras específicas'
             ],
             'output_format': 'Parquet particionado',
             'calculated_columns': [
                 'cnpj_completo',
                 'cnpj_formatado',
                 'cep_formatado',
-                'tipo_estabelecimento',
                 'situacao_descricao',
-                'is_ativo'
+                'tipo_situacao_cadastral'
             ],
             'special_features': [
                 'Subset por UF (uf_subset)',

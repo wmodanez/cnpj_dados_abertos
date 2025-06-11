@@ -60,7 +60,7 @@ class Socio(BaseEntity):
     def get_column_types(cls) -> Dict[str, Type]:
         """Retorna tipos das colunas da entidade."""
         return {
-            'cnpj_basico': pl.Utf8,
+            'cnpj_basico': pl.Int64,
             'identificador_socio': pl.Int32,
             'nome_socio': pl.Utf8,
             'cnpj_cpf_socio': pl.Utf8,
