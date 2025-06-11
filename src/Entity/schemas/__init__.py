@@ -9,6 +9,7 @@ from .empresa import EmpresaSchema
 from .estabelecimento import EstabelecimentoSchema
 from .socio import SocioSchema
 from .simples import SimplesSchema
+from .painel import PainelSchema
 from .utils import get_schema_for_entity, validate_data_with_schema
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     'EstabelecimentoSchema',
     'SocioSchema', 
     'SimplesSchema',
+    'PainelSchema',
     'get_schema_for_entity',
     'validate_data_with_schema'
 ] 

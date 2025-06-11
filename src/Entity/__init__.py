@@ -12,7 +12,8 @@ from .schemas import (
     EmpresaSchema,
     EstabelecimentoSchema,
     SocioSchema,
-    SimplesSchema
+    SimplesSchema,
+    PainelSchema
 )
 
 # Imports do sistema de validação da pasta específica
@@ -23,6 +24,7 @@ from .Empresa import Empresa
 from .Estabelecimento import Estabelecimento
 from .Socio import Socio
 from .Simples import Simples
+from .Painel import Painel
 
 # Imports das novas entidades de dados auxiliares
 from .Municipio import Municipio
@@ -36,6 +38,7 @@ EntityFactory.register_entity('empresa', Empresa)
 EntityFactory.register_entity('estabelecimento', Estabelecimento)
 EntityFactory.register_entity('socio', Socio)
 EntityFactory.register_entity('simples', Simples)
+EntityFactory.register_entity('painel', Painel)
 
 # Registrar entidades auxiliares no factory
 EntityFactory.register_entity('municipio', Municipio)
@@ -55,12 +58,14 @@ __all__ = [
     'EstabelecimentoSchema', 
     'SocioSchema',
     'SimplesSchema',
+    'PainelSchema',
     
     # Entidades principais
     'Empresa',
     'Estabelecimento',
     'Socio',
     'Simples',
+    'Painel',
     
     # Entidades auxiliares
     'Municipio',

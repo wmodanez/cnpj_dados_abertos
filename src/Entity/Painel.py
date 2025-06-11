@@ -1,8 +1,13 @@
 """
 Entidade Painel para dados combinados da Receita Federal.
 
-Esta classe representa um painel com dados combinados de Estabelecimento, Simples Nacional,
-Empresa e Município, implementando validações e transformações específicas para dados de exportação.
+Esta classe representa um painel com dados combinados obtidos através de relacionamentos específicos:
+- LEFT JOIN entre Estabelecimento e Simples Nacional (por cnpj_basico)
+- INNER JOIN com Empresa (por cnpj_basico) 
+- LEFT JOIN com Município (por codigo_municipio)
+- LEFT JOIN com dados auxiliares (CNAE, Natureza Jurídica, etc.)
+
+Implementa validações e transformações específicas para dados consolidados de exportação.
 """
 
 from dataclasses import dataclass, field
@@ -25,14 +30,17 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Painel(BaseEntity):
     """
-    Entidade representando um Painel com dados combinados de Estabelecimento, Simples Nacional, Empresa e Município.
+    Entidade representando um Painel com dados combinados da Receita Federal.
     
-    Combina informações de estabelecimentos com dados do Simples Nacional, dados da empresa e informações municipais
-    para fornecer uma visão consolidada para exportação.
+    Combina informações através dos seguintes relacionamentos:
+    - LEFT JOIN: Estabelecimento + Simples Nacional (por cnpj_basico)
+    - INNER JOIN: + Empresa (por cnpj_basico)
+    - LEFT JOIN: + Município (por codigo_municipio)
+    - LEFT JOIN: + dados auxiliares (CNAE, Natureza Jurídica, Qualificação Sócio, etc.)
     
     Attributes:
-        # Dados do Estabelecimento
-        cnpj_basico: CNPJ básico (int de 8 dígitos)
+        # Dados do Estabelecimento (base)
+        cnpj_basico: CNPJ básico (bigint de 8 dígitos)
         matriz_filial: 1=Matriz, 2=Filial
         codigo_situacao: Código da situação cadastral
         data_situacao_cadastral: Data da situação cadastral
@@ -43,21 +51,17 @@ class Painel(BaseEntity):
         codigo_municipio: Código do município
         tipo_situacao_cadastral: Tipo de situação cadastral (1=Ativa, 2=Baixa Voluntária, 3=Outras Baixas)
         
-        # Dados da Empresa (right join)
+        # Dados da Empresa (inner join por cnpj_basico)
         natureza_juridica: Código da natureza jurídica
         porte_empresa: Porte da empresa (1-5)
         
-        # Dados do Simples Nacional (podem ser null se não optante)
+        # Dados do Simples Nacional (left join - podem ser null se não optante)
         opcao_simples: Opção pelo Simples Nacional (S/N)
         data_opcao_simples: Data da opção pelo Simples
         data_exclusao_simples: Data de exclusão do Simples
         opcao_mei: Opção pelo MEI (S/N)
         data_opcao_mei: Data da opção pelo MEI
         data_exclusao_mei: Data de exclusão do MEI
-        
-        # Campos calculados
-        situacao_simples: Situação atual no Simples Nacional
-        situacao_mei: Situação atual no MEI
     """
     
     # Dados do Estabelecimento (obrigatórios)
@@ -74,11 +78,11 @@ class Painel(BaseEntity):
     codigo_municipio: Optional[int] = None
     tipo_situacao_cadastral: Optional[int] = None
     
-    # Dados da Empresa (right join)
+    # Dados da Empresa (inner join)
     natureza_juridica: Optional[int] = None
     porte_empresa: Optional[int] = None
     
-    # Dados do Simples Nacional (opcionais - podem não existir)
+    # Dados do Simples Nacional (left join - podem não existir)
     opcao_simples: Optional[str] = None
     data_opcao_simples: Optional[datetime] = None
     data_exclusao_simples: Optional[datetime] = None
@@ -86,14 +90,9 @@ class Painel(BaseEntity):
     data_opcao_mei: Optional[datetime] = None
     data_exclusao_mei: Optional[datetime] = None
     
-    # Campos calculados (gerados automaticamente)
-    situacao_simples: Optional[str] = field(init=False, default=None)
-    situacao_mei: Optional[str] = field(init=False, default=None)
-    
     def __post_init__(self):
         """Executa processamento após inicialização."""
         super().__post_init__()
-        self._calculate_derived_fields()
     
     @classmethod
     def get_column_names(cls) -> List[str]:
@@ -109,10 +108,7 @@ class Painel(BaseEntity):
             
             # Dados do Simples Nacional
             'opcao_simples', 'data_opcao_simples', 'data_exclusao_simples',
-            'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei',
-            
-            # Campos calculados
-            'situacao_simples', 'situacao_mei'
+            'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei'
         ]
     
     @classmethod
@@ -141,11 +137,7 @@ class Painel(BaseEntity):
             'data_exclusao_simples': pl.Datetime,
             'opcao_mei': pl.Utf8,
             'data_opcao_mei': pl.Datetime,
-            'data_exclusao_mei': pl.Datetime,
-            
-            # Campos calculados
-            'situacao_simples': pl.Utf8,
-            'situacao_mei': pl.Utf8
+            'data_exclusao_mei': pl.Datetime
         }
     
     @classmethod
@@ -286,12 +278,8 @@ class Painel(BaseEntity):
         return True
     
     def _calculate_derived_fields(self):
-        """Calcula campos derivados."""
-        # Calcular situação do Simples Nacional
-        self.situacao_simples = self._get_situacao_simples()
-        
-        # Calcular situação do MEI
-        self.situacao_mei = self._get_situacao_mei()
+        """Calcula campos derivados (removido - não há mais campos calculados)."""
+        pass
     
     def _get_situacao_simples(self) -> str:
         """Calcula situação atual no Simples Nacional."""
@@ -393,8 +381,8 @@ class Painel(BaseEntity):
             'cnpj_basico': self.cnpj_basico,
             'tipo_estabelecimento': 'Matriz' if self.is_matriz() else 'Filial' if self.is_filial() else 'Indefinido',
             'estabelecimento_ativo': self.is_ativo_estabelecimento(),
-            'situacao_simples': self.situacao_simples,
-            'situacao_mei': self.situacao_mei,
+            'situacao_simples': self._get_situacao_simples(),
+            'situacao_mei': self._get_situacao_mei(),
             'uf': self.uf,
             'natureza_juridica': self.natureza_juridica,
             'porte_empresa': self.porte_empresa,
