@@ -1,8 +1,8 @@
 # Processador de Dados CNPJ 🏢
 
-> **🆕 Versão 3.3.0** - Sistema Completamente Otimizado com Atalhos e Versionamento Automático
+> **🆕 Versão 3.2.0** - Sistema Completamente Otimizado com Atalhos e Versionamento Automático
 > 
-> Esta é a versão 3.3.0 do sistema, que representa uma **evolução significativa** com **sistema completo de atalhos**, **versionamento automático baseado em git tags**, arquitetura moderna, **pipeline otimizado de processamento imediato**, eliminação total de duplicação de código e performance superior. O sistema anterior (v2.x) foi completamente reestruturado utilizando padrões de design modernos e infraestrutura unificada.
+> Esta é a versão 3.2.0 do sistema, que representa uma **evolução significativa** com **sistema completo de atalhos**, **versionamento automático baseado em git tags**, arquitetura moderna, **pipeline otimizado de processamento imediato**, eliminação total de duplicação de código e performance superior. O sistema anterior (v2.x) foi completamente reestruturado utilizando padrões de design modernos e infraestrutura unificada.
 
 Este projeto automatiza o download, processamento e armazenamento dos dados públicos de CNPJ disponibilizados pela Receita Federal. Ele foi desenvolvido para ser eficiente, resiliente, modular e fácil de usar.
 
@@ -25,7 +25,7 @@ O sistema detecta automaticamente o sistema operacional e usa as APIs nativas ma
 
 Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, garantindo experiência consistente independente do sistema operacional.
 
-## 🚀 O que há de Novo na Versão 3.3.0
+## 🚀 O que há de Novo na Versão 3.2.0
 
 **🎯 SISTEMA COMPLETO DE ATALHOS (junho 2025):**
 - ✅ **22 atalhos implementados** para todos os argumentos do sistema
@@ -43,9 +43,9 @@ Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, g
 - ✅ **Integração total com main.py**: Versão aparece automaticamente no `--help`
 - ✅ **Sistema de fallback robusto**: Funciona mesmo em ambientes sem git
 - ✅ **Comandos de automação**:
-  - `python scripts/release.py --patch`: Incrementa versão patch (3.3.0 → 3.3.1)
-  - `python scripts/release.py --minor`: Incrementa versão minor (3.3.0 → 3.4.0)
-  - `python scripts/release.py --major`: Incrementa versão major (3.3.0 → 4.0.0)
+  - `python scripts/release.py --patch`: Incrementa versão patch (3.2.0 → 3.2.1)
+  - `python scripts/release.py --minor`: Incrementa versão minor (3.2.0 → 3.3.0)
+  - `python scripts/release.py --major`: Incrementa versão major (3.2.0 → 4.0.0)
   - `python scripts/release.py 3.5.0`: Cria versão específica
 - ✅ **Documentação especializada**: Guia completo em `VERSIONAMENTO.md`
 
@@ -70,7 +70,7 @@ Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, g
 - ✅ **100% eliminação de duplicação** (4.200 linhas duplicadas removidas)
 - ✅ **Arquitetura unificada** com padrões Factory, Strategy e Template Method
 
-**Benefícios Transformadores da v3.3.0:**
+**Benefícios Transformadores da v3.2.0:**
 - 🚀 **Interface ultra-otimizada**: Comandos 78% mais curtos e intuitivos
 - 🤖 **Automação completa**: Releases automatizadas via git tags
 - ⚡ **Performance excepcional**: Pipeline revolucionário + atalhos eficientes
@@ -214,7 +214,7 @@ PATH_REMOTE_PARQUET=//servidor/compartilhado/
 
 ## 🎯 Sistema de Atalhos
 
-**🆕 NOVIDADE v3.3.0**: Sistema completo de atalhos implementado! **Reduza seus comandos em até 78%!**
+**🆕 NOVIDADE v3.2.0**: Sistema completo de atalhos implementado! **Reduza seus comandos em até 78%!**
 
 ### ⚡ Atalhos Principais
 
@@ -289,18 +289,18 @@ python main.py -a -f 2023-01 -q -d
 
 ## ⚙️ Sistema de Versionamento
 
-**🆕 NOVIDADE v3.3.0**: Sistema completo de versionamento automático baseado em git tags!
+**🆕 NOVIDADE v3.2.0**: Sistema completo de versionamento automático baseado em git tags!
 
 ### 🔧 Comandos de Release Automatizados
 
 ```bash
-# Incrementar versão patch (3.3.0 → 3.3.1)
+# Incrementar versão patch (3.2.0 → 3.2.1)
 python scripts/release.py --patch
 
-# Incrementar versão minor (3.3.0 → 3.4.0)
+# Incrementar versão minor (3.2.0 → 3.3.0)
 python scripts/release.py --minor
 
-# Incrementar versão major (3.3.0 → 4.0.0)
+# Incrementar versão major (3.2.0 → 4.0.0)
 python scripts/release.py --major
 
 # Criar versão específica
@@ -323,7 +323,7 @@ O sistema detecta automaticamente a versão através de:
 ```bash
 # A versão aparece automaticamente no help
 python main.py --help
-# Sistema de Processamento de Dados CNPJ v3.3.0
+# Sistema de Processamento de Dados CNPJ v3.2.0
 
 # Verificar versão programaticamente
 python -c "from src.__version__ import get_version; print('Versão:', get_version())"
@@ -349,7 +349,7 @@ python main.py -s all
 # O sistema agora processa cada arquivo IMEDIATAMENTE após verificação/download
 # Performance: 70% mais rápido que versões anteriores!
 
-# 2. 🎯 EXEMPLOS COM ATALHOS (v3.3.0+):
+# 2. 🎯 EXEMPLOS COM ATALHOS (v3.2.0+):
 
 # Download apenas empresas em modo silencioso (78% mais curto):
 python main.py -t empresas -q
@@ -855,7 +855,7 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 
 - **🌐 Compatibilidade**: O sistema funciona identicamente em Windows, Linux e macOS
 - **🔍 Detecção Automática**: Sistema operacional e recursos de hardware são detectados automaticamente
-- **✨ Sistema Estabilizado**: Versão 3.3.0 elimina completamente erros de runtime e sintaxe
+- **✨ Sistema Estabilizado**: Versão 3.2.0 elimina completamente erros de runtime e sintaxe
 - **🛡️ Confiabilidade Total**: Todos os módulos foram validados e testados para importação e execução
 - **🔥 Pipeline Revolucionário**: Sistema processa arquivos imediatamente após verificação/download, eliminando 70% do tempo de processamento
 - O processamento utiliza **múltiplos workers paralelos** para máxima performance
