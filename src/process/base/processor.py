@@ -186,38 +186,29 @@ class BaseProcessor(ABC):
             
         df_columns = df.columns
         
-        # ESPECIAL: Para estabelecimentos, mapear dos 30 campos do CSV para os 14 desejados
-        if hasattr(entity_class, '__name__') and entity_class.__name__ == 'Estabelecimento':
-            # Mapeamento específico das posições CSV para campos desejados
-            # Baseado na estrutura real dos dados da Receita Federal
-            estabelecimento_mapping = {
-                'column_1': 'cnpj_basico',           # posição 1
-                'column_4': 'matriz_filial',         # posição 4  
-                'column_5': 'nome_fantasia',         # posição 5
-                'column_6': 'codigo_situacao',       # posição 6
-                'column_7': 'data_situacao_cadastral', # posição 7
-                'column_8': 'codigo_motivo',         # posição 8
-                'column_9': 'nome_cidade_exterior',  # posição 9
-                'column_11': 'data_inicio_atividades', # posição 11
-                'column_12': 'codigo_cnae',          # posição 12
-                'column_13': 'cnae_secundaria',      # posição 13
-                'column_20': 'uf',                   # posição 20
-                'column_21': 'codigo_municipio',     # posição 21
-                'column_19': 'cep',                  # posição 19
-            }
-            
-            # Filtrar apenas colunas que existem no DataFrame
-            mapping = {}
-            for df_col, entity_col in estabelecimento_mapping.items():
-                if df_col in df_columns:
-                    mapping[df_col] = entity_col
-            
-            return mapping
+        # ESPECIAL: Para estabelecimentos, mapear dos 30 campos do CSV para os desejados
+        # incluindo as colunas 2 e 3 necessárias para CNPJ completo
+        estabelecimento_mapping = {
+            'column_1': 'cnpj_basico',           # posição 1
+            'column_2': 'cnpj_ordem',            # posição 2 (ordem)
+            'column_3': 'cnpj_dv',               # posição 3 (dígitos verificadores)
+            'column_4': 'matriz_filial',         # posição 4  
+            'column_5': 'nome_fantasia',         # posição 5
+            'column_6': 'codigo_situacao',       # posição 6
+            'column_7': 'data_situacao_cadastral', # posição 7
+            'column_8': 'codigo_motivo',         # posição 8
+            'column_9': 'nome_cidade_exterior',  # posição 9
+            'column_11': 'data_inicio_atividades', # posição 11
+            'column_12': 'codigo_cnae',          # posição 12
+            'column_13': 'cnae_secundaria',      # posição 13
+            'column_20': 'uf',                   # posição 20
+            'column_21': 'codigo_municipio',     # posição 21
+            'column_19': 'cep',                  # posição 19
+        }
         
-        # Para outras entidades, usar mapeamento sequencial padrão
+        # Filtrar apenas colunas que existem no DataFrame
         mapping = {}
-        for i, entity_col in enumerate(entity_columns):
-            df_col = f"column_{i+1}"
+        for df_col, entity_col in estabelecimento_mapping.items():
             if df_col in df_columns:
                 mapping[df_col] = entity_col
         
@@ -350,13 +341,6 @@ class BaseProcessor(ABC):
                         df = df.with_columns([
                             pl.col(field).str.strip_chars().str.to_uppercase().alias(field)
                         ])
-            
-            elif transformation == 'validate_cnpj_basico':
-                # Validar e corrigir CNPJ básico
-                if 'cnpj_basico' in df.columns:
-                    df = df.with_columns([
-                        pl.col('cnpj_basico').str.replace_all(r'[^\d]', '').str.zfill(8).str.slice(0, 8).alias('cnpj_basico')
-                    ])
             
             elif transformation == 'convert_dates':
                 # Transformação de datas - verificar se já é datetime

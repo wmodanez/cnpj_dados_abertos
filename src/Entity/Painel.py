@@ -47,9 +47,11 @@ class Painel(BaseEntity):
         codigo_motivo: Motivo da situação
         data_inicio_atividades: Data de início das atividades
         codigo_cnae: Código CNAE principal
-        uf: Unidade Federativa
-        codigo_municipio: Código do município
+        codigo_municipio: Código do município (Receita Federal)
         tipo_situacao_cadastral: Tipo de situação cadastral (1=Ativa, 2=Baixa Voluntária, 3=Outras Baixas)
+        
+        # Dados do Município (left join por codigo_municipio)
+        codigo_ibge_municipio: Código IBGE do município (7 dígitos)
         
         # Dados da Empresa (inner join por cnpj_basico)
         natureza_juridica: Código da natureza jurídica
@@ -74,9 +76,11 @@ class Painel(BaseEntity):
     codigo_motivo: Optional[int] = None
     data_inicio_atividades: Optional[datetime] = None
     codigo_cnae: Optional[int] = None
-    uf: Optional[str] = None
     codigo_municipio: Optional[int] = None
     tipo_situacao_cadastral: Optional[int] = None
+    
+    # Dados do Município (left join por codigo_municipio)
+    codigo_ibge_municipio: Optional[int] = None
     
     # Dados da Empresa (inner join)
     natureza_juridica: Optional[int] = None
@@ -100,8 +104,11 @@ class Painel(BaseEntity):
         return [
             # Dados do Estabelecimento
             'cnpj_basico', 'matriz_filial', 'codigo_situacao', 'data_situacao_cadastral', 
-            'codigo_motivo', 'data_inicio_atividades', 'codigo_cnae', 'uf', 'codigo_municipio',
+            'codigo_motivo', 'data_inicio_atividades', 'codigo_cnae', 'codigo_municipio',
             'tipo_situacao_cadastral',
+            
+            # Dados do Município
+            'codigo_ibge_municipio',
             
             # Dados da Empresa
             'natureza_juridica', 'porte_empresa',
@@ -123,9 +130,11 @@ class Painel(BaseEntity):
             'codigo_motivo': pl.Int32,
             'data_inicio_atividades': pl.Datetime,
             'codigo_cnae': pl.Int32,
-            'uf': pl.Utf8,
             'codigo_municipio': pl.Int32,
             'tipo_situacao_cadastral': pl.Int32,
+            
+            # Dados do Município
+            'codigo_ibge_municipio': pl.Int32,
             
             # Dados da Empresa
             'natureza_juridica': pl.Int32,
@@ -145,7 +154,6 @@ class Painel(BaseEntity):
         """Retorna lista de transformações aplicáveis."""
         return [
             'normalize_cnpj_basico',
-            'validate_uf_exclude_exterior',
             'calculate_simples_status',
             'validate_data_consistency',
             'normalize_empresa_fields'
@@ -162,10 +170,6 @@ class Painel(BaseEntity):
         
         # Validar CNPJ básico (obrigatório)
         if not self._validate_cnpj_basico():
-            return False
-        
-        # Validar UF (se presente) - não pode ser EX
-        if self.uf and not self._validate_uf():
             return False
         
         # Validar dados do Simples Nacional
@@ -190,24 +194,6 @@ class Painel(BaseEntity):
         
         if not isinstance(self.cnpj_basico, int) or not (10000000 <= self.cnpj_basico <= 99999999):
             self._validation_errors.append("CNPJ básico deve ser um número inteiro de 8 dígitos")
-            return False
-        
-        return True
-    
-    def _validate_uf(self) -> bool:
-        """Valida UF brasileira - exclui exterior (EX)."""
-        ufs_validas = [
-            'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 
-            'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 
-            'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'
-        ]
-        
-        if self.uf == 'EX':
-            self._validation_errors.append("Estabelecimentos no exterior (EX) são excluídos")
-            return False
-        
-        if self.uf not in ufs_validas:
-            self._validation_errors.append(f"UF inválida: {self.uf}")
             return False
         
         return True
@@ -383,7 +369,6 @@ class Painel(BaseEntity):
             'estabelecimento_ativo': self.is_ativo_estabelecimento(),
             'situacao_simples': self._get_situacao_simples(),
             'situacao_mei': self._get_situacao_mei(),
-            'uf': self.uf,
             'natureza_juridica': self.natureza_juridica,
             'porte_empresa': self.porte_empresa,
             'is_microempresa': self.is_microempresa(),
@@ -409,19 +394,6 @@ class Painel(BaseEntity):
                     
             except (ValueError, TypeError):
                 data['cnpj_basico'] = None
-        
-        return data
-    
-    def _transform_validate_uf_exclude_exterior(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transformação: validar UF e excluir exterior."""
-        if 'uf' in data and data['uf']:
-            uf = str(data['uf']).strip().upper()
-            if uf == 'EX':
-                # Marcar para exclusão
-                data['_exclude'] = True
-                logger.info("Estabelecimento exterior (EX) marcado para exclusão")
-            else:
-                data['uf'] = uf
         
         return data
     

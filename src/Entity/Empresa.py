@@ -75,11 +75,10 @@ class Empresa(BaseEntity):
     def get_transformations(cls) -> List[str]:
         """Retorna lista de transformações aplicáveis."""
         return [
-            'extract_cpf', 
-            'clean_razao_social', 
+            'extract_cpf',
+            'clean_razao_social',
             'convert_capital_social',
-            'normalize_strings',
-            'validate_cnpj_basico'
+            'normalize_strings'
         ]
     
     def validate(self) -> bool:
@@ -237,25 +236,5 @@ class Empresa(BaseEntity):
         for field in string_fields:
             if field in data and data[field]:
                 data[field] = str(data[field]).strip().upper()
-        
-        return data
-    
-    def _transform_validate_cnpj_basico(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transformação: validar e corrigir CNPJ básico."""
-        if 'cnpj_basico' in data and data['cnpj_basico']:
-            try:
-                # Se for string, converter para int
-                if isinstance(data['cnpj_basico'], str):
-                    cnpj = re.sub(r'[^\d]', '', data['cnpj_basico'])
-                    data['cnpj_basico'] = int(cnpj) if cnpj else None
-                elif isinstance(data['cnpj_basico'], (int, float)):
-                    data['cnpj_basico'] = int(data['cnpj_basico'])
-                
-                # Verificar se tem 8 dígitos
-                if data['cnpj_basico'] and not (10000000 <= data['cnpj_basico'] <= 99999999):
-                    data['cnpj_basico'] = None
-                    
-            except (ValueError, TypeError):
-                data['cnpj_basico'] = None
         
         return data

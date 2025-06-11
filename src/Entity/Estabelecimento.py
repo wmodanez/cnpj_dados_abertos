@@ -23,6 +23,8 @@ class Estabelecimento(BaseEntity):
     
     Attributes:
         cnpj_basico: CNPJ básico (int de 8 dígitos)
+        cnpj_ordem: Campo temporário para construir CNPJ completo
+        cnpj_dv: Campo temporário para construir CNPJ completo
         matriz_filial: 1=Matriz, 2=Filial
         nome_fantasia: Nome fantasia do estabelecimento
         codigo_situacao: Código da situação cadastral
@@ -38,7 +40,9 @@ class Estabelecimento(BaseEntity):
         cnpj_completo: CNPJ completo calculado
     """
     
-    cnpj_basico: int
+    cnpj_basico: int  # Volta para int para performance de JOINs
+    cnpj_ordem: Optional[str] = field(init=False, default=None)  # Campo temporário para construir CNPJ completo
+    cnpj_dv: Optional[str] = field(init=False, default=None)     # Campo temporário para construir CNPJ completo
     matriz_filial: Optional[int] = None
     nome_fantasia: Optional[str] = None
     codigo_situacao: Optional[int] = None
@@ -63,9 +67,9 @@ class Estabelecimento(BaseEntity):
     
     @classmethod
     def get_column_names(cls) -> List[str]:
-        """Retorna nomes das colunas da entidade (14 campos originais)."""
+        """Retorna nomes das colunas da entidade (incluindo campos temporários para CNPJ)."""
         return [
-            'cnpj_basico', 'matriz_filial', 'nome_fantasia', 'codigo_situacao',
+            'cnpj_basico', 'cnpj_ordem', 'cnpj_dv', 'matriz_filial', 'nome_fantasia', 'codigo_situacao',
             'data_situacao_cadastral', 'codigo_motivo', 'nome_cidade_exterior', 'data_inicio_atividades',
             'codigo_cnae', 'cnae_secundaria', 'uf', 'codigo_municipio', 'cep', 'cnpj_completo'
         ]
@@ -74,7 +78,9 @@ class Estabelecimento(BaseEntity):
     def get_column_types(cls) -> Dict[str, Type]:
         """Retorna tipos das colunas da entidade."""
         return {
-            'cnpj_basico': pl.Int64,
+            'cnpj_basico': pl.Int64,     # Volta para int para performance de JOINs
+            'cnpj_ordem': pl.Utf8,  # Campo temporário
+            'cnpj_dv': pl.Utf8,     # Campo temporário
             'matriz_filial': pl.Int32,
             'nome_fantasia': pl.Utf8,
             'codigo_situacao': pl.Int32,
@@ -144,8 +150,19 @@ class Estabelecimento(BaseEntity):
             self._validation_errors.append("CNPJ básico é obrigatório")
             return False
         
-        if not isinstance(self.cnpj_basico, int) or not (10000000 <= self.cnpj_basico <= 99999999):
-            self._validation_errors.append("CNPJ básico deve ser um número inteiro de 8 dígitos")
+        # Validar se é inteiro válido
+        if not isinstance(self.cnpj_basico, int) or self.cnpj_basico < 0:
+            self._validation_errors.append("CNPJ básico deve ser um número inteiro positivo")
+            return False
+        
+        # Rejeitar apenas CNPJ básico zero (inválido)
+        if self.cnpj_basico == 0:
+            self._validation_errors.append("CNPJ básico não pode ser zero")
+            return False
+        
+        # Verificar se não ultrapassa 8 dígitos (99999999)
+        if self.cnpj_basico > 99999999:
+            self._validation_errors.append("CNPJ básico não pode ter mais de 8 dígitos")
             return False
         
         return True

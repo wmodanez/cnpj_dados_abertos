@@ -85,14 +85,14 @@ class GlobalCircuitBreaker:
         
         # Contadores e limites
         self._failure_thresholds = {
-            FailureType.CONNECTIVITY: 3,
-            FailureType.DISK_SPACE: 1,     # Imediato
+            FailureType.CONNECTIVITY: 5,           # Aumentado de 3 para 5
+            FailureType.DISK_SPACE: 1,             # Imediato
             FailureType.MEMORY: 2,
-            FailureType.PERMISSIONS: 1,    # Imediato
+            FailureType.PERMISSIONS: 1,            # Imediato
             FailureType.DATA_CORRUPTION: 5,
             FailureType.SYSTEM_RESOURCE: 2,
-            FailureType.PROCESSING_FAILURE: 3,  # Reduzido de 10 para 3
-            FailureType.DOWNLOAD_FAILURE: 8,
+            FailureType.PROCESSING_FAILURE: 3,     # Revertido para 3
+            FailureType.DOWNLOAD_FAILURE: 15,      # Aumentado de 8 para 15
         }
         
         # Janela de tempo para contar falhas (minutos)

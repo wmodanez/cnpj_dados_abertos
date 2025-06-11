@@ -120,8 +120,8 @@ class Config:
 
     # Lista de arquivos a serem ignorados no download
     ignored_files: List[str] = field(default_factory=lambda: [
-        'CNAE', 'PAIS', 'MUNIC', 'NATJU', 'MOTI', 'QUAL', 'PORTE', 'MUNICIPIO',
-        'CNAE', 'PAISES', 'MUNICIPIOS', 'NATUREZAS', 'MOTIVOS', 'QUALIFICACOES', 'PORTES'
+        'cnae', 'cnaes', 'pais', 'paises', 'munic', 'municipios', 'natju', 'naturezas', 
+        'moti', 'motivos', 'qual', 'qualificacoes', 'porte', 'portes'
     ])
 
     # Configurações de colunas e tipos de dados

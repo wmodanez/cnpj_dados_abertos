@@ -64,26 +64,25 @@ class EstabelecimentoProcessor(BaseProcessor):
         try:
             # Transformações específicas para estabelecimentos
             
-            # 1. Limpar e padronizar partes do CNPJ (apenas cnpj_basico agora)
+            # 1. Limpar e padronizar CNPJ básico (manter como inteiro para JOINs eficientes)
             if 'cnpj_basico' in df.columns:
                 df = df.with_columns([
                     pl.col('cnpj_basico')
-                    .cast(pl.Utf8, strict=False)        # Converter para string primeiro
+                    .cast(pl.Utf8, strict=False)        # Temporário para limpeza
                     .str.replace_all(r'[^\d]', '')      # Remove não-dígitos
-                    .str.pad_start(8, '0')              # Garante 8 dígitos, preenchendo com zeros
-                    .cast(pl.Int64, strict=False)       # Converte para bigint (Int64)
+                    .cast(pl.Int64, strict=False)       # Converte para inteiro (eficiente para JOINs)
                     .alias('cnpj_basico')
                 ])
             
-            # 2. Criar CNPJ completo (usando colunas auxiliares que não serão salvas)
-            # Primeiro, garantir que temos as partes do CNPJ como colunas auxiliares
-            if 'column_1' in df.columns and 'column_2' in df.columns and 'column_3' in df.columns:
+            # 2. Criar CNPJ completo (14 dígitos) a partir das partes
+            if 'cnpj_basico' in df.columns and 'cnpj_ordem' in df.columns and 'cnpj_dv' in df.columns:
                 try:
                     # Criar colunas auxiliares temporárias para formar o CNPJ completo
+                    # cnpj_basico é inteiro, precisa de padding para 8 dígitos
                     df = df.with_columns([
-                        pl.col('column_1').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(8, '0').alias('_cnpj_basico_temp'),
-                        pl.col('column_2').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(4, '0').alias('_cnpj_ordem_temp'),
-                        pl.col('column_3').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(2, '0').alias('_cnpj_dv_temp')
+                        pl.col('cnpj_basico').cast(pl.Utf8).str.pad_start(8, '0').alias('_cnpj_basico_temp'),
+                        pl.col('cnpj_ordem').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(4, '0').alias('_cnpj_ordem_temp'),
+                        pl.col('cnpj_dv').cast(pl.Utf8).str.replace_all(r'[^\d]', '').str.pad_start(2, '0').alias('_cnpj_dv_temp')
                     ])
                     
                     # Criar CNPJ completo
@@ -91,8 +90,8 @@ class EstabelecimentoProcessor(BaseProcessor):
                         (pl.col('_cnpj_basico_temp') + pl.col('_cnpj_ordem_temp') + pl.col('_cnpj_dv_temp')).alias('cnpj_completo')
                     ])
                     
-                    # Remover colunas auxiliares temporárias
-                    df = df.drop(['_cnpj_basico_temp', '_cnpj_ordem_temp', '_cnpj_dv_temp'])
+                    # Remover colunas auxiliares temporárias e as partes originais
+                    df = df.drop(['_cnpj_basico_temp', '_cnpj_ordem_temp', '_cnpj_dv_temp', 'cnpj_ordem', 'cnpj_dv'])
                     
                     self.logger.debug("CNPJ completo criado com sucesso")
                 except Exception as e:

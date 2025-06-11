@@ -77,11 +77,10 @@ class Socio(BaseEntity):
     def get_transformations(cls) -> List[str]:
         """Retorna lista de transformações aplicáveis."""
         return [
-            'convert_dates', 
-            'validate_cpf_cnpj', 
-            'normalize_names', 
-            'clean_representante_legal',
-            'validate_cnpj_basico'
+            'convert_dates',
+            'validate_cpf_cnpj',
+            'normalize_names',
+            'clean_representante_legal'
         ]
     
     def validate(self) -> bool:
@@ -311,25 +310,5 @@ class Socio(BaseEntity):
         if 'representante_legal' in data and data['representante_legal']:
             cpf = re.sub(r'[^\d]', '', str(data['representante_legal']))
             data['representante_legal'] = cpf.zfill(11)[:11]
-        
-        return data
-    
-    def _transform_validate_cnpj_basico(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transformação: validar e corrigir CNPJ básico."""
-        if 'cnpj_basico' in data and data['cnpj_basico']:
-            try:
-                # Se for string, converter para int
-                if isinstance(data['cnpj_basico'], str):
-                    cnpj = re.sub(r'[^\d]', '', data['cnpj_basico'])
-                    data['cnpj_basico'] = int(cnpj) if cnpj else None
-                elif isinstance(data['cnpj_basico'], (int, float)):
-                    data['cnpj_basico'] = int(data['cnpj_basico'])
-                
-                # Verificar se tem 8 dígitos
-                if data['cnpj_basico'] and not (10000000 <= data['cnpj_basico'] <= 99999999):
-                    data['cnpj_basico'] = None
-                    
-            except (ValueError, TypeError):
-                data['cnpj_basico'] = None
         
         return data

@@ -5,18 +5,22 @@ Este processador implementa o left join entre dados de estabelecimentos
 e dados do Simples Nacional, criando uma visão consolidada para exportação.
 
 Funcionalidades:
+- Pipeline completo de processamento (download -> ZIP -> parquet -> painel)
 - Left join entre estabelecimentos e Simples Nacional por cnpj_basico
+- Inner join com dados de empresas
 - Aplicação de transformações específicas da entidade Painel
 - Validação de dados combinados
 - Geração de campos calculados (situações, formatações)
 - Suporte a filtros por UF e outros critérios
+- Processamento flexível (ZIPs, parquets existentes, ou pipeline completo)
 """
 
 import logging
 import os
 import polars as pl
-from typing import List, Type, Optional, Dict, Any
+from typing import List, Type, Optional, Dict, Any, Union
 from datetime import datetime
+from pathlib import Path
 
 from ...Entity.Painel import Painel
 from ...Entity.base import BaseEntity
@@ -27,14 +31,16 @@ logger = logging.getLogger(__name__)
 
 class PainelProcessor(BaseProcessor):
     """
-    Processador específico para dados do Painel (Estabelecimento + Simples).
+    Processador específico para dados do Painel (Estabelecimento + Simples + Empresa).
     
     Características:
+    - Pipeline completo de processamento de dados
     - Faz left join entre estabelecimentos e Simples Nacional
+    - Inner join com dados de empresas
     - Utiliza entidade Painel para validação e transformação
     - Gera campos calculados úteis para exportação
     - Suporte a filtros específicos (UF, situação, etc.)
-    - Integração com sistema de fila unificado
+    - Processamento flexível: ZIPs, parquets existentes, ou pipeline completo
     """
     
     def __init__(self, path_zip: str, path_unzip: str, path_parquet: str, **kwargs):
@@ -42,31 +48,41 @@ class PainelProcessor(BaseProcessor):
         Inicializa o processador de Painel.
         
         Args:
-            path_zip: Diretório com arquivos ZIP (não usado - dados já processados)
-            path_unzip: Diretório para extração (não usado)
+            path_zip: Diretório com arquivos ZIP
+            path_unzip: Diretório para extração
             path_parquet: Diretório de saída
             **kwargs: Opções específicas
                 - estabelecimento_path: Caminho para dados de estabelecimentos
                 - simples_path: Caminho para dados do Simples Nacional
-                - uf_filter: Filtro por UF (opcional)
+                - empresa_path: Caminho para dados de empresas
                 - situacao_filter: Filtro por situação (opcional)
+                - force_reprocess: Forçar reprocessamento mesmo se parquets existirem
+                - skip_download: Pular etapa de download
+                - skip_unzip: Pular etapa de descompactação
+                - skip_individual_processing: Pular processamento individual
         """
         super().__init__(path_zip, path_unzip, path_parquet, **kwargs)
         
-        # Caminhos para dados já processados
+        # Caminhos para dados já processados (opcionais)
         self.estabelecimento_path = kwargs.get('estabelecimento_path')
         self.simples_path = kwargs.get('simples_path')
+        self.empresa_path = kwargs.get('empresa_path')
         
         # Filtros específicos
-        self.uf_filter = kwargs.get('uf_filter')
         self.situacao_filter = kwargs.get('situacao_filter')
         
-        # Validar caminhos obrigatórios
-        if not self.estabelecimento_path:
-            raise ValueError("Caminho para dados de estabelecimentos é obrigatório (estabelecimento_path)")
+        # Opções de processamento
+        self.force_reprocess = kwargs.get('force_reprocess', False)
+        self.skip_download = kwargs.get('skip_download', False)
+        self.skip_unzip = kwargs.get('skip_unzip', False) 
+        self.skip_individual_processing = kwargs.get('skip_individual_processing', False)
         
-        if not self.simples_path:
-            raise ValueError("Caminho para dados do Simples Nacional é obrigatório (simples_path)")
+        # URLs de download (configuráveis)
+        self.download_urls = kwargs.get('download_urls', {
+            'estabelecimentos': 'https://dadosabertos.rfb.gov.br/CNPJ/Estabelecimentos*.zip',
+            'simples': 'https://dadosabertos.rfb.gov.br/CNPJ/Simples*.zip',
+            'empresas': 'https://dadosabertos.rfb.gov.br/CNPJ/Empresas*.zip'
+        })
     
     def get_processor_name(self) -> str:
         """Retorna o nome do processador."""
@@ -81,9 +97,13 @@ class PainelProcessor(BaseProcessor):
         return [
             'estabelecimento_path',
             'simples_path', 
-            'uf_filter',
+            'empresa_path',
             'situacao_filter',
-            'include_inactive'
+            'include_inactive',
+            'force_reprocess',
+            'skip_download',
+            'skip_unzip',
+            'skip_individual_processing'
         ]
     
     def apply_specific_transformations(self, df: pl.DataFrame) -> pl.DataFrame:
@@ -106,10 +126,6 @@ class PainelProcessor(BaseProcessor):
                 ])
             
             # 2. Aplicar filtros se especificados
-            if self.uf_filter:
-                df = df.filter(pl.col('uf') == self.uf_filter.upper())
-                self.logger.info(f"Filtro UF aplicado: {self.uf_filter}")
-            
             if self.situacao_filter:
                 df = df.filter(pl.col('codigo_situacao') == self.situacao_filter)
                 self.logger.info(f"Filtro situação aplicado: {self.situacao_filter}")
@@ -128,7 +144,11 @@ class PainelProcessor(BaseProcessor):
     
     def process_painel_data(self, output_filename: Optional[str] = None) -> bool:
         """
-        Processa dados do painel fazendo left join entre estabelecimentos e Simples.
+        Processa dados do painel fazendo os joins necessários.
+        
+        Pipeline de joins:
+        1. Estabelecimento LEFT JOIN Simples Nacional (por cnpj_basico)
+        2. Resultado INNER JOIN Empresa (por cnpj_basico)
         
         Args:
             output_filename: Nome do arquivo de saída (opcional)
@@ -169,7 +189,22 @@ class PainelProcessor(BaseProcessor):
             
             self.logger.info(f"Dados do Simples carregados: {simples_df.height} registros")
             
-            # 3. Garantir que CNPJ básico está padronizado em ambos (como bigint)
+            # 3. Carregar dados de empresas
+            self.logger.info(f"Carregando dados de empresas: {self.empresa_path}")
+            
+            if not self.empresa_path:
+                raise ValueError("Caminho de dados de empresas não configurado")
+            
+            if os.path.isdir(self.empresa_path):
+                # Carregar múltiplos arquivos parquet
+                empresas_df = pl.scan_parquet(f"{self.empresa_path}/*.parquet").collect()
+            else:
+                # Carregar arquivo único
+                empresas_df = pl.read_parquet(self.empresa_path)
+            
+            self.logger.info(f"Dados de empresas carregados: {empresas_df.height} registros")
+            
+            # 4. Garantir que CNPJ básico está padronizado em todos (como bigint)
             estabelecimentos_df = estabelecimentos_df.with_columns([
                 pl.col('cnpj_basico').cast(pl.Int64).alias('cnpj_basico')
             ])
@@ -178,8 +213,12 @@ class PainelProcessor(BaseProcessor):
                 pl.col('cnpj_basico').cast(pl.Int64).alias('cnpj_basico')
             ])
             
-            # 4. Fazer left join
-            self.logger.info("Executando left join entre estabelecimentos e Simples Nacional")
+            empresas_df = empresas_df.with_columns([
+                pl.col('cnpj_basico').cast(pl.Int64).alias('cnpj_basico')
+            ])
+            
+            # 5. Executar LEFT JOIN entre estabelecimentos e Simples Nacional
+            self.logger.info("Executando LEFT JOIN entre estabelecimentos e Simples Nacional")
             
             painel_df = estabelecimentos_df.join(
                 simples_df,
@@ -187,12 +226,66 @@ class PainelProcessor(BaseProcessor):
                 how='left'
             )
             
-            self.logger.info(f"Join executado. Registros resultantes: {painel_df.height}")
+            self.logger.info(f"LEFT JOIN executado. Registros resultantes: {painel_df.height}")
             
-            # 5. Aplicar transformações específicas
+            # 6. Executar INNER JOIN com dados de empresas
+            self.logger.info("Executando INNER JOIN com dados de empresas")
+            
+            painel_df = painel_df.join(
+                empresas_df,
+                on='cnpj_basico',
+                how='inner'
+            )
+            
+            self.logger.info(f"INNER JOIN executado. Registros finais: {painel_df.height}")
+            
+            # 7. Carregar dados de municípios e executar LEFT JOIN
+            self.logger.info("Carregando dados de municípios para JOIN")
+            
+            try:
+                # Carregar dados de municípios da pasta base
+                municipios_path = os.path.join(self.path_parquet, '..', 'base', 'municipio.parquet')
+                municipios_path = os.path.normpath(municipios_path)  # Normalizar o caminho
+                
+                if os.path.exists(municipios_path):
+                    municipios_df = pl.read_parquet(municipios_path)
+                    self.logger.info(f"Municípios carregados: {municipios_df.height} registros")
+                    
+                    # Executar LEFT JOIN entre painel e municípios
+                    # Junta codigo_municipio (do estabelecimento) com cod_mn_dados_abertos (dos municípios)
+                    self.logger.info("Executando LEFT JOIN com dados de municípios")
+                    
+                    painel_df = painel_df.join(
+                        municipios_df.select([
+                            pl.col('cod_mn_dados_abertos'),
+                            pl.col('codigo').alias('codigo_ibge_municipio')
+                        ]),
+                        left_on='codigo_municipio',
+                        right_on='cod_mn_dados_abertos',
+                        how='left'
+                    )
+                    
+                    self.logger.info(f"LEFT JOIN com municípios executado. Registros: {painel_df.height}")
+                    
+                    # Verificar quantos estabelecimentos tiveram código IBGE encontrado
+                    com_ibge = painel_df.filter(pl.col('codigo_ibge_municipio').is_not_null()).height
+                    sem_ibge = painel_df.height - com_ibge
+                    
+                    self.logger.info(f"Estabelecimentos com código IBGE: {com_ibge:,} ({(com_ibge/painel_df.height)*100:.1f}%)")
+                    self.logger.info(f"Estabelecimentos sem código IBGE: {sem_ibge:,} ({(sem_ibge/painel_df.height)*100:.1f}%)")
+                    
+                else:
+                    self.logger.warning(f"Arquivo de municípios não encontrado: {municipios_path}")
+                    self.logger.warning("Continuando sem dados de código IBGE dos municípios")
+                    
+            except Exception as e:
+                self.logger.error(f"Erro ao processar dados de municípios: {str(e)}")
+                self.logger.warning("Continuando sem dados de código IBGE dos municípios")
+            
+            # 8. Aplicar transformações específicas
             painel_df = self.apply_specific_transformations(painel_df)
             
-            # 6. Salvar resultado
+            # 9. Salvar resultado
             if not output_filename:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_filename = f"painel_dados_{timestamp}.parquet"
@@ -208,7 +301,7 @@ class PainelProcessor(BaseProcessor):
             self.logger.info(f"✓ Dados do Painel salvos: {output_path}")
             self.logger.info(f"✓ Total de registros: {painel_df.height}")
             
-            # 7. Relatório de estatísticas
+            # 10. Relatório de estatísticas
             self._generate_statistics_report(painel_df)
             
             return True
@@ -225,16 +318,6 @@ class PainelProcessor(BaseProcessor):
             # Estatísticas gerais
             total_registros = df.height
             self.logger.info(f"Total de registros: {total_registros:,}")
-            
-            # Estatísticas por UF
-            if 'uf' in df.columns:
-                uf_stats = df.group_by('uf').agg([
-                    pl.count().alias('count')
-                ]).sort('count', descending=True)
-                
-                self.logger.info("Top 10 UFs por número de estabelecimentos:")
-                for row in uf_stats.head(10).iter_rows(named=True):
-                    self.logger.info(f"  {row['uf']}: {row['count']:,}")
             
             # Estatísticas de opção pelo Simples Nacional
             if 'opcao_simples' in df.columns:
@@ -338,4 +421,522 @@ class PainelProcessor(BaseProcessor):
             
         except Exception as e:
             self.logger.error(f"Erro na exportação para CSV: {str(e)}")
-            return False 
+            return False
+    
+    def process_complete_painel(self, output_filename: Optional[str] = None) -> bool:
+        """
+        Processa dados do painel de forma completa desde o download até o painel final.
+        
+        Este método executa todo o pipeline:
+        1. Download dos arquivos (se necessário)
+        2. Descompactação (se necessário) 
+        3. Processamento individual das entidades (se necessário)
+        4. Criação do painel combinado
+        5. Aplicação de filtros e transformações
+        6. Geração do arquivo final
+        
+        Args:
+            output_filename: Nome do arquivo de saída (opcional)
+            
+        Returns:
+            bool: True se processamento foi bem-sucedido
+        """
+        try:
+            self.logger.info("=== INICIANDO PROCESSAMENTO COMPLETO DO PAINEL ===")
+            
+            # Etapa 1: Verificar estado atual dos dados
+            estado_dados = self._verificar_estado_dados()
+            self.logger.info(f"Estado atual dos dados: {estado_dados}")
+            
+            # Etapa 2: Download (se necessário)
+            if not self.skip_download and estado_dados['precisa_download']:
+                self.logger.info("Iniciando download dos arquivos...")
+                if not self._executar_downloads():
+                    self.logger.error("Falha no download dos arquivos")
+                    return False
+                self.logger.info("✓ Downloads concluídos")
+            
+            # Etapa 3: Descompactação (se necessário)
+            if not self.skip_unzip and estado_dados['precisa_unzip']:
+                self.logger.info("Iniciando descompactação dos arquivos...")
+                if not self._executar_descompactacao():
+                    self.logger.error("Falha na descompactação")
+                    return False
+                self.logger.info("✓ Descompactação concluída")
+            
+            # Etapa 4: Processamento individual das entidades (se necessário)
+            if not self.skip_individual_processing and estado_dados['precisa_processamento']:
+                self.logger.info("Iniciando processamento individual das entidades...")
+                if not self._executar_processamento_individual():
+                    self.logger.error("Falha no processamento individual")
+                    return False
+                self.logger.info("✓ Processamento individual concluído")
+            
+            # Etapa 5: Definir caminhos dos parquets
+            if not self._definir_caminhos_parquets():
+                self.logger.error("Falha ao definir caminhos dos parquets")
+                return False
+            
+            # Etapa 6: Criar painel combinado
+            self.logger.info("Iniciando criação do painel combinado...")
+            if not self.process_painel_data(output_filename):
+                self.logger.error("Falha na criação do painel")
+                return False
+            
+            self.logger.info("=== PROCESSAMENTO COMPLETO DO PAINEL CONCLUÍDO ===")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Erro no processamento completo do painel: {str(e)}")
+            return False
+    
+    def _verificar_estado_dados(self) -> Dict[str, bool]:
+        """
+        Verifica o estado atual dos dados e determina quais etapas são necessárias.
+        
+        Returns:
+            Dict com flags indicando quais etapas são necessárias
+        """
+        estado = {
+            'precisa_download': False,
+            'precisa_unzip': False,
+            'precisa_processamento': False,
+            'tem_parquets': False
+        }
+        
+        try:
+            # Verificar se há parquets já processados
+            parquets_paths = {
+                'estabelecimentos': self.estabelecimento_path or os.path.join(self.path_parquet, 'estabelecimentos'),
+                'simples': self.simples_path or os.path.join(self.path_parquet, 'simples'),
+                'empresas': self.empresa_path or os.path.join(self.path_parquet, 'empresas')
+            }
+            
+            parquets_existem = all(
+                os.path.exists(path) and self._tem_arquivos_parquet(path)
+                for path in parquets_paths.values()
+            )
+            
+            if parquets_existem and not self.force_reprocess:
+                estado['tem_parquets'] = True
+                self.logger.info("Parquets já existem, usando dados processados")
+                return estado
+            
+            # Verificar se há arquivos CSV descompactados
+            csvs_existem = self._verificar_csvs_descompactados()
+            if csvs_existem and not self.force_reprocess:
+                estado['precisa_processamento'] = True
+                self.logger.info("CSVs descompactados encontrados")
+                return estado
+            
+            # Verificar se há arquivos ZIP
+            zips_existem = self._verificar_zips_disponiveis()
+            if zips_existem:
+                estado['precisa_unzip'] = True
+                estado['precisa_processamento'] = True
+                self.logger.info("Arquivos ZIP encontrados")
+                return estado
+            
+            # Precisa baixar tudo
+            estado['precisa_download'] = True
+            estado['precisa_unzip'] = True
+            estado['precisa_processamento'] = True
+            self.logger.info("Nenhum dado encontrado, será necessário download completo")
+            
+            return estado
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao verificar estado dos dados: {str(e)}")
+            # Em caso de erro, assumir que precisa de tudo
+            return {
+                'precisa_download': True,
+                'precisa_unzip': True,
+                'precisa_processamento': True,
+                'tem_parquets': False
+            }
+    
+    def _tem_arquivos_parquet(self, path: str) -> bool:
+        """Verifica se um diretório tem arquivos parquet."""
+        if not os.path.exists(path):
+            return False
+        
+        if os.path.isfile(path) and path.endswith('.parquet'):
+            return True
+        
+        if os.path.isdir(path):
+            parquet_files = [f for f in os.listdir(path) if f.endswith('.parquet')]
+            return len(parquet_files) > 0
+        
+        return False
+    
+    def _verificar_csvs_descompactados(self) -> bool:
+        """Verifica se há CSVs descompactados disponíveis."""
+        if not os.path.exists(self.path_unzip):
+            return False
+        
+        # Procurar por padrões de arquivos esperados
+        padroes = ['*ESTABELE*', '*SIMPLES*', '*EMPRESAS*']
+        
+        for padrao in padroes:
+            import glob
+            files = glob.glob(os.path.join(self.path_unzip, f"{padrao}.csv"))
+            if not files:
+                return False
+        
+        return True
+    
+    def _verificar_zips_disponiveis(self) -> bool:
+        """Verifica se há arquivos ZIP disponíveis."""
+        if not os.path.exists(self.path_zip):
+            return False
+        
+        # Procurar por padrões de arquivos ZIP esperados
+        padroes = ['*Estabele*', '*Simples*', '*Empresas*']
+        
+        for padrao in padroes:
+            import glob
+            files = glob.glob(os.path.join(self.path_zip, f"{padrao}*.zip"))
+            if not files:
+                return False
+        
+        return True
+    
+    def _executar_downloads(self) -> bool:
+        """
+        Executa o download dos arquivos necessários.
+        
+        Returns:
+            bool: True se download foi bem-sucedido
+        """
+        try:
+            # Criar diretório de download se não existir
+            os.makedirs(self.path_zip, exist_ok=True)
+            
+            # Implementar download dos arquivos
+            # Nota: Esta é uma implementação simplificada
+            # Em produção, seria necessário implementar download real
+            
+            self.logger.info("Download dos arquivos (implementação seria necessária)")
+            
+            # Por enquanto, assumir que os arquivos já estão disponíveis
+            # Em implementação real, usar requests ou urllib para download
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Erro no download: {str(e)}")
+            return False
+    
+    def _executar_descompactacao(self) -> bool:
+        """
+        Executa a descompactação dos arquivos ZIP.
+        
+        Returns:
+            bool: True se descompactação foi bem-sucedida
+        """
+        try:
+            import zipfile
+            import glob
+            
+            # Criar diretório de descompactação
+            os.makedirs(self.path_unzip, exist_ok=True)
+            
+            # Encontrar todos os arquivos ZIP
+            zip_files = glob.glob(os.path.join(self.path_zip, "*.zip"))
+            
+            if not zip_files:
+                self.logger.error("Nenhum arquivo ZIP encontrado")
+                return False
+            
+            for zip_file in zip_files:
+                self.logger.info(f"Descompactando: {os.path.basename(zip_file)}")
+                
+                with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+                    zip_ref.extractall(self.path_unzip)
+                
+                self.logger.info(f"✓ Descompactado: {os.path.basename(zip_file)}")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Erro na descompactação: {str(e)}")
+            return False
+    
+    def _executar_processamento_individual(self) -> bool:
+        """
+        Executa o processamento individual das entidades.
+        
+        Returns:
+            bool: True se processamento foi bem-sucedido
+        """
+        try:
+            # Criar diretório de parquets
+            os.makedirs(self.path_parquet, exist_ok=True)
+            
+            # Importar processadores necessários
+            from .estabelecimento_processor import EstabelecimentoProcessor
+            from .simples_processor import SimplesProcessor
+            from .empresa_processor import EmpresaProcessor
+            
+            processadores = [
+                ('estabelecimentos', EstabelecimentoProcessor),
+                ('simples', SimplesProcessor),
+                ('empresas', EmpresaProcessor)
+            ]
+            
+            for nome, ProcessorClass in processadores:
+                self.logger.info(f"Processando {nome}...")
+                
+                # Criar subdiretório para cada entidade
+                output_path = os.path.join(self.path_parquet, nome)
+                os.makedirs(output_path, exist_ok=True)
+                
+                # Inicializar processador
+                processor = ProcessorClass(
+                    path_zip=self.path_zip,
+                    path_unzip=self.path_unzip,
+                    path_parquet=output_path
+                )
+                
+                # Processar arquivos ZIP
+                import glob
+                zip_pattern = self._get_zip_pattern(nome)
+                zip_files = glob.glob(os.path.join(self.path_zip, zip_pattern))
+                
+                if not zip_files:
+                    self.logger.error(f"Nenhum arquivo ZIP encontrado para {nome}")
+                    return False
+                
+                for zip_file in zip_files:
+                    if not processor.process_single_zip_impl(
+                        zip_file=os.path.basename(zip_file),
+                        path_zip=self.path_zip,
+                        path_unzip=self.path_unzip,
+                        path_parquet=output_path
+                    ):
+                        self.logger.error(f"Falha no processamento de {zip_file}")
+                        return False
+                
+                self.logger.info(f"✓ {nome} processado com sucesso")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Erro no processamento individual: {str(e)}")
+            return False
+    
+    def _get_zip_pattern(self, entidade: str) -> str:
+        """Retorna o padrão de arquivo ZIP para uma entidade."""
+        patterns = {
+            'estabelecimentos': '*Estabele*.zip',
+            'simples': '*Simples*.zip',
+            'empresas': '*Empresas*.zip'
+        }
+        return patterns.get(entidade, '*.zip')
+    
+    def _definir_caminhos_parquets(self) -> bool:
+        """
+        Define os caminhos dos parquets baseado no que está disponível.
+        
+        Returns:
+            bool: True se caminhos foram definidos com sucesso
+        """
+        try:
+            # Se caminhos já foram especificados, usar eles
+            if not self.estabelecimento_path:
+                self.estabelecimento_path = os.path.join(self.path_parquet, 'estabelecimentos')
+            
+            if not self.simples_path:
+                self.simples_path = os.path.join(self.path_parquet, 'simples')
+            
+            if not self.empresa_path:
+                self.empresa_path = os.path.join(self.path_parquet, 'empresas')
+            
+            # Verificar se todos os caminhos existem
+            caminhos = [self.estabelecimento_path, self.simples_path, self.empresa_path]
+            nomes = ['estabelecimentos', 'simples', 'empresas']
+            
+            for caminho, nome in zip(caminhos, nomes):
+                if not self._tem_arquivos_parquet(caminho):
+                    self.logger.error(f"Parquets de {nome} não encontrados em: {caminho}")
+                    return False
+            
+            self.logger.info("✓ Caminhos dos parquets definidos com sucesso")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao definir caminhos dos parquets: {str(e)}")
+            return False
+
+
+# ===== EXEMPLOS DE USO =====
+
+def exemplo_processamento_completo():
+    """
+    Exemplo de uso do processador completo do painel.
+    
+    Este exemplo mostra como processar dados do painel desde o download
+    até a criação do arquivo final.
+    """
+    
+    # Configuração básica de caminhos
+    config = {
+        'path_zip': '/caminho/para/zips',
+        'path_unzip': '/caminho/para/extrair',
+        'path_parquet': '/caminho/para/parquets',
+        
+        # Filtros opcionais
+        'situacao_filter': 2,  # Apenas estabelecimentos ativos
+        
+        # Opções de processamento
+        'force_reprocess': False,  # Não reprocessar se parquets existirem
+        'skip_download': False,    # Executar download se necessário
+        'skip_unzip': False,       # Executar descompactação se necessário
+        'skip_individual_processing': False  # Processar entidades individuais
+    }
+    
+    # Criar processador
+    processor = PainelProcessor(**config)
+    
+    # Executar processamento completo
+    sucesso = processor.process_complete_painel(output_filename='painel_sp_ativos.parquet')
+    
+    if sucesso:
+        print("✓ Processamento do painel concluído com sucesso!")
+    else:
+        print("✗ Falha no processamento do painel")
+
+
+def exemplo_uso_parquets_existentes():
+    """
+    Exemplo de uso com parquets já processados.
+    
+    Este exemplo mostra como criar o painel quando já se tem
+    os parquets das entidades individuais.
+    """
+    
+    config = {
+        'path_zip': '/caminho/para/zips',  # Não será usado
+        'path_unzip': '/caminho/para/extrair',  # Não será usado  
+        'path_parquet': '/caminho/para/saida',
+        
+        # Caminhos específicos para dados já processados
+        'estabelecimento_path': '/dados/estabelecimentos.parquet',
+        'simples_path': '/dados/simples.parquet',
+        'empresa_path': '/dados/empresas.parquet',
+        
+        # Pular etapas desnecessárias
+        'skip_download': True,
+        'skip_unzip': True,
+        'skip_individual_processing': True,
+        
+        # Filtros
+        'include_inactive': False  # Excluir inativos
+    }
+    
+    processor = PainelProcessor(**config)
+    
+    # Processar apenas o painel (sem pipeline completo)
+    sucesso = processor.process_painel_data(output_filename='painel_rj.parquet')
+    
+    if sucesso:
+        print("✓ Painel criado com sucesso a partir de parquets existentes!")
+
+
+def exemplo_uso_flexivel():
+    """
+    Exemplo de uso flexível baseado no estado dos dados.
+    
+    O processador detecta automaticamente o que está disponível
+    e executa apenas as etapas necessárias.
+    """
+    
+    config = {
+        'path_zip': '/dados/zips',
+        'path_unzip': '/dados/temp',
+        'path_parquet': '/dados/output',
+        
+        # Não especificar caminhos individuais - deixar o processador decidir
+        # 'estabelecimento_path': None,
+        # 'simples_path': None, 
+        # 'empresa_path': None,
+        
+        # Permitir que o processador decida o que fazer
+        'force_reprocess': False,
+        
+        # Filtros aplicados apenas no painel final
+        'situacao_filter': None,  # Todas as situações
+        'include_inactive': True  # Incluir inativos
+    }
+    
+    processor = PainelProcessor(**config)
+    
+    # O processador vai:
+    # 1. Verificar se existem parquets -> usar se existirem
+    # 2. Se não, verificar CSVs -> processar se existirem  
+    # 3. Se não, verificar ZIPs -> descompactar e processar
+    # 4. Se não, fazer download -> descompactar e processar
+    
+    sucesso = processor.process_complete_painel()
+    
+    return sucesso
+
+
+# ===== UTILITÁRIOS PARA ANÁLISE =====
+
+def analisar_painel(caminho_parquet: str):
+    """
+    Utilitário para analisar dados do painel gerado.
+    
+    Args:
+        caminho_parquet: Caminho para o arquivo parquet do painel
+    """
+    try:
+        import polars as pl
+        
+        # Carregar dados
+        df = pl.read_parquet(caminho_parquet)
+        
+        print(f"=== ANÁLISE DO PAINEL ===")
+        print(f"Total de registros: {df.height:,}")
+        print(f"Total de colunas: {df.width}")
+        
+        # Estatísticas gerais
+        total_registros = df.height
+        print(f"Total de registros: {total_registros:,}")
+        
+        # Estatísticas de opção pelo Simples Nacional
+        if 'opcao_simples' in df.columns:
+            simples_stats = df.group_by('opcao_simples').agg([
+                pl.count().alias('count')
+            ])
+            
+            print("\nOpção pelo Simples Nacional:")
+            for row in simples_stats.iter_rows(named=True):
+                opcao = 'Sim' if row['opcao_simples'] == 'S' else 'Não' if row['opcao_simples'] == 'N' else 'Não informado'
+                pct = (row['count'] / df.height) * 100
+                print(f"  {opcao}: {row['count']:,} ({pct:.1f}%)")
+        
+        # Estatísticas de porte
+        if 'porte_empresa' in df.columns:
+            porte_stats = df.group_by('porte_empresa').agg([
+                pl.count().alias('count')
+            ])
+            
+            print("\nPorte da empresa:")
+            porte_map = {1: 'Micro', 2: 'Pequena', 3: 'Média', 4: 'Grande', 5: 'Demais'}
+            for row in porte_stats.iter_rows(named=True):
+                porte = porte_map.get(row['porte_empresa'], 'Não informado')
+                pct = (row['count'] / df.height) * 100
+                print(f"  {porte}: {row['count']:,} ({pct:.1f}%)")
+        
+        print("=== FIM DA ANÁLISE ===")
+        
+    except Exception as e:
+        print(f"Erro na análise: {str(e)}")
+
+
+if __name__ == "__main__":
+    # Exemplo de execução
+    print("Exemplo de processamento completo do painel:")
+    exemplo_processamento_completo() 

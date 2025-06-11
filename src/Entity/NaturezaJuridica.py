@@ -4,48 +4,50 @@ Entidade para representar Natureza Jurídica
 Dados da Receita Federal convertidos de CSV para Parquet
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Type
+from dataclasses import dataclass
 from .base import BaseEntity
 
+
+@dataclass
 class NaturezaJuridica(BaseEntity):
     """
     Entidade para representar a Natureza Jurídica de uma empresa.
     
-    Atributos:
-        codigo (int): Código da natureza jurídica (0-8885)
-        descricao (str): Descrição da natureza jurídica
+    Attributes:
+        codigo: Código da natureza jurídica (0-8885)
+        descricao: Descrição da natureza jurídica
     """
     
-    def __init__(self, codigo: int, descricao: str = ""):
-        """
-        Inicializa uma NaturezaJuridica.
-        
-        Args:
-            codigo: Código da natureza jurídica
-            descricao: Descrição da natureza jurídica
-        """
-        self.codigo = codigo
-        self.descricao = descricao.strip() if descricao else ""
-        
-        super().__init__()
+    codigo: int
+    descricao: str = ""
     
-    def get_column_names(self) -> List[str]:
+    def __post_init__(self):
+        """Executa processamento após inicialização."""
+        self.descricao = self.descricao.strip() if self.descricao else ""
+        super().__post_init__()
+    
+    @classmethod
+    def get_column_names(cls) -> List[str]:
         """Retorna os nomes das colunas da entidade."""
         return ['codigo', 'descricao']
     
-    def get_column_types(self) -> Dict[str, type]:
+    @classmethod
+    def get_column_types(cls) -> Dict[str, Type]:
         """Retorna os tipos das colunas da entidade."""
         return {
             'codigo': int,
             'descricao': str
         }
     
-    def get_transformations(self) -> Dict[str, Any]:
+    @classmethod
+    def get_transformations(cls) -> List[str]:
         """Retorna as transformações aplicáveis à entidade."""
-        return {
-            'codigo': lambda x: int(x) if x is not None else 0,
-            'descricao': lambda x: str(x).strip() if x is not None else ""
-        }
+        return [
+            'normalize_codigo',
+            'clean_descricao',
+            'validate_natureza_juridica'
+        ]
     
     def validate(self) -> bool:
         """
@@ -54,23 +56,23 @@ class NaturezaJuridica(BaseEntity):
         Returns:
             True se válida, False caso contrário
         """
-        self.validation_errors = []
+        self._validation_errors.clear()
         
         # Validar código
         if not isinstance(self.codigo, int):
-            self.validation_errors.append("Código deve ser um número inteiro")
+            self._validation_errors.append("Código deve ser um número inteiro")
         elif self.codigo < 0:
-            self.validation_errors.append("Código não pode ser negativo")
+            self._validation_errors.append("Código não pode ser negativo")
         elif self.codigo > 9999:
-            self.validation_errors.append("Código deve ser menor que 10000")
+            self._validation_errors.append("Código deve ser menor que 10000")
         
         # Validar descrição
         if not isinstance(self.descricao, str):
-            self.validation_errors.append("Descrição deve ser uma string")
+            self._validation_errors.append("Descrição deve ser uma string")
         elif len(self.descricao.strip()) == 0 and self.codigo != 0:
-            self.validation_errors.append("Descrição não pode estar vazia para códigos diferentes de 0")
+            self._validation_errors.append("Descrição não pode estar vazia para códigos diferentes de 0")
         
-        return len(self.validation_errors) == 0
+        return len(self._validation_errors) == 0
     
     def is_empresa_privada(self) -> bool:
         """Verifica se é uma empresa privada (códigos 2000-2999)."""
@@ -180,6 +182,38 @@ class NaturezaJuridica(BaseEntity):
             'microempresa', 'pequeno porte', 'eireli', 'mei', 'individual'
         ])
     
+    # Métodos de transformação
+    
+    def _transform_normalize_codigo(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: normalizar código da natureza jurídica."""
+        if 'codigo' in data:
+            try:
+                codigo = int(data['codigo']) if data['codigo'] is not None else 0
+                if 0 <= codigo <= 9999:
+                    data['codigo'] = codigo
+                else:
+                    data['codigo'] = 0
+            except (ValueError, TypeError):
+                data['codigo'] = 0
+        
+        return data
+    
+    def _transform_clean_descricao(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: limpar descrição."""
+        if 'descricao' in data:
+            descricao = str(data['descricao']).strip() if data['descricao'] is not None else ""
+            data['descricao'] = descricao.upper()
+        
+        return data
+    
+    def _transform_validate_natureza_juridica(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: validar natureza jurídica."""
+        # Se código é 0 e não tem descrição, marcar como "NÃO INFORMADA"
+        if data.get('codigo', 0) == 0 and not data.get('descricao', '').strip():
+            data['descricao'] = "NÃO INFORMADA"
+        
+        return data
+    
     def __str__(self) -> str:
         """Representação string da natureza jurídica."""
         status = "✅" if self.is_valid() else "❌"
@@ -194,17 +228,24 @@ class NaturezaJuridica(BaseEntity):
         """Representação técnica da natureza jurídica."""
         return f"NaturezaJuridica(codigo={self.codigo}, descricao='{self.descricao[:20]}...')"
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, include_metadata: bool = True) -> Dict[str, Any]:
         """Converte a entidade para dicionário."""
-        return {
+        result = {
             'codigo': self.codigo,
-            'descricao': self.descricao,
-            'categoria': self.get_categoria(),
-            'tipo_societario': self.get_tipo_societario(),
-            'is_empresa_privada': self.is_empresa_privada(),
-            'is_entidade_publica': self.is_entidade_publica(),
-            'validation_status': self.is_valid()
+            'descricao': self.descricao
         }
+        
+        if include_metadata:
+            result.update({
+                'categoria': self.get_categoria(),
+                'tipo_societario': self.get_tipo_societario(),
+                'is_empresa_privada': self.is_empresa_privada(),
+                'is_entidade_publica': self.is_entidade_publica(),
+                'is_valid': self.is_valid(),
+                'validation_errors': self.get_validation_errors()
+            })
+        
+        return result
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'NaturezaJuridica':

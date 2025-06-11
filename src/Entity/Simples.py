@@ -65,7 +65,6 @@ class Simples(BaseEntity):
         """Retorna lista de transformações aplicáveis."""
         return [
             'normalize_opcoes',
-            'validate_cnpj_basico',
             'validate_date_consistency'
         ]
     
@@ -277,26 +276,6 @@ class Simples(BaseEntity):
                 else:
                     # Valor não reconhecido, manter None
                     data[field] = None
-        
-        return data
-    
-    def _transform_validate_cnpj_basico(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transformação: validar e corrigir CNPJ básico."""
-        if 'cnpj_basico' in data and data['cnpj_basico']:
-            try:
-                # Se for string, converter para int
-                if isinstance(data['cnpj_basico'], str):
-                    cnpj = re.sub(r'[^\d]', '', data['cnpj_basico'])
-                    data['cnpj_basico'] = int(cnpj) if cnpj else None
-                elif isinstance(data['cnpj_basico'], (int, float)):
-                    data['cnpj_basico'] = int(data['cnpj_basico'])
-                
-                # Verificar se tem 8 dígitos
-                if data['cnpj_basico'] and not (10000000 <= data['cnpj_basico'] <= 99999999):
-                    data['cnpj_basico'] = None
-                    
-            except (ValueError, TypeError):
-                data['cnpj_basico'] = None
         
         return data
     

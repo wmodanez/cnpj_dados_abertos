@@ -248,7 +248,7 @@ PATH_REMOTE_PARQUET=//servidor/compartilhado/
 
 | Atalho | Argumento Completo | Descrição |
 |--------|-------------------|-----------|
-| `-P` | `--show-progress` | Forçar exibição de barras de progresso |
+| `-B` | `--show-progress` | Forçar exibição de barras de progresso |
 | `-H` | `--hide-progress` | Ocultar barras de progresso |
 | `-S` | `--show-pending` | Forçar exibição de lista de pendentes |
 | `-W` | `--hide-pending` | Ocultar lista de arquivos pendentes |
@@ -440,11 +440,11 @@ python main.py -q
 # 23. Download com interface completa (barras de progresso + lista de pendentes):
 python main.py -v
 
-# 24. Download ocultando apenas as barras de progresso:
-python main.py -H
+# 24. Download mostrando apenas as barras de progresso (oculta lista de pendentes):
+python main.py --show-progress --hide-pending
 
-# 25. Download mostrando apenas as barras de progresso (oculta lista de pendentes):
-python main.py -P -W
+# 25. Download de pasta específica com barras de progresso ativadas:
+python main.py --remote-folder 2024-01 --show-progress
 
 # 26. Processamento em modo verboso com todas as informações visuais:
 python main.py -s process -z ../dados/2023-05 -o teste -v
@@ -483,6 +483,47 @@ python main.py -t estabelecimentos -d -c
 
 # 37. Economia máxima: processar estabelecimentos com todas as opções de limpeza:
 python main.py -t estabelecimentos -d -C -o economia_maxima
+
+# 🏢 EXEMPLOS COM PROCESSAMENTO DO PAINEL CONSOLIDADO (NOVO v3.2.1):
+
+# 38. Processamento completo com painel consolidado (TODOS OS DADOS - SEM FILTROS):
+python main.py --processar-painel
+
+# 39. Painel completo incluindo estabelecimentos inativos (TODOS OS DADOS):
+python main.py --processar-painel --painel-incluir-inativos
+
+# 40. Painel de Goiás incluindo estabelecimentos inativos:
+python main.py --processar-painel --painel-uf GO --painel-incluir-inativos
+
+# 41. Processamento de tipos específicos + painel para Minas Gerais:
+python main.py -t empresas estabelecimentos simples --processar-painel --painel-uf MG
+
+# 42. Painel de pasta remota específica com filtro de situação:
+python main.py -r 2024-01 --processar-painel --painel-situacao 2
+
+# 43. Painel completo com todos os filtros (SP, ativos, sem inativos):
+python main.py --processar-painel --painel-uf SP --painel-situacao 2
+
+# 44. Painel para estabelecimentos suspensos de todas as UFs:
+python main.py --processar-painel --painel-situacao 3 --painel-incluir-inativos
+
+# 45. Pipeline completo: download + processamento + painel + banco (economia máxima):
+python main.py --processar-painel --painel-uf SP -C
+
+# 46. Pipeline completo com painel de TODOS OS DADOS + economia máxima:
+python main.py --processar-painel -C
+
+# 47. Painel em modo silencioso para processamento em lote:
+python main.py --processar-painel --painel-uf GO -q
+
+# 48. Painel COMPLETO em modo silencioso (automação):
+python main.py --processar-painel -q
+
+# 49. Painel com dados de múltiplas pastas remotas:
+python main.py -a -f 2023-01 --processar-painel --painel-uf SP
+
+# 50. Painel de TODOS OS DADOS com múltiplas pastas remotas:
+python main.py -a -f 2023-01 --processar-painel
 ```
 
 **🎯 Principais Argumentos com Atalhos:**
@@ -503,18 +544,25 @@ python main.py -t estabelecimentos -d -C -o economia_maxima
 *   `--force-download/-F`: Força download mesmo que arquivos já existam localmente ou no cache.
 *   `--log-level/-l <NÍVEL>`: Ajusta o nível de log (padrão: `INFO`).
 
+**Argumentos do Processamento do Painel Consolidado (🆕 NOVO v3.2.1):**
+
+*   `--processar-painel`: 🆕 **Ativa o processamento do painel consolidado** (combina estabelecimentos + simples + empresas).
+*   `--painel-uf <UF>`: 🆕 **Filtra painel por UF específica** (ex: SP, GO, MG).
+*   `--painel-situacao <CODIGO>`: 🆕 **Filtra por situação cadastral** (1=Nula, 2=Ativa, 3=Suspensa, 4=Inapta, 8=Baixada).
+*   `--painel-incluir-inativos`: 🆕 **Inclui estabelecimentos inativos no painel** (padrão é só ativos).
+
 **Argumentos de Controle de Interface Visual:**
 
 *   `--quiet/-q`: 🆕 Modo silencioso - desativa barras de progresso e lista de pendentes.
 *   `--verbose-ui/-v`: 🆕 Modo verboso - ativa barras de progresso e lista de pendentes.
-*   `--show-progress/-P`: 🆕 Força exibição de barras de progresso.
+*   `--show-progress/-B`: 🆕 Força exibição de barras de progresso.
 *   `--hide-progress/-H`: 🆕 Força ocultação de barras de progresso.
 *   `--show-pending/-S`: 🆕 Força exibição da lista de arquivos pendentes.
 *   `--hide-pending/-W`: 🆕 Força ocultação da lista de arquivos pendentes.
 
 **Prioridade dos Argumentos de Interface:**
 - Modo silencioso (`--quiet/-q`) tem prioridade máxima sobre todos os outros
-- Argumentos específicos (`--show-progress/-P`, `--hide-progress/-H`, etc.) têm prioridade sobre modos gerais
+- Argumentos específicos (`--show-progress/-B`, `--hide-progress/-H`, etc.) têm prioridade sobre modos gerais
 - Modo verboso (`--verbose-ui/-v`) sobrescreve configurações padrão
 
 ### Gerenciamento de Cache
