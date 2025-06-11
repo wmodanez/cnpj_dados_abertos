@@ -22,7 +22,7 @@ class Estabelecimento(BaseEntity):
     Entidade representando um Estabelecimento da Receita Federal.
     
     Attributes:
-        cnpj_basico: CNPJ básico (8 dígitos)
+        cnpj_basico: CNPJ básico (int de 8 dígitos)
         matriz_filial: 1=Matriz, 2=Filial
         nome_fantasia: Nome fantasia do estabelecimento
         codigo_situacao: Código da situação cadastral
@@ -38,7 +38,7 @@ class Estabelecimento(BaseEntity):
         cnpj_completo: CNPJ completo calculado
     """
     
-    cnpj_basico: str
+    cnpj_basico: int
     matriz_filial: Optional[int] = None
     nome_fantasia: Optional[str] = None
     codigo_situacao: Optional[int] = None
@@ -144,8 +144,8 @@ class Estabelecimento(BaseEntity):
             self._validation_errors.append("CNPJ básico é obrigatório")
             return False
         
-        if len(self.cnpj_basico) != 8 or not self.cnpj_basico.isdigit():
-            self._validation_errors.append("CNPJ básico deve ter 8 dígitos")
+        if not isinstance(self.cnpj_basico, int) or not (10000000 <= self.cnpj_basico <= 99999999):
+            self._validation_errors.append("CNPJ básico deve ser um número inteiro de 8 dígitos")
             return False
         
         return True
@@ -193,7 +193,7 @@ class Estabelecimento(BaseEntity):
         ufs_validas = [
             'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 
             'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 
-            'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'
+            'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO', 'EX'
         ]
         
         if self.uf not in ufs_validas:
@@ -204,13 +204,11 @@ class Estabelecimento(BaseEntity):
     
     def _validate_cep(self) -> bool:
         """Valida CEP."""
+        if not self.cep:
+            return True  # CEP é opcional
+        
         if len(self.cep) != 8 or not self.cep.isdigit():
             self._validation_errors.append("CEP deve ter 8 dígitos")
-            return False
-        
-        # CEPs obviamente inválidos
-        if self.cep in ['00000000', '99999999']:
-            self._validation_errors.append(f"CEP inválido: {self.cep}")
             return False
         
         return True
@@ -317,10 +315,21 @@ class Estabelecimento(BaseEntity):
     
     def _transform_validate_cnpj_parts(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Transformação: validar e corrigir partes do CNPJ."""
-        # Apenas validar cnpj_basico agora
         if 'cnpj_basico' in data and data['cnpj_basico']:
-            value = re.sub(r'[^\d]', '', str(data['cnpj_basico']))
-            data['cnpj_basico'] = value.zfill(8)[:8]
+            try:
+                # Se for string, converter para int
+                if isinstance(data['cnpj_basico'], str):
+                    cnpj = re.sub(r'[^\d]', '', data['cnpj_basico'])
+                    data['cnpj_basico'] = int(cnpj) if cnpj else None
+                elif isinstance(data['cnpj_basico'], (int, float)):
+                    data['cnpj_basico'] = int(data['cnpj_basico'])
+                
+                # Verificar se tem 8 dígitos
+                if data['cnpj_basico'] and not (10000000 <= data['cnpj_basico'] <= 99999999):
+                    data['cnpj_basico'] = None
+                    
+            except (ValueError, TypeError):
+                data['cnpj_basico'] = None
         
         return data
     

@@ -22,7 +22,7 @@ class Socio(BaseEntity):
     Entidade representando um Sócio da Receita Federal.
     
     Attributes:
-        cnpj_basico: CNPJ básico da empresa
+        cnpj_basico: CNPJ básico da empresa (int de 8 dígitos)
         identificador_socio: Tipo de sócio (1-9)
         nome_socio: Nome do sócio
         cnpj_cpf_socio: CPF ou CNPJ do sócio
@@ -35,7 +35,7 @@ class Socio(BaseEntity):
         faixa_etaria: Faixa etária
     """
     
-    cnpj_basico: str
+    cnpj_basico: int
     identificador_socio: Optional[int] = None
     nome_socio: Optional[str] = None
     cnpj_cpf_socio: Optional[str] = None
@@ -78,8 +78,8 @@ class Socio(BaseEntity):
         """Retorna lista de transformações aplicáveis."""
         return [
             'convert_dates', 
-            'validate_cpf_cnpj',
-            'normalize_names',
+            'validate_cpf_cnpj', 
+            'normalize_names', 
             'clean_representante_legal',
             'validate_cnpj_basico'
         ]
@@ -127,8 +127,8 @@ class Socio(BaseEntity):
             self._validation_errors.append("CNPJ básico é obrigatório")
             return False
         
-        if len(self.cnpj_basico) != 8 or not self.cnpj_basico.isdigit():
-            self._validation_errors.append("CNPJ básico deve ter 8 dígitos")
+        if not isinstance(self.cnpj_basico, int) or not (10000000 <= self.cnpj_basico <= 99999999):
+            self._validation_errors.append("CNPJ básico deve ser um número inteiro de 8 dígitos")
             return False
         
         return True
@@ -201,6 +201,9 @@ class Socio(BaseEntity):
     
     def _validate_data_entrada(self) -> bool:
         """Valida data de entrada na sociedade."""
+        if not self.data_entrada_sociedade:
+            return True  # Data é opcional
+        
         if self.data_entrada_sociedade.year < 1900:
             self._validation_errors.append("Data de entrada muito antiga")
             return False
@@ -213,39 +216,29 @@ class Socio(BaseEntity):
     
     def _validate_names(self) -> bool:
         """Valida nomes."""
-        # Validar nome do sócio
-        if self.nome_socio:
-            if len(self.nome_socio.strip()) < 2:
-                self._validation_errors.append("Nome do sócio muito curto")
-                return False
-            
-            if self.nome_socio.strip().isdigit():
-                self._validation_errors.append("Nome do sócio não pode ser apenas números")
-                return False
+        # Nome do sócio não pode ser apenas números
+        if self.nome_socio and self.nome_socio.strip().isdigit():
+            self._validation_errors.append("Nome do sócio não pode ser apenas números")
+            return False
         
-        # Validar nome do representante
-        if self.nome_representante:
-            if len(self.nome_representante.strip()) < 2:
-                self._validation_errors.append("Nome do representante muito curto")
-                return False
-            
-            if self.nome_representante.strip().isdigit():
-                self._validation_errors.append("Nome do representante não pode ser apenas números")
-                return False
+        # Nome do representante não pode ser apenas números
+        if self.nome_representante and self.nome_representante.strip().isdigit():
+            self._validation_errors.append("Nome do representante não pode ser apenas números")
+            return False
         
         return True
     
     def is_pessoa_fisica(self) -> bool:
-        """Verifica se o sócio é pessoa física (CPF)."""
-        return self.cnpj_cpf_socio and len(self.cnpj_cpf_socio) == 11
+        """Verifica se o sócio é pessoa física."""
+        return self.identificador_socio in [1, 2] if self.identificador_socio else False
     
     def is_pessoa_juridica(self) -> bool:
-        """Verifica se o sócio é pessoa jurídica (CNPJ)."""
-        return self.cnpj_cpf_socio and len(self.cnpj_cpf_socio) == 14
+        """Verifica se o sócio é pessoa jurídica."""
+        return self.identificador_socio == 3 if self.identificador_socio else False
     
     def has_representante_legal(self) -> bool:
         """Verifica se tem representante legal."""
-        return bool(self.representante_legal)
+        return bool(self.representante_legal and self.nome_representante)
     
     def get_documento_formatado(self) -> str:
         """Retorna documento formatado (CPF ou CNPJ)."""
@@ -324,7 +317,19 @@ class Socio(BaseEntity):
     def _transform_validate_cnpj_basico(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Transformação: validar e corrigir CNPJ básico."""
         if 'cnpj_basico' in data and data['cnpj_basico']:
-            cnpj = re.sub(r'[^\d]', '', str(data['cnpj_basico']))
-            data['cnpj_basico'] = cnpj.zfill(8)[:8]
+            try:
+                # Se for string, converter para int
+                if isinstance(data['cnpj_basico'], str):
+                    cnpj = re.sub(r'[^\d]', '', data['cnpj_basico'])
+                    data['cnpj_basico'] = int(cnpj) if cnpj else None
+                elif isinstance(data['cnpj_basico'], (int, float)):
+                    data['cnpj_basico'] = int(data['cnpj_basico'])
+                
+                # Verificar se tem 8 dígitos
+                if data['cnpj_basico'] and not (10000000 <= data['cnpj_basico'] <= 99999999):
+                    data['cnpj_basico'] = None
+                    
+            except (ValueError, TypeError):
+                data['cnpj_basico'] = None
         
         return data

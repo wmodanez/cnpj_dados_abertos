@@ -1,0 +1,489 @@
+"""
+Entidade Painel para dados combinados da Receita Federal.
+
+Esta classe representa um painel com dados combinados de Estabelecimento, Simples Nacional,
+Empresa e Município, implementando validações e transformações específicas para dados de exportação.
+"""
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any, Type
+import polars as pl
+import re
+from datetime import datetime
+import logging
+from .base import BaseEntity
+
+try:
+    from .schemas.painel import PainelSchema
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    PYDANTIC_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Painel(BaseEntity):
+    """
+    Entidade representando um Painel com dados combinados de Estabelecimento, Simples Nacional, Empresa e Município.
+    
+    Combina informações de estabelecimentos com dados do Simples Nacional, dados da empresa e informações municipais
+    para fornecer uma visão consolidada para exportação.
+    
+    Attributes:
+        # Dados do Estabelecimento
+        cnpj_basico: CNPJ básico (int de 8 dígitos)
+        matriz_filial: 1=Matriz, 2=Filial
+        codigo_situacao: Código da situação cadastral
+        data_situacao_cadastral: Data da situação cadastral
+        codigo_motivo: Motivo da situação
+        data_inicio_atividades: Data de início das atividades
+        codigo_cnae: Código CNAE principal
+        uf: Unidade Federativa
+        codigo_municipio: Código do município
+        tipo_situacao_cadastral: Tipo de situação cadastral (1=Ativa, 2=Baixa Voluntária, 3=Outras Baixas)
+        
+        # Dados da Empresa (right join)
+        natureza_juridica: Código da natureza jurídica
+        porte_empresa: Porte da empresa (1-5)
+        
+        # Dados do Simples Nacional (podem ser null se não optante)
+        opcao_simples: Opção pelo Simples Nacional (S/N)
+        data_opcao_simples: Data da opção pelo Simples
+        data_exclusao_simples: Data de exclusão do Simples
+        opcao_mei: Opção pelo MEI (S/N)
+        data_opcao_mei: Data da opção pelo MEI
+        data_exclusao_mei: Data de exclusão do MEI
+        
+        # Campos calculados
+        situacao_simples: Situação atual no Simples Nacional
+        situacao_mei: Situação atual no MEI
+    """
+    
+    # Dados do Estabelecimento (obrigatórios)
+    cnpj_basico: int
+    
+    # Dados do Estabelecimento (opcionais)
+    matriz_filial: Optional[int] = None
+    codigo_situacao: Optional[int] = None
+    data_situacao_cadastral: Optional[datetime] = None
+    codigo_motivo: Optional[int] = None
+    data_inicio_atividades: Optional[datetime] = None
+    codigo_cnae: Optional[int] = None
+    uf: Optional[str] = None
+    codigo_municipio: Optional[int] = None
+    tipo_situacao_cadastral: Optional[int] = None
+    
+    # Dados da Empresa (right join)
+    natureza_juridica: Optional[int] = None
+    porte_empresa: Optional[int] = None
+    
+    # Dados do Simples Nacional (opcionais - podem não existir)
+    opcao_simples: Optional[str] = None
+    data_opcao_simples: Optional[datetime] = None
+    data_exclusao_simples: Optional[datetime] = None
+    opcao_mei: Optional[str] = None
+    data_opcao_mei: Optional[datetime] = None
+    data_exclusao_mei: Optional[datetime] = None
+    
+    # Campos calculados (gerados automaticamente)
+    situacao_simples: Optional[str] = field(init=False, default=None)
+    situacao_mei: Optional[str] = field(init=False, default=None)
+    
+    def __post_init__(self):
+        """Executa processamento após inicialização."""
+        super().__post_init__()
+        self._calculate_derived_fields()
+    
+    @classmethod
+    def get_column_names(cls) -> List[str]:
+        """Retorna nomes das colunas da entidade."""
+        return [
+            # Dados do Estabelecimento
+            'cnpj_basico', 'matriz_filial', 'codigo_situacao', 'data_situacao_cadastral', 
+            'codigo_motivo', 'data_inicio_atividades', 'codigo_cnae', 'uf', 'codigo_municipio',
+            'tipo_situacao_cadastral',
+            
+            # Dados da Empresa
+            'natureza_juridica', 'porte_empresa',
+            
+            # Dados do Simples Nacional
+            'opcao_simples', 'data_opcao_simples', 'data_exclusao_simples',
+            'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei',
+            
+            # Campos calculados
+            'situacao_simples', 'situacao_mei'
+        ]
+    
+    @classmethod
+    def get_column_types(cls) -> Dict[str, Type]:
+        """Retorna tipos das colunas da entidade."""
+        return {
+            # Dados do Estabelecimento
+            'cnpj_basico': pl.Int64,
+            'matriz_filial': pl.Int32,
+            'codigo_situacao': pl.Int32,
+            'data_situacao_cadastral': pl.Datetime,
+            'codigo_motivo': pl.Int32,
+            'data_inicio_atividades': pl.Datetime,
+            'codigo_cnae': pl.Int32,
+            'uf': pl.Utf8,
+            'codigo_municipio': pl.Int32,
+            'tipo_situacao_cadastral': pl.Int32,
+            
+            # Dados da Empresa
+            'natureza_juridica': pl.Int32,
+            'porte_empresa': pl.Int32,
+            
+            # Dados do Simples Nacional
+            'opcao_simples': pl.Utf8,
+            'data_opcao_simples': pl.Datetime,
+            'data_exclusao_simples': pl.Datetime,
+            'opcao_mei': pl.Utf8,
+            'data_opcao_mei': pl.Datetime,
+            'data_exclusao_mei': pl.Datetime,
+            
+            # Campos calculados
+            'situacao_simples': pl.Utf8,
+            'situacao_mei': pl.Utf8
+        }
+    
+    @classmethod
+    def get_transformations(cls) -> List[str]:
+        """Retorna lista de transformações aplicáveis."""
+        return [
+            'normalize_cnpj_basico',
+            'validate_uf_exclude_exterior',
+            'calculate_simples_status',
+            'validate_data_consistency',
+            'normalize_empresa_fields'
+        ]
+    
+    def validate(self) -> bool:
+        """
+        Valida dados do painel.
+        
+        Returns:
+            bool: True se válido, False caso contrário
+        """
+        self._validation_errors.clear()
+        
+        # Validar CNPJ básico (obrigatório)
+        if not self._validate_cnpj_basico():
+            return False
+        
+        # Validar UF (se presente) - não pode ser EX
+        if self.uf and not self._validate_uf():
+            return False
+        
+        # Validar dados do Simples Nacional
+        if not self._validate_simples_data():
+            return False
+        
+        # Validar dados da Empresa
+        if not self._validate_empresa_data():
+            return False
+        
+        # Validar consistência entre dados
+        if not self._validate_data_consistency():
+            return False
+        
+        return True
+    
+    def _validate_cnpj_basico(self) -> bool:
+        """Valida CNPJ básico."""
+        if not self.cnpj_basico:
+            self._validation_errors.append("CNPJ básico é obrigatório")
+            return False
+        
+        if not isinstance(self.cnpj_basico, int) or not (10000000 <= self.cnpj_basico <= 99999999):
+            self._validation_errors.append("CNPJ básico deve ser um número inteiro de 8 dígitos")
+            return False
+        
+        return True
+    
+    def _validate_uf(self) -> bool:
+        """Valida UF brasileira - exclui exterior (EX)."""
+        ufs_validas = [
+            'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 
+            'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 
+            'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'
+        ]
+        
+        if self.uf == 'EX':
+            self._validation_errors.append("Estabelecimentos no exterior (EX) são excluídos")
+            return False
+        
+        if self.uf not in ufs_validas:
+            self._validation_errors.append(f"UF inválida: {self.uf}")
+            return False
+        
+        return True
+    
+    def _validate_simples_data(self) -> bool:
+        """Valida dados do Simples Nacional."""
+        # Validar opções S/N
+        if self.opcao_simples and self.opcao_simples not in ['S', 'N']:
+            self._validation_errors.append(f"Opção Simples deve ser 'S' ou 'N': {self.opcao_simples}")
+            return False
+        
+        if self.opcao_mei and self.opcao_mei not in ['S', 'N']:
+            self._validation_errors.append(f"Opção MEI deve ser 'S' ou 'N': {self.opcao_mei}")
+            return False
+        
+        # Validar datas
+        current_date = datetime.now()
+        
+        dates_to_validate = [
+            ('data_opcao_simples', self.data_opcao_simples),
+            ('data_exclusao_simples', self.data_exclusao_simples),
+            ('data_opcao_mei', self.data_opcao_mei),
+            ('data_exclusao_mei', self.data_exclusao_mei)
+        ]
+        
+        for field_name, date_value in dates_to_validate:
+            if date_value:
+                # Verificar se a data não é muito antiga (Simples Nacional criado em 2006)
+                if date_value.year < 2006:
+                    self._validation_errors.append(f"{field_name} anterior à criação do Simples Nacional (2006)")
+                    return False
+                
+                # Verificar se a data não é no futuro
+                if date_value > current_date:
+                    self._validation_errors.append(f"{field_name} no futuro")
+                    return False
+        
+        return True
+    
+    def _validate_empresa_data(self) -> bool:
+        """Valida dados da Empresa."""
+        # Validar natureza jurídica
+        if self.natureza_juridica is not None and not (1 <= self.natureza_juridica <= 9999):
+            self._validation_errors.append("Natureza jurídica deve estar entre 1 e 9999")
+            return False
+        
+        # Validar porte da empresa
+        if self.porte_empresa is not None and not (1 <= self.porte_empresa <= 5):
+            self._validation_errors.append("Porte da empresa deve estar entre 1 e 5")
+            return False
+        
+        return True
+    
+    def _validate_data_consistency(self) -> bool:
+        """Valida consistência entre dados de estabelecimento e Simples."""
+        # Validar consistência entre datas do Simples
+        if self.data_opcao_simples and self.data_exclusao_simples:
+            if self.data_exclusao_simples <= self.data_opcao_simples:
+                self._validation_errors.append("Data de exclusão do Simples deve ser posterior à data de opção")
+                return False
+        
+        # Validar consistência entre datas do MEI
+        if self.data_opcao_mei and self.data_exclusao_mei:
+            if self.data_exclusao_mei <= self.data_opcao_mei:
+                self._validation_errors.append("Data de exclusão do MEI deve ser posterior à data de opção")
+                return False
+        
+        return True
+    
+    def _calculate_derived_fields(self):
+        """Calcula campos derivados."""
+        # Calcular situação do Simples Nacional
+        self.situacao_simples = self._get_situacao_simples()
+        
+        # Calcular situação do MEI
+        self.situacao_mei = self._get_situacao_mei()
+    
+    def _get_situacao_simples(self) -> str:
+        """Calcula situação atual no Simples Nacional."""
+        if not self.opcao_simples or self.opcao_simples == 'N':
+            return "Não optante"
+        
+        if self.opcao_simples == 'S':
+            if not self.data_exclusao_simples:
+                return "Ativo"
+            else:
+                return "Excluído"
+        
+        return "Indefinido"
+    
+    def _get_situacao_mei(self) -> str:
+        """Calcula situação atual no MEI."""
+        if not self.opcao_mei or self.opcao_mei == 'N':
+            return "Não optante"
+        
+        if self.opcao_mei == 'S':
+            if not self.data_exclusao_mei:
+                return "Ativo"
+            else:
+                return "Excluído"
+        
+        return "Indefinido"
+    
+    # Métodos de conveniência
+    
+    def is_matriz(self) -> bool:
+        """Verifica se é matriz."""
+        return self.matriz_filial == 1 if self.matriz_filial is not None else False
+    
+    def is_filial(self) -> bool:
+        """Verifica se é filial."""
+        return self.matriz_filial == 2 if self.matriz_filial is not None else False
+    
+    def is_ativo_estabelecimento(self) -> bool:
+        """Verifica se estabelecimento está ativo."""
+        return self.codigo_situacao == 2 if self.codigo_situacao is not None else False
+    
+    def is_optante_simples(self) -> bool:
+        """Verifica se é optante do Simples Nacional."""
+        return self.opcao_simples == 'S' if self.opcao_simples is not None else False
+    
+    def is_optante_mei(self) -> bool:
+        """Verifica se é optante do MEI."""
+        return self.opcao_mei == 'S' if self.opcao_mei is not None else False
+    
+    def is_ativo_simples(self) -> bool:
+        """Verifica se está ativo no Simples Nacional."""
+        return bool(self.opcao_simples == 'S' and 
+                   self.data_opcao_simples and 
+                   not self.data_exclusao_simples)
+    
+    def is_ativo_mei(self) -> bool:
+        """Verifica se está ativo no MEI."""
+        return bool(self.opcao_mei == 'S' and 
+                   self.data_opcao_mei and 
+                   not self.data_exclusao_mei)
+    
+    def is_microempresa(self) -> bool:
+        """Verifica se é microempresa."""
+        return self.porte_empresa == 1 if self.porte_empresa is not None else False
+    
+    def is_pequena_empresa(self) -> bool:
+        """Verifica se é pequena empresa."""
+        return self.porte_empresa == 2 if self.porte_empresa is not None else False
+    
+    def get_situacao_cadastral_descricao(self) -> str:
+        """Retorna descrição da situação cadastral."""
+        if self.codigo_situacao == 1:
+            return "Nula"
+        elif self.codigo_situacao == 2:
+            return "Ativa"
+        elif self.codigo_situacao == 3:
+            return "Suspensa"
+        elif self.codigo_situacao == 4:
+            return "Inapta"
+        elif self.codigo_situacao == 8:
+            return "Baixada"
+        else:
+            return "Outros"
+    
+    def get_tipo_situacao_descricao(self) -> str:
+        """Retorna descrição do tipo de situação cadastral."""
+        if self.tipo_situacao_cadastral == 1:
+            return "Ativa"
+        elif self.tipo_situacao_cadastral == 2:
+            return "Baixa Voluntária"
+        elif self.tipo_situacao_cadastral == 3:
+            return "Outras Baixas"
+        else:
+            return "Indefinido"
+    
+    def get_resumo_status(self) -> Dict[str, Any]:
+        """Retorna resumo do status do estabelecimento."""
+        return {
+            'cnpj_basico': self.cnpj_basico,
+            'tipo_estabelecimento': 'Matriz' if self.is_matriz() else 'Filial' if self.is_filial() else 'Indefinido',
+            'estabelecimento_ativo': self.is_ativo_estabelecimento(),
+            'situacao_simples': self.situacao_simples,
+            'situacao_mei': self.situacao_mei,
+            'uf': self.uf,
+            'natureza_juridica': self.natureza_juridica,
+            'porte_empresa': self.porte_empresa,
+            'is_microempresa': self.is_microempresa(),
+            'is_pequena_empresa': self.is_pequena_empresa()
+        }
+    
+    # Métodos de transformação
+    
+    def _transform_normalize_cnpj_basico(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: normalizar CNPJ básico."""
+        if 'cnpj_basico' in data and data['cnpj_basico']:
+            try:
+                # Se for string, converter para int
+                if isinstance(data['cnpj_basico'], str):
+                    cnpj = re.sub(r'[^\d]', '', data['cnpj_basico'])
+                    data['cnpj_basico'] = int(cnpj) if cnpj else None
+                elif isinstance(data['cnpj_basico'], (int, float)):
+                    data['cnpj_basico'] = int(data['cnpj_basico'])
+                
+                # Verificar se tem 8 dígitos
+                if data['cnpj_basico'] and not (10000000 <= data['cnpj_basico'] <= 99999999):
+                    data['cnpj_basico'] = None
+                    
+            except (ValueError, TypeError):
+                data['cnpj_basico'] = None
+        
+        return data
+    
+    def _transform_validate_uf_exclude_exterior(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: validar UF e excluir exterior."""
+        if 'uf' in data and data['uf']:
+            uf = str(data['uf']).strip().upper()
+            if uf == 'EX':
+                # Marcar para exclusão
+                data['_exclude'] = True
+                logger.info("Estabelecimento exterior (EX) marcado para exclusão")
+            else:
+                data['uf'] = uf
+        
+        return data
+    
+    def _transform_calculate_simples_status(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: calcular status do Simples e MEI."""
+        # Esta transformação será feita no __post_init__
+        return data
+    
+    def _transform_validate_data_consistency(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: validar e corrigir inconsistências."""
+        # Corrigir datas de exclusão inválidas
+        if (data.get('data_opcao_simples') and data.get('data_exclusao_simples')):
+            if data['data_exclusao_simples'] <= data['data_opcao_simples']:
+                data['data_exclusao_simples'] = None
+                logger.warning("Data de exclusão do Simples inválida corrigida")
+        
+        if (data.get('data_opcao_mei') and data.get('data_exclusao_mei')):
+            if data['data_exclusao_mei'] <= data['data_opcao_mei']:
+                data['data_exclusao_mei'] = None
+                logger.warning("Data de exclusão do MEI inválida corrigida")
+        
+        return data
+    
+    def _transform_normalize_empresa_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: normalizar campos da empresa."""
+        # Validar natureza jurídica
+        if 'natureza_juridica' in data and data['natureza_juridica'] is not None:
+            try:
+                nj = int(data['natureza_juridica'])
+                if 1 <= nj <= 9999:
+                    data['natureza_juridica'] = nj
+                else:
+                    data['natureza_juridica'] = None
+            except (ValueError, TypeError):
+                data['natureza_juridica'] = None
+        
+        # Validar porte da empresa
+        if 'porte_empresa' in data and data['porte_empresa'] is not None:
+            try:
+                pe = int(data['porte_empresa'])
+                if 1 <= pe <= 5:
+                    data['porte_empresa'] = pe
+                else:
+                    data['porte_empresa'] = None
+            except (ValueError, TypeError):
+                data['porte_empresa'] = None
+        
+        return data
+
+
+if PYDANTIC_AVAILABLE:
+    # Schema Pydantic já definido em schemas/painel.py
+    pass

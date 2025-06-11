@@ -4,7 +4,7 @@ Entidade para representar Qualificação do Sócio
 Dados da Receita Federal convertidos de CSV para Parquet
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Type
 from .base import BaseEntity
 
 class QualificacaoSocio(BaseEntity):
@@ -29,23 +29,27 @@ class QualificacaoSocio(BaseEntity):
         
         super().__init__()
     
-    def get_column_names(self) -> List[str]:
+    @classmethod
+    def get_column_names(cls) -> List[str]:
         """Retorna os nomes das colunas da entidade."""
         return ['codigo', 'descricao']
     
-    def get_column_types(self) -> Dict[str, type]:
+    @classmethod
+    def get_column_types(cls) -> Dict[str, Type]:
         """Retorna os tipos das colunas da entidade."""
         return {
             'codigo': int,
             'descricao': str
         }
     
-    def get_transformations(self) -> Dict[str, Any]:
+    @classmethod
+    def get_transformations(cls) -> List[str]:
         """Retorna as transformações aplicáveis à entidade."""
-        return {
-            'codigo': lambda x: int(x) if x is not None else 0,
-            'descricao': lambda x: str(x).strip() if x is not None else ""
-        }
+        return [
+            'normalize_codigo',
+            'clean_descricao',
+            'categorize_qualificacao'
+        ]
     
     def validate(self) -> bool:
         """
@@ -54,23 +58,23 @@ class QualificacaoSocio(BaseEntity):
         Returns:
             True se válida, False caso contrário
         """
-        self.validation_errors = []
+        self._validation_errors.clear()
         
         # Validar código
         if not isinstance(self.codigo, int):
-            self.validation_errors.append("Código deve ser um número inteiro")
+            self._validation_errors.append("Código deve ser um número inteiro")
         elif self.codigo < 0:
-            self.validation_errors.append("Código não pode ser negativo")
+            self._validation_errors.append("Código não pode ser negativo")
         elif self.codigo > 99:
-            self.validation_errors.append("Código deve ser menor que 100")
+            self._validation_errors.append("Código deve ser menor que 100")
         
         # Validar descrição
         if not isinstance(self.descricao, str):
-            self.validation_errors.append("Descrição deve ser uma string")
+            self._validation_errors.append("Descrição deve ser uma string")
         elif len(self.descricao.strip()) == 0 and self.codigo != 0:
-            self.validation_errors.append("Descrição não pode estar vazia para códigos diferentes de 0")
+            self._validation_errors.append("Descrição não pode estar vazia para códigos diferentes de 0")
         
-        return len(self.validation_errors) == 0
+        return len(self._validation_errors) == 0
     
     def is_nao_informada(self) -> bool:
         """Verifica se a qualificação não foi informada."""
@@ -260,7 +264,7 @@ class QualificacaoSocio(BaseEntity):
     
     def __str__(self) -> str:
         """Representação string da qualificação do sócio."""
-        status = "✅" if self.is_valid() else "❌"
+        status = "✅" if self.validate() else "❌"
         categoria = self.get_categoria()
         tipo_pessoa = self.get_tipo_pessoa()
         
@@ -272,20 +276,26 @@ class QualificacaoSocio(BaseEntity):
         """Representação técnica da qualificação do sócio."""
         return f"QualificacaoSocio(codigo={self.codigo}, descricao='{self.descricao[:15]}...')"
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, include_metadata: bool = True) -> Dict[str, Any]:
         """Converte a entidade para dicionário."""
-        return {
+        result = {
             'codigo': self.codigo,
-            'descricao': self.descricao,
-            'categoria': self.get_categoria(),
-            'tipo_pessoa': self.get_tipo_pessoa(),
-            'nivel_hierarquico': self.get_nivel_hierarquico(),
-            'abreviacao': self.get_abreviacao(),
-            'is_socio': self.is_socio(),
-            'is_administrador': self.is_administrador(),
-            'has_poder_decisao': self.has_poder_decisao(),
-            'validation_status': self.is_valid()
+            'descricao': self.descricao
         }
+        
+        if include_metadata:
+            result.update({
+                'categoria': self.get_categoria(),
+                'tipo_pessoa': self.get_tipo_pessoa(),
+                'nivel_hierarquico': self.get_nivel_hierarquico(),
+                'abreviacao': self.get_abreviacao(),
+                'is_socio': self.is_socio(),
+                'is_administrador': self.is_administrador(),
+                'has_poder_decisao': self.has_poder_decisao(),
+                'validation_status': self.validate()
+            })
+        
+        return result
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'QualificacaoSocio':
@@ -302,3 +312,25 @@ class QualificacaoSocio(BaseEntity):
             codigo=data.get('codigo', 0),
             descricao=data.get('descricao', '')
         )
+    
+    # Métodos de transformação para compatibilidade com BaseEntity  
+    
+    def _transform_normalize_codigo(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: normalizar código."""
+        if 'codigo' in data:
+            try:
+                data['codigo'] = int(data['codigo']) if data['codigo'] is not None else 0
+            except (ValueError, TypeError):
+                data['codigo'] = 0
+        return data
+    
+    def _transform_clean_descricao(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: limpar descrição."""
+        if 'descricao' in data and data['descricao']:
+            data['descricao'] = str(data['descricao']).strip().upper()
+        return data
+    
+    def _transform_categorize_qualificacao(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transformação: categorizar qualificação."""
+        # Esta transformação será aplicada após a criação da instância
+        return data

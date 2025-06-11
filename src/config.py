@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Type
 import polars as pl
 
 # Carregar variáveis de ambiente do arquivo .env
@@ -130,8 +130,8 @@ class Config:
         'capital_social', 'porte_empresa', 'ente_federativo_responsavel'
     ])
 
-    empresa_dtypes: Dict[str, str] = field(default_factory=lambda: {
-        'cnpj_basico': pl.Utf8,
+    empresa_dtypes: Dict[str, Type] = field(default_factory=lambda: {
+        'cnpj_basico': pl.Int64,
         'razao_social': pl.Utf8,
         'natureza_juridica': pl.Utf8,
         'qualificacao_responsavel': pl.Int64,
@@ -150,8 +150,8 @@ class Config:
         'data_situacao_especial'
     ])
 
-    estabelecimento_dtypes: Dict[str, str] = field(default_factory=lambda: {
-        'cnpj_basico': pl.Utf8,
+    estabelecimento_dtypes: Dict[str, Type] = field(default_factory=lambda: {
+        'cnpj_basico': pl.Int64,
         'cnpj_ordem': pl.Utf8,
         'cnpj_dv': pl.Utf8,
         'matriz_filial': pl.Int64,
@@ -188,8 +188,8 @@ class Config:
         'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei'
     ])
 
-    simples_dtypes: Dict[str, str] = field(default_factory=lambda: {
-        'cnpj_basico': pl.Utf8,
+    simples_dtypes: Dict[str, Type] = field(default_factory=lambda: {
+        'cnpj_basico': pl.Int64,
         'opcao_simples': pl.Utf8,
         'data_opcao_simples': pl.Utf8,
         'data_exclusao_simples': pl.Utf8,
@@ -204,8 +204,8 @@ class Config:
         'nome_representante', 'qualificacao_representante_legal', 'faixa_etaria'
     ])
 
-    socio_dtypes: Dict[str, str] = field(default_factory=lambda: {
-        'cnpj_basico': pl.Utf8,
+    socio_dtypes: Dict[str, Type] = field(default_factory=lambda: {
+        'cnpj_basico': pl.Int64,
         'identificador_socio': pl.Int64,
         'nome_socio': pl.Utf8,
         'cnpj_cpf_socio': pl.Utf8,

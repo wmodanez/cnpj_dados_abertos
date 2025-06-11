@@ -2,8 +2,8 @@
 Schema de validação Pydantic para entidade Empresa.
 """
 
-from pydantic import BaseModel, Field, validator, root_validator
-from typing import Optional
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Optional, Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
@@ -49,54 +49,31 @@ class EmpresaSchema(BaseModel):
             }
         }
     
-    @validator('razao_social')
+    @field_validator('razao_social')
+    @classmethod
     def validate_razao_social(cls, v):
-        """Valida razão social"""
         if not v or not v.strip():
-            raise ValueError('Razão social não pode estar vazia')
+            raise ValueError('Razão social é obrigatória')
         
-        # Verificar se não contém apenas números (possível erro de parsing)
-        if v.strip().isdigit():
-            raise ValueError('Razão social não pode conter apenas números')
+        razao_limpa = v.strip().upper()
+        if len(razao_limpa) < 3:
+            raise ValueError('Razão social deve ter pelo menos 3 caracteres')
         
-        # Verificar caracteres especiais suspeitos
-        if any(char in v for char in ['<', '>', '&', '"', "'"]):
-            logger.warning(f"Razão social contém caracteres especiais: {v}")
-        
-        return v.strip()
+        return razao_limpa
     
-    @validator('capital_social')
+    @field_validator('capital_social')
+    @classmethod
     def validate_capital_social(cls, v):
-        """Valida capital social"""
         if v is not None and v < 0:
             raise ValueError('Capital social não pode ser negativo')
-        
-        # Verificar valores muito altos (possível erro)
-        if v is not None and v > 1e12:  # 1 trilhão
-            logger.warning(f"Capital social muito alto: {v}")
-        
         return v
     
-    @root_validator(skip_on_failure=True)
-    def validate_empresa_consistency(cls, values):
-        """Validações que dependem de múltiplos campos"""
-        cnpj_basico = values.get('cnpj_basico')
-        razao_social = values.get('razao_social')
-        capital_social = values.get('capital_social')
-        porte_empresa = values.get('porte_empresa')
+    @model_validator(mode='after')
+    def validate_consistency(self):
+        """Validar consistência entre campos."""
+        # Verificar se porte da empresa é consistente com capital social
+        if self.capital_social is not None and self.porte_empresa is not None:
+            if self.capital_social > 1000000 and self.porte_empresa == 1:  # Microempresa
+                raise ValueError('Capital social inconsistente com porte da empresa')
         
-        # Verificar consistência entre CNPJ e razão social
-        if cnpj_basico and razao_social:
-            # Empresas com CNPJ iniciado em '00' geralmente são especiais
-            if cnpj_basico.startswith('00') and len(razao_social) < 10:
-                raise ValueError('Empresas com CNPJ especial devem ter razão social mais detalhada')
-        
-        # Verificar consistência entre capital social e porte
-        if capital_social is not None and porte_empresa is not None:
-            # Regras básicas de porte vs capital (simplificadas)
-            if porte_empresa == 1 and capital_social > 360000:  # Microempresa
-                logger.warning("Capital social alto para microempresa")
-            elif porte_empresa == 2 and capital_social > 4800000:  # Pequena empresa
-                logger.warning("Capital social alto para pequena empresa")
-        
-        return values 
+        return self 

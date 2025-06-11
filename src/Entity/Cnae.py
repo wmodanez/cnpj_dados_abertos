@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Type
 
 try:
-    from pydantic import BaseModel, Field, validator
+    from pydantic import BaseModel, Field, field_validator
     PYDANTIC_AVAILABLE = True
 except ImportError:
     PYDANTIC_AVAILABLE = False
@@ -414,26 +414,22 @@ if PYDANTIC_AVAILABLE:
                 }
             }
         
-        @validator('id_secao')
-        def validate_secao(cls, v):
-            if not v.isalpha() or not ('A' <= v.upper() <= 'U'):
-                raise ValueError('Seção deve ser uma letra entre A e U')
-            return v.upper()
+        @field_validator('id_secao')
+        @classmethod
+        def validate_id_secao(cls, v):
+            return cls._validate_single_char(v, 'id_secao')
         
-        @validator('id_grupo')
-        def validate_grupo_hierarquia(cls, v, values):
-            if 'id_divisao' in values and not str(v).startswith(str(values['id_divisao'])):
-                raise ValueError('Grupo deve começar com os dígitos da divisão')
-            return v
+        @field_validator('id_grupo')
+        @classmethod
+        def validate_id_grupo(cls, v):
+            return cls._validate_two_digits(v, 'id_grupo')
         
-        @validator('id_classe')
-        def validate_classe_hierarquia(cls, v, values):
-            if 'id_grupo' in values and not str(v).startswith(str(values['id_grupo'])):
-                raise ValueError('Classe deve começar com os dígitos do grupo')
-            return v
+        @field_validator('id_classe')
+        @classmethod
+        def validate_id_classe(cls, v):
+            return cls._validate_single_digit(v, 'id_classe')
         
-        @validator('id_subclasse')
-        def validate_subclasse_hierarquia(cls, v, values):
-            if 'id_classe' in values and not str(v).startswith(str(values['id_classe'])):
-                raise ValueError('Subclasse deve começar com os dígitos da classe')
-            return v
+        @field_validator('id_subclasse')
+        @classmethod
+        def validate_id_subclasse(cls, v):
+            return cls._validate_single_digit(v, 'id_subclasse')

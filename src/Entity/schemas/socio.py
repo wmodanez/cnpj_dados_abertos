@@ -2,8 +2,8 @@
 Schema de validação Pydantic para entidade Socio.
 """
 
-from pydantic import BaseModel, Field, validator
-from typing import Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, Dict, Any
 from datetime import datetime
 import logging
 
@@ -46,67 +46,82 @@ class SocioSchema(BaseModel):
             }
         }
     
-    @validator('cnpj_cpf_socio')
+    @field_validator('cnpj_cpf_socio')
+    @classmethod
     def validate_cnpj_cpf(cls, v):
-        """Valida CPF ou CNPJ do sócio"""
-        if v is None:
+        if not v:
             return v
         
-        if len(v) == 11:  # CPF
-            return cls._validate_cpf(v)
-        elif len(v) == 14:  # CNPJ
-            return cls._validate_cnpj(v)
+        # Remover caracteres não numéricos
+        doc_limpo = ''.join(char for char in str(v) if char.isdigit())
+        
+        if len(doc_limpo) == 11:
+            # É um CPF
+            if not cls._validate_cpf(doc_limpo):
+                raise ValueError(f'CPF inválido: {doc_limpo}')
+        elif len(doc_limpo) == 14:
+            # É um CNPJ
+            if not cls._validate_cnpj(doc_limpo):
+                raise ValueError(f'CNPJ inválido: {doc_limpo}')
         else:
-            raise ValueError(f'Documento deve ter 11 (CPF) ou 14 (CNPJ) dígitos: {v}')
+            raise ValueError(f'Documento deve ter 11 (CPF) ou 14 (CNPJ) dígitos: {doc_limpo}')
+        
+        return doc_limpo
     
-    @validator('nome_socio', 'nome_representante')
+    @field_validator('nome_socio', 'nome_representante')
+    @classmethod
     def validate_names(cls, v):
-        """Valida nomes"""
-        if v is None:
+        if not v:
             return v
         
-        v = v.strip()
+        nome_limpo = v.strip().upper()
         
-        # Verificar se não é apenas números
-        if v.isdigit():
-            raise ValueError('Nome não pode ser apenas números')
+        # Verificar se não contém apenas números
+        if nome_limpo.isdigit():
+            raise ValueError('Nome não pode conter apenas números')
         
         # Verificar tamanho mínimo
-        if len(v) < 2:
-            raise ValueError('Nome muito curto')
+        if len(nome_limpo) < 3:
+            raise ValueError('Nome deve ter pelo menos 3 caracteres')
         
-        return v if v else None
+        return nome_limpo
     
-    @validator('representante_legal')
-    def validate_representante_legal(cls, v):
-        """Valida CPF do representante legal"""
-        if v is None:
+    @field_validator('representante_legal')
+    @classmethod
+    def validate_representante(cls, v):
+        if not v:
             return v
         
-        # Deve ser um CPF válido
-        if len(v) != 11 or not v.isdigit():
-            raise ValueError('Representante legal deve ser um CPF válido')
+        # Remover caracteres não numéricos
+        doc_limpo = ''.join(char for char in str(v) if char.isdigit())
         
-        return cls._validate_cpf(v)
+        # CPF do representante legal deve ter 11 dígitos
+        if len(doc_limpo) != 11:
+            raise ValueError('CPF do representante deve ter 11 dígitos')
+        
+        if not cls._validate_cpf(doc_limpo):
+            raise ValueError(f'CPF do representante inválido: {doc_limpo}')
+        
+        return doc_limpo
     
-    @validator('data_entrada_sociedade')
+    @field_validator('data_entrada_sociedade')
+    @classmethod
     def validate_data_entrada(cls, v):
-        """Valida data de entrada na sociedade"""
         if v is None:
             return v
         
         # Verificar se a data não é muito antiga
-        if v.year < 1900:
-            raise ValueError(f'Data de entrada muito antiga: {v}')
+        if isinstance(v, datetime) and v.year < 1900:
+            raise ValueError('Data de entrada muito antiga')
         
         # Verificar se a data não é no futuro
-        if v > datetime.now():
-            raise ValueError(f'Data de entrada no futuro: {v}')
+        if isinstance(v, datetime) and v > datetime.now():
+            raise ValueError('Data de entrada no futuro')
         
         return v
     
     @staticmethod
-    def _validate_cpf(cpf: str) -> str:
+    def _validate_cpf(cpf: str) -> bool:
         """Valida CPF"""
         invalid_cpfs = [
             "00000000000", "11111111111", "22222222222", "33333333333",
@@ -115,16 +130,16 @@ class SocioSchema(BaseModel):
         ]
         
         if cpf in invalid_cpfs:
-            raise ValueError(f'CPF inválido: {cpf}')
+            return False
         
-        return cpf
+        return True
     
     @staticmethod
-    def _validate_cnpj(cnpj: str) -> str:
+    def _validate_cnpj(cnpj: str) -> bool:
         """Valida CNPJ usando algoritmo oficial"""
         # Importar validação de CNPJ do estabelecimento
         from .estabelecimento import EstabelecimentoSchema
         
         if not EstabelecimentoSchema._validate_cnpj_algorithm(cnpj):
-            raise ValueError(f'CNPJ inválido: {cnpj}')
-        return cnpj 
+            return False
+        return True 

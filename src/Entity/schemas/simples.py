@@ -2,8 +2,8 @@
 Schema de validação Pydantic para entidade Simples Nacional.
 """
 
-from pydantic import BaseModel, Field, validator, root_validator
-from typing import Optional
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Optional, Dict, Any
 from datetime import datetime
 import logging
 
@@ -40,54 +40,34 @@ class SimplesSchema(BaseModel):
             }
         }
     
-    @validator('data_opcao_simples', 'data_exclusao_simples', 'data_opcao_mei', 'data_exclusao_mei')
+    @field_validator('data_opcao_simples', 'data_exclusao_simples', 'data_opcao_mei', 'data_exclusao_mei')
+    @classmethod
     def validate_dates(cls, v):
-        """Valida datas"""
         if v is None:
             return v
         
-        # Verificar se a data não é muito antiga (Simples Nacional criado em 2006)
-        if v.year < 2006:
-            raise ValueError(f'Data anterior à criação do Simples Nacional: {v}')
+        # Verificar se a data não é anterior a 2006 (criação do Simples Nacional)
+        if isinstance(v, datetime) and v.year < 2006:
+            raise ValueError('Data anterior à criação do Simples Nacional (2006)')
         
         # Verificar se a data não é no futuro
-        if v > datetime.now():
-            raise ValueError(f'Data no futuro: {v}')
+        if isinstance(v, datetime) and v > datetime.now():
+            raise ValueError('Data no futuro')
         
         return v
     
-    @root_validator(skip_on_failure=True)
-    def validate_dates_consistency(cls, values):
-        """Valida consistência entre datas"""
-        data_opcao_simples = values.get('data_opcao_simples')
-        data_exclusao_simples = values.get('data_exclusao_simples')
-        data_opcao_mei = values.get('data_opcao_mei')
-        data_exclusao_mei = values.get('data_exclusao_mei')
-        opcao_simples = values.get('opcao_simples')
-        opcao_mei = values.get('opcao_mei')
+    @model_validator(mode='after')
+    def validate_simples_consistency(self):
+        """Validar consistência entre datas e opções do Simples Nacional."""
         
-        # Validar Simples Nacional
-        if data_opcao_simples and data_exclusao_simples:
-            if data_exclusao_simples <= data_opcao_simples:
+        # Validar consistência Simples Nacional
+        if self.data_opcao_simples and self.data_exclusao_simples:
+            if self.data_exclusao_simples <= self.data_opcao_simples:
                 raise ValueError('Data de exclusão do Simples deve ser posterior à data de opção')
         
-        # Validar MEI
-        if data_opcao_mei and data_exclusao_mei:
-            if data_exclusao_mei <= data_opcao_mei:
+        # Validar consistência MEI
+        if self.data_opcao_mei and self.data_exclusao_mei:
+            if self.data_exclusao_mei <= self.data_opcao_mei:
                 raise ValueError('Data de exclusão do MEI deve ser posterior à data de opção')
         
-        # Validar consistência entre opção e datas
-        if opcao_simples == 'S' and not data_opcao_simples:
-            logger.warning("Empresa optante do Simples sem data de opção")
-        
-        if opcao_mei == 'S' and not data_opcao_mei:
-            logger.warning("Empresa optante do MEI sem data de opção")
-        
-        # MEI e Simples são mutuamente exclusivos em alguns casos
-        if (opcao_simples == 'S' and opcao_mei == 'S' and 
-            data_opcao_simples and data_opcao_mei):
-            # Verificar se as datas fazem sentido
-            if abs((data_opcao_simples - data_opcao_mei).days) < 30:
-                logger.warning("Opção simultânea por Simples e MEI em datas próximas")
-        
-        return values 
+        return self 

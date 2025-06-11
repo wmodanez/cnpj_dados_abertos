@@ -22,7 +22,7 @@ class Simples(BaseEntity):
     Entidade representando dados do Simples Nacional.
     
     Attributes:
-        cnpj_basico: CNPJ básico da empresa
+        cnpj_basico: CNPJ básico da empresa (int de 8 dígitos)
         opcao_simples: Opção pelo Simples Nacional (S/N)
         data_opcao_simples: Data da opção pelo Simples
         data_exclusao_simples: Data de exclusão do Simples
@@ -31,7 +31,7 @@ class Simples(BaseEntity):
         data_exclusao_mei: Data de exclusão do MEI
     """
     
-    cnpj_basico: str
+    cnpj_basico: int
     opcao_simples: Optional[str] = None
     data_opcao_simples: Optional[datetime] = None
     data_exclusao_simples: Optional[datetime] = None
@@ -102,8 +102,8 @@ class Simples(BaseEntity):
             self._validation_errors.append("CNPJ básico é obrigatório")
             return False
         
-        if len(self.cnpj_basico) != 8 or not self.cnpj_basico.isdigit():
-            self._validation_errors.append("CNPJ básico deve ter 8 dígitos")
+        if not isinstance(self.cnpj_basico, int) or not (10000000 <= self.cnpj_basico <= 99999999):
+            self._validation_errors.append("CNPJ básico deve ser um número inteiro de 8 dígitos")
             return False
         
         return True
@@ -189,15 +189,15 @@ class Simples(BaseEntity):
     
     def is_ativo_simples(self) -> bool:
         """Verifica se está ativo no Simples Nacional."""
-        return (self.opcao_simples == 'S' and 
-                self.data_opcao_simples and 
-                not self.data_exclusao_simples)
+        return bool(self.opcao_simples == 'S' and 
+                   self.data_opcao_simples and 
+                   not self.data_exclusao_simples)
     
     def is_ativo_mei(self) -> bool:
         """Verifica se está ativo no MEI."""
-        return (self.opcao_mei == 'S' and 
-                self.data_opcao_mei and 
-                not self.data_exclusao_mei)
+        return bool(self.opcao_mei == 'S' and 
+                   self.data_opcao_mei and 
+                   not self.data_exclusao_mei)
     
     def get_situacao_simples(self) -> str:
         """Retorna situação atual no Simples Nacional."""
@@ -283,8 +283,20 @@ class Simples(BaseEntity):
     def _transform_validate_cnpj_basico(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Transformação: validar e corrigir CNPJ básico."""
         if 'cnpj_basico' in data and data['cnpj_basico']:
-            cnpj = re.sub(r'[^\d]', '', str(data['cnpj_basico']))
-            data['cnpj_basico'] = cnpj.zfill(8)[:8]
+            try:
+                # Se for string, converter para int
+                if isinstance(data['cnpj_basico'], str):
+                    cnpj = re.sub(r'[^\d]', '', data['cnpj_basico'])
+                    data['cnpj_basico'] = int(cnpj) if cnpj else None
+                elif isinstance(data['cnpj_basico'], (int, float)):
+                    data['cnpj_basico'] = int(data['cnpj_basico'])
+                
+                # Verificar se tem 8 dígitos
+                if data['cnpj_basico'] and not (10000000 <= data['cnpj_basico'] <= 99999999):
+                    data['cnpj_basico'] = None
+                    
+            except (ValueError, TypeError):
+                data['cnpj_basico'] = None
         
         return data
     

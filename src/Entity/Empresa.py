@@ -21,7 +21,7 @@ class Empresa(BaseEntity):
     Entidade representando uma Empresa da Receita Federal.
     
     Attributes:
-        cnpj_basico: CNPJ básico da empresa (8 dígitos)
+        cnpj_basico: CNPJ básico da empresa (int de 8 dígitos)
         razao_social: Razão social da empresa
         natureza_juridica: Código da natureza jurídica
         qualificacao_responsavel: Qualificação do responsável
@@ -31,7 +31,7 @@ class Empresa(BaseEntity):
         cpf_extraido: CPF extraído da razão social (calculado)
     """
     
-    cnpj_basico: str
+    cnpj_basico: int
     razao_social: str
     natureza_juridica: Optional[int] = None
     qualificacao_responsavel: Optional[int] = None
@@ -122,12 +122,8 @@ class Empresa(BaseEntity):
             self._validation_errors.append("CNPJ básico é obrigatório")
             return False
         
-        if len(self.cnpj_basico) != 8:
-            self._validation_errors.append("CNPJ básico deve ter 8 dígitos")
-            return False
-        
-        if not self.cnpj_basico.isdigit():
-            self._validation_errors.append("CNPJ básico deve conter apenas números")
+        if not isinstance(self.cnpj_basico, int) or not (10000000 <= self.cnpj_basico <= 99999999):
+            self._validation_errors.append("CNPJ básico deve ser um número inteiro de 8 dígitos")
             return False
         
         return True
@@ -247,7 +243,19 @@ class Empresa(BaseEntity):
     def _transform_validate_cnpj_basico(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Transformação: validar e corrigir CNPJ básico."""
         if 'cnpj_basico' in data and data['cnpj_basico']:
-            cnpj = re.sub(r'[^\d]', '', str(data['cnpj_basico']))
-            data['cnpj_basico'] = cnpj.zfill(8)[:8]
+            try:
+                # Se for string, converter para int
+                if isinstance(data['cnpj_basico'], str):
+                    cnpj = re.sub(r'[^\d]', '', data['cnpj_basico'])
+                    data['cnpj_basico'] = int(cnpj) if cnpj else None
+                elif isinstance(data['cnpj_basico'], (int, float)):
+                    data['cnpj_basico'] = int(data['cnpj_basico'])
+                
+                # Verificar se tem 8 dígitos
+                if data['cnpj_basico'] and not (10000000 <= data['cnpj_basico'] <= 99999999):
+                    data['cnpj_basico'] = None
+                    
+            except (ValueError, TypeError):
+                data['cnpj_basico'] = None
         
         return data

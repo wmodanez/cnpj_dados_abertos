@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any, List, Type
 import polars as pl
 
 try:
-    from pydantic import BaseModel, Field, validator
+    from pydantic import BaseModel, Field, field_validator
     PYDANTIC_AVAILABLE = True
 except ImportError:
     PYDANTIC_AVAILABLE = False
@@ -46,6 +46,8 @@ class Municipio(BaseEntity):
     latitudegm: Optional[str] = None
     longitude: Optional[str] = None
     longitudeg: Optional[str] = None
+
+    # Código do município na base dos dados abertos da Receita Federal
     cod_mn_dados_abertos: Optional[int] = None
     
     # Campos calculados automaticamente
@@ -239,9 +241,9 @@ class Municipio(BaseEntity):
             Municipio: Nova instância da entidade
         """
         return cls(
-            codigo=data.get('codigo'),
+            codigo=data.get('codigo') or 0,
             nome=data.get('nome', ''),
-            uf=data.get('uf'),
+            uf=data.get('uf') or 0,
             sigla_uf=data.get('sigla_uf', ''),
             latitude=data.get('latitude'),
             latitudegm=data.get('latitudegm'),
@@ -263,14 +265,17 @@ class Municipio(BaseEntity):
         """
         return cls.from_dict(row)
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, include_metadata: bool = True) -> Dict[str, Any]:
         """
         Converte a entidade para um dicionário.
         
+        Args:
+            include_metadata: Se True, inclui metadados como validação e erros
+            
         Returns:
             Dict: Dicionário com todos os campos da entidade
         """
-        return {
+        result = {
             'codigo': self.codigo,
             'nome': self.nome,
             'uf': self.uf,
@@ -279,10 +284,20 @@ class Municipio(BaseEntity):
             'latitudegm': self.latitudegm,
             'longitude': self.longitude,
             'longitudeg': self.longitudeg,
-            'cod_mn_dados_abertos': self.cod_mn_dados_abertos,
-            'is_valid': self.is_valid(),
-            'validation_errors': self.get_validation_errors()
+            'cod_mn_dados_abertos': self.cod_mn_dados_abertos
         }
+        
+        if include_metadata:
+            result.update({
+                'is_valid': self.is_valid(),
+                'validation_errors': self.get_validation_errors(),
+                'is_capital': self.is_capital(),
+                'regiao': self.get_regiao(),
+                'nome_completo': self.get_nome_completo(),
+                'has_coordinates': self.has_coordinates()
+            })
+        
+        return result
     
     def __str__(self) -> str:
         """Representação em string da entidade."""
@@ -294,39 +309,6 @@ class Municipio(BaseEntity):
         return f"Municipio(codigo={self.codigo}, nome='{self.nome}', sigla_uf='{self.sigla_uf}', valid={self.is_valid()})"
 
 
-if PYDANTIC_AVAILABLE:
-    class MunicipioSchema(BaseModel):
-        """Schema Pydantic para validação da entidade Municipio."""
-        
-        codigo: int = Field(..., ge=1000000, le=9999999, description="Código do município (7 dígitos)")
-        nome: str = Field(..., min_length=2, max_length=100, description="Nome do município")
-        uf: int = Field(..., ge=11, le=53, description="Código numérico da UF")
-        sigla_uf: str = Field(..., min_length=2, max_length=2, description="Sigla da UF")
-        latitude: Optional[str] = Field(None, description="Latitude em formato texto")
-        latitudegm: Optional[str] = Field(None, description="Latitude em graus/minutos/segundos")
-        longitude: Optional[str] = Field(None, description="Longitude em formato texto")
-        longitudeg: Optional[str] = Field(None, description="Longitude em graus/minutos/segundos")
-        cod_mn_dados_abertos: Optional[int] = Field(None, description="Código nos dados abertos")
-        
-        class Config:
-            json_schema_extra = {
-                "example": {
-                    "codigo": 3550308,
-                    "nome": "São Paulo",
-                    "uf": 35,
-                    "sigla_uf": "SP",
-                    "latitude": "-23.5505199",
-                    "longitude": "-46.6333094"
-                }
-            }
-        
-        @validator('sigla_uf')
-        def validate_sigla_uf(cls, v):
-            ufs_validas = {
-                'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA',
-                'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN',
-                'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'
-            }
-            if v not in ufs_validas:
-                raise ValueError(f'Sigla UF inválida: {v}')
-            return v
+# Schema Pydantic opcional - pode ser implementado separadamente se necessário
+# quando Pydantic estiver disponível no ambiente
+MunicipioSchema = None

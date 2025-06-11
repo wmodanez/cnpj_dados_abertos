@@ -2,8 +2,8 @@
 Schema de validação Pydantic para entidade Estabelecimento.
 """
 
-from pydantic import BaseModel, Field, validator, root_validator
-from typing import Optional
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Optional, Dict, Any
 from datetime import datetime
 import re
 import logging
@@ -52,94 +52,81 @@ class EstabelecimentoSchema(BaseModel):
             }
         }
     
-    @validator('uf')
+    @field_validator('uf')
+    @classmethod
     def validate_uf(cls, v):
-        """Valida UF brasileira"""
-        if v is None:
+        if not v:
             return v
-            
-        ufs_validas = [
-            'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 
-            'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 
-            'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'
-        ]
         
-        if v not in ufs_validas:
+        ufs_validas = {
+            'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA',
+            'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN',
+            'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO'
+        }
+        
+        if v.upper() not in ufs_validas:
             raise ValueError(f'UF inválida: {v}')
         
-        return v
+        return v.upper()
     
-    @validator('cep')
+    @field_validator('cep')
+    @classmethod
     def validate_cep(cls, v):
-        """Valida CEP"""
-        if v is None:
+        if not v:
             return v
         
         # Remover caracteres não numéricos
-        cep_clean = re.sub(r'[^\d]', '', v)
+        cep_limpo = ''.join(char for char in str(v) if char.isdigit())
         
-        if len(cep_clean) != 8:
-            raise ValueError(f'CEP deve ter 8 dígitos: {v}')
+        if len(cep_limpo) != 8:
+            raise ValueError('CEP deve ter 8 dígitos')
         
-        # Verificar CEPs obviamente inválidos
-        if cep_clean == '00000000' or cep_clean == '99999999':
-            raise ValueError(f'CEP inválido: {cep_clean}')
-        
-        return cep_clean
+        return cep_limpo
     
-    @validator('nome_fantasia')
+    @field_validator('nome_fantasia')
+    @classmethod
     def validate_nome_fantasia(cls, v):
-        """Valida nome fantasia"""
-        if v is None:
-            return v
+        if not v:
+            return None
         
-        # Remover espaços extras
-        v = v.strip()
+        nome_limpo = v.strip().upper()
         
-        # Verificar se não é apenas números
-        if v.isdigit():
-            raise ValueError('Nome fantasia não pode ser apenas números')
+        # Se for apenas números, considerar inválido
+        if nome_limpo.isdigit():
+            return None
         
-        return v if v else None
+        return nome_limpo if len(nome_limpo) >= 2 else None
     
-    @validator('data_situacao_cadastral', 'data_inicio_atividades')
+    @field_validator('data_situacao_cadastral', 'data_inicio_atividades')
+    @classmethod
     def validate_dates(cls, v):
-        """Valida datas"""
         if v is None:
             return v
         
-        # Verificar se a data não é muito antiga (antes de 1900)
-        if v.year < 1900:
-            raise ValueError(f'Data muito antiga: {v}')
-        
-        # Verificar se a data não é no futuro
-        if v > datetime.now():
-            raise ValueError(f'Data no futuro: {v}')
+        if isinstance(v, str):
+            try:
+                # Tentar converter string para datetime
+                return datetime.fromisoformat(v.replace('Z', '+00:00'))
+            except ValueError:
+                raise ValueError(f'Data inválida: {v}')
         
         return v
     
-    @root_validator(skip_on_failure=True)
-    def validate_cnpj_parts(cls, values):
-        """Valida partes do CNPJ"""
-        cnpj_basico = values.get('cnpj_basico')
-        cnpj_ordem = values.get('cnpj_ordem')
-        cnpj_dv = values.get('cnpj_dv')
+    @model_validator(mode='after')
+    def validate_establishment_consistency(self):
+        """Validações que dependem de múltiplos campos."""
+        # Verificar consistência entre datas
+        if (self.data_situacao_cadastral and self.data_inicio_atividades and
+            self.data_situacao_cadastral < self.data_inicio_atividades):
+            raise ValueError('Data de situação cadastral não pode ser anterior ao início das atividades')
         
-        if all([cnpj_basico, cnpj_ordem, cnpj_dv]):
-            # Validar CNPJ completo usando algoritmo
-            cnpj_completo = f"{cnpj_basico}{cnpj_ordem}{cnpj_dv}"
-            if not cls._validate_cnpj_algorithm(cnpj_completo):
+        # Validar partes do CNPJ se disponíveis
+        if all([self.cnpj_basico, self.cnpj_ordem, self.cnpj_dv]):
+            cnpj_completo = f"{self.cnpj_basico}{self.cnpj_ordem}{self.cnpj_dv}"
+            if not self._validate_cnpj_algorithm(cnpj_completo):
                 raise ValueError(f'CNPJ inválido: {cnpj_completo}')
         
-        # Validar consistência de datas
-        data_situacao = values.get('data_situacao_cadastral')
-        data_inicio = values.get('data_inicio_atividades')
-        
-        if data_situacao and data_inicio:
-            if data_situacao < data_inicio:
-                logger.warning("Data de situação cadastral anterior ao início das atividades")
-        
-        return values
+        return self
     
     @staticmethod
     def _validate_cnpj_algorithm(cnpj: str) -> bool:

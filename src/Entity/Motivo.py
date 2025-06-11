@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Type
 
 try:
-    from pydantic import BaseModel, Field, validator
+    from pydantic import BaseModel, Field, field_validator
     PYDANTIC_AVAILABLE = True
 except ImportError:
     PYDANTIC_AVAILABLE = False
@@ -269,8 +269,11 @@ if PYDANTIC_AVAILABLE:
                 }
             }
         
-        @validator('descricao')
+        @field_validator('descricao')
+        @classmethod
         def validate_descricao(cls, v):
             if not v or not v.strip():
-                raise ValueError('Descrição não pode estar vazia')
+                raise ValueError('Descrição é obrigatória')
+            if len(v.strip()) < 3:
+                raise ValueError('Descrição deve ter pelo menos 3 caracteres')
             return v.strip().upper()
