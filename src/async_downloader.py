@@ -138,7 +138,7 @@ PROCESSOR_MAP = {
 # ===== OTIMIZAÇÕES DE PIPELINE =====
 
 # Configurações adaptativas baseadas nos recursos do sistema
-def get_optimal_concurrency():
+def get_optimal_concurrency(show_info: bool = False):
     """Calcula a concorrência ótima baseada nos recursos do sistema."""
     cpu_count = os.cpu_count() or 4
     memory_gb = psutil.virtual_memory().total / (1024**3)
@@ -176,30 +176,31 @@ def get_optimal_concurrency():
     min_process_workers = max(2, cpu_count // 2)
     
     # Log detalhado dos recursos do sistema
-    logger.info("=" * 60)
-    logger.info("🖥️  ANÁLISE DETALHADA DOS RECURSOS DO SISTEMA")
-    logger.info("=" * 60)
-    
-    # CPU
-    logger.info(f"💻 CPU:")
-    logger.info(f"   • Núcleos disponíveis: {cpu_count}")
-    if cpu_freq_current > 0:
-        logger.info(f"   • Frequência atual: {cpu_freq_current:.0f} MHz")
-    if cpu_freq_max > 0:
-        logger.info(f"   • Frequência máxima: {cpu_freq_max:.0f} MHz")
-    logger.info(f"   • Mínimo de workers de processamento: {min_process_workers} (50% dos núcleos)")
-    
-    # Memória
-    logger.info(f"🧠 MEMÓRIA:")
-    logger.info(f"   • Total: {memory_total_gb:.2f} GB")
-    logger.info(f"   • Disponível: {memory_available_gb:.2f} GB ({100-memory_percent:.1f}%)")
-    logger.info(f"   • Em uso: {memory_used_gb:.2f} GB ({memory_percent:.1f}%)")
-    
-    # Disco
-    logger.info(f"💾 DISCO:")
-    logger.info(f"   • Total: {disk_total_gb:.2f} GB")
-    logger.info(f"   • Livre: {disk_free_gb:.2f} GB ({100-disk_percent:.1f}%)")
-    logger.info(f"   • Em uso: {disk_used_gb:.2f} GB ({disk_percent:.1f}%)")
+    if show_info:
+        logger.info("=" * 60)
+        logger.info("🖥️  ANÁLISE DETALHADA DOS RECURSOS DO SISTEMA")
+        logger.info("=" * 60)
+        
+        # CPU
+        logger.info(f"💻 CPU:")
+        logger.info(f"   • Núcleos disponíveis: {cpu_count}")
+        if cpu_freq_current > 0:
+            logger.info(f"   • Frequência atual: {cpu_freq_current:.0f} MHz")
+        if cpu_freq_max > 0:
+            logger.info(f"   • Frequência máxima: {cpu_freq_max:.0f} MHz")
+        logger.info(f"   • Mínimo de workers de processamento: {min_process_workers} (50% dos núcleos)")
+        
+        # Memória
+        logger.info(f"🧠 MEMÓRIA:")
+        logger.info(f"   • Total: {memory_total_gb:.2f} GB")
+        logger.info(f"   • Disponível: {memory_available_gb:.2f} GB ({100-memory_percent:.1f}%)")
+        logger.info(f"   • Em uso: {memory_used_gb:.2f} GB ({memory_percent:.1f}%)")
+        
+        # Disco
+        logger.info(f"💾 DISCO:")
+        logger.info(f"   • Total: {disk_total_gb:.2f} GB")
+        logger.info(f"   • Livre: {disk_free_gb:.2f} GB ({100-disk_percent:.1f}%)")
+        logger.info(f"   • Em uso: {disk_used_gb:.2f} GB ({disk_percent:.1f}%)")
     
     # Algoritmo adaptativo para concorrência
     if memory_gb >= 16:
@@ -226,58 +227,59 @@ def get_optimal_concurrency():
     estimated_memory_per_worker = memory_available_gb / process_workers if process_workers > 0 else 0
     estimated_throughput_files_per_hour = process_workers * 10  # Estimativa baseada em 10 arquivos por hora por worker
     
-    # Log das configurações otimizadas
-    logger.info(f"⚙️  CONFIGURAÇÃO OTIMIZADA:")
-    logger.info(f"   • Categoria do sistema: {system_category}")
-    logger.info(f"   • {performance_note}")
-    logger.info(f"   • Workers de download: {download_workers}")
-    logger.info(f"   • Workers de processamento: {process_workers}")
-    logger.info(f"   • Razão CPU/Workers: {cpu_count/process_workers:.1f}:1")
-    logger.info(f"   • Memória por worker: ~{estimated_memory_per_worker:.1f} GB")
-    
-    # Estimativas de performance
-    logger.info(f"📊 ESTIMATIVAS DE CAPACIDADE:")
-    logger.info(f"   • Arquivos simultâneos estimados: {estimated_concurrent_files}")
-    logger.info(f"   • Throughput estimado: ~{estimated_throughput_files_per_hour} arquivos/hora")
-    logger.info(f"   • Eficiência de CPU: {(process_workers/cpu_count)*100:.1f}%")
-    logger.info(f"   • Eficiência de memória: {(estimated_memory_per_worker*process_workers/memory_available_gb)*100:.1f}%")
-    
-    # Alertas e recomendações
-    logger.info(f"⚠️  ALERTAS E RECOMENDAÇÕES:")
-    if memory_percent > 80:
-        logger.warning(f"   • ATENÇÃO: Uso de memória alto ({memory_percent:.1f}%) - considere fechar outros programas")
-    if disk_percent > 90:
-        logger.warning(f"   • ATENÇÃO: Disco quase cheio ({disk_percent:.1f}%) - libere espaço antes de continuar")
-    if cpu_count < 4:
-        logger.warning(f"   • ATENÇÃO: Poucos núcleos de CPU ({cpu_count}) - performance pode ser limitada")
-    if memory_gb < 4:
-        logger.warning(f"   • ATENÇÃO: Pouca RAM ({memory_gb:.1f}GB) - considere aumentar memória virtual")
-    
-    # Recomendações de otimização
-    if memory_gb >= 16 and cpu_count >= 8:
-        logger.info(f"   • ✅ Sistema otimizado para processamento intensivo de dados")
-    elif memory_gb >= 8 and cpu_count >= 4:
-        logger.info(f"   • ✅ Sistema adequado para processamento de dados")
-    else:
-        logger.info(f"   • ⚠️ Sistema básico - considere upgrade de hardware para melhor performance")
-    
-    # Limites teóricos
-    theoretical_max_downloads = cpu_count * 2
-    theoretical_max_processing = cpu_count
-    logger.info(f"🔬 LIMITES TEÓRICOS:")
-    logger.info(f"   • Máximo downloads teórico: {theoretical_max_downloads}")
-    logger.info(f"   • Máximo processamento teórico: {theoretical_max_processing}")
-    logger.info(f"   • Configuração atual vs. máximo: {(download_workers/theoretical_max_downloads)*100:.1f}% downloads, {(process_workers/theoretical_max_processing)*100:.1f}% processamento")
-    
-    logger.info("=" * 60)
-    
-    # Log resumido para o console
-    console.print(f"\n🖥️  [bold blue]Recursos do Sistema:[/bold blue]")
-    console.print(f"   💻 CPU: {cpu_count} núcleos")
-    console.print(f"   🧠 RAM: {memory_total_gb:.1f}GB total, {memory_available_gb:.1f}GB disponível")
-    console.print(f"   💾 Disco: {disk_free_gb:.1f}GB livres de {disk_total_gb:.1f}GB")
-    console.print(f"   ⚙️  Configuração: {download_workers} downloads | {process_workers} processamentos")
-    console.print(f"   📊 Categoria: [bold]{system_category}[/bold]")
+    if show_info:
+        # Log das configurações otimizadas
+        logger.info(f"⚙️  CONFIGURAÇÃO OTIMIZADA:")
+        logger.info(f"   • Categoria do sistema: {system_category}")
+        logger.info(f"   • {performance_note}")
+        logger.info(f"   • Workers de download: {download_workers}")
+        logger.info(f"   • Workers de processamento: {process_workers}")
+        logger.info(f"   • Razão CPU/Workers: {cpu_count/process_workers:.1f}:1")
+        logger.info(f"   • Memória por worker: ~{estimated_memory_per_worker:.1f} GB")
+        
+        # Estimativas de performance
+        logger.info(f"📊 ESTIMATIVAS DE CAPACIDADE:")
+        logger.info(f"   • Arquivos simultâneos estimados: {estimated_concurrent_files}")
+        logger.info(f"   • Throughput estimado: ~{estimated_throughput_files_per_hour} arquivos/hora")
+        logger.info(f"   • Eficiência de CPU: {(process_workers/cpu_count)*100:.1f}%")
+        logger.info(f"   • Eficiência de memória: {(estimated_memory_per_worker*process_workers/memory_available_gb)*100:.1f}%")
+        
+        # Alertas e recomendações
+        logger.info(f"⚠️  ALERTAS E RECOMENDAÇÕES:")
+        if memory_percent > 80:
+            logger.warning(f"   • ATENÇÃO: Uso de memória alto ({memory_percent:.1f}%) - considere fechar outros programas")
+        if disk_percent > 90:
+            logger.warning(f"   • ATENÇÃO: Disco quase cheio ({disk_percent:.1f}%) - libere espaço antes de continuar")
+        if cpu_count < 4:
+            logger.warning(f"   • ATENÇÃO: Poucos núcleos de CPU ({cpu_count}) - performance pode ser limitada")
+        if memory_gb < 4:
+            logger.warning(f"   • ATENÇÃO: Pouca RAM ({memory_gb:.1f}GB) - considere aumentar memória virtual")
+        
+        # Recomendações de otimização
+        if memory_gb >= 16 and cpu_count >= 8:
+            logger.info(f"   • ✅ Sistema otimizado para processamento intensivo de dados")
+        elif memory_gb >= 8 and cpu_count >= 4:
+            logger.info(f"   • ✅ Sistema adequado para processamento de dados")
+        else:
+            logger.info(f"   • ⚠️ Sistema básico - considere upgrade de hardware para melhor performance")
+        
+        # Limites teóricos
+        theoretical_max_downloads = cpu_count * 2
+        theoretical_max_processing = cpu_count
+        logger.info(f"🔬 LIMITES TEÓRICOS:")
+        logger.info(f"   • Máximo downloads teórico: {theoretical_max_downloads}")
+        logger.info(f"   • Máximo processamento teórico: {theoretical_max_processing}")
+        logger.info(f"   • Configuração atual vs. máximo: {(download_workers/theoretical_max_downloads)*100:.1f}% downloads, {(process_workers/theoretical_max_processing)*100:.1f}% processamento")
+        
+        logger.info("=" * 60)
+        
+        # Log resumido para o console
+        console.print(f"\n🖥️  [bold blue]Recursos do Sistema:[/bold blue]")
+        console.print(f"   💻 CPU: {cpu_count} núcleos")
+        console.print(f"   🧠 RAM: {memory_total_gb:.1f}GB total, {memory_available_gb:.1f}GB disponível")
+        console.print(f"   💾 Disco: {disk_free_gb:.1f}GB livres de {disk_total_gb:.1f}GB")
+        console.print(f"   ⚙️  Configuração: {download_workers} downloads | {process_workers} processamentos")
+        console.print(f"   📊 Categoria: [bold]{system_category}[/bold]")
     
     return download_workers, process_workers
 
@@ -455,7 +457,7 @@ class ProcessingCache:
 processing_cache = ProcessingCache()
 
 # Semáforos adaptativos
-download_workers, process_workers = get_optimal_concurrency()
+download_workers, process_workers = get_optimal_concurrency(show_info=False)
 download_semaphore = asyncio.Semaphore(download_workers)
 process_semaphore = asyncio.Semaphore(process_workers)
 
@@ -1618,7 +1620,7 @@ async def download_multiple_files(
     
     # Exibir análise detalhada dos recursos do sistema
     logger.info("🔍 Executando análise detalhada dos recursos do sistema...")
-    optimal_downloads, optimal_processing = get_optimal_concurrency()
+    optimal_downloads, optimal_processing = get_optimal_concurrency(show_info=True)
     
     # Usar os valores otimizados se não foram especificados
     if max_concurrent_downloads == 6:  # Valor padrão

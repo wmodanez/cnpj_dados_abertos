@@ -170,6 +170,9 @@ from rich.logging import RichHandler
 # CARREGAR VARIÁVEIS DE AMBIENTE ANTES DAS IMPORTAÇÕES QUE DEPENDEM DELAS
 load_dotenv()
 
+# Importar versão centralizada
+from src.__version__ import get_full_description
+
 from src.async_downloader import (
     download_multiple_files, 
     get_latest_month_zip_urls, 
@@ -181,7 +184,6 @@ from src.async_downloader import (
 )
 from src.config import config
 from src.database import create_duckdb_file
-# Importações da nova arquitetura refatorada (versão 3.0.0)
 from src.process.base.factory import ProcessorFactory
 from src.process.processors.empresa_processor import EmpresaProcessor
 from src.process.processors.estabelecimento_processor import EstabelecimentoProcessor
@@ -383,8 +385,6 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
         # Verificando pastas básicas
         check_basic_folders([PATH_ZIP, PATH_UNZIP, PATH_PARQUET])
         
-        # 🆕 Versão 3.0.0: Inicializar nova arquitetura de processadores
-        print_section("Inicializando arquitetura refatorada (v3.0.0)...")
         if not initialize_processors():
             print_error("Falha ao inicializar processadores da nova arquitetura")
             return False, ""
@@ -623,7 +623,6 @@ async def run_download_process(tipos_desejados: list[str] | None = None, remote_
 
 
 def initialize_processors():
-    """Inicializa todos os processadores da nova arquitetura (versão 3.0.0)."""
     try:
         # Registrar todos os processadores na factory
         ProcessorFactory.register("empresa", EmpresaProcessor)
@@ -872,8 +871,6 @@ async def optimized_download_and_process_pipeline(
 def process_with_new_architecture(processor_type: str, source_zip_path: str, unzip_path: str, 
                                  output_parquet_path: str, delete_zips_after_extract: bool = False, **options) -> bool:
     """
-    Processa dados usando a nova arquitetura refatorada (versão 3.0.0).
-    
     Args:
         processor_type: Tipo do processador ('empresa', 'estabelecimento', 'simples', 'socio')
         source_zip_path: Caminho dos arquivos ZIP
@@ -989,8 +986,7 @@ def find_date_folders(base_path: str, from_folder: str | None = None) -> list[st
 def process_folder(source_zip_path, unzip_path, output_parquet_path, 
                  tipos_list, criar_empresa_privada, criar_subset_uf,
                  tipos_a_processar, delete_zips_after_extract: bool = False) -> dict:
-    """Processa os arquivos da pasta usando a nova arquitetura v3.0.0.
-    
+    """
     Args:
         source_zip_path: Caminho para os ZIPs
         unzip_path: Caminho para extrair arquivos
@@ -1347,50 +1343,50 @@ async def async_main():
     
     # Parser de argumentos
     parser = argparse.ArgumentParser(
-        description="Sistema de Processamento de Dados CNPJ v3.0.0"
+        description=get_full_description()
     )
     
     parser.add_argument('--tipos', '-t', nargs='+', choices=['empresas', 'estabelecimentos', 'simples', 'socios'],
                          default=[], help='Tipos de dados a serem processados. Se não especificado, processa todos (relevante para steps \'process\' e \'all\').')
-    parser.add_argument('--step', choices=['download', 'process', 'database', 'all'], default='all',
+    parser.add_argument('--step', '-s', choices=['download', 'process', 'database', 'all'], default='all',
                          help='Etapa a ser executada. Padrão: all')
     parser.add_argument('--quiet', '-q', action='store_true',
                          help='Modo silencioso - reduz drasticamente as saídas no console')
     parser.add_argument('--verbose-ui', '-v', action='store_true',
                          help='Interface visual mais completa - só funciona com UI interativo')
-    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default='INFO',
+    parser.add_argument('--log-level', '-l', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default='INFO',
                          help='Nível de logging. Padrão: INFO')
-    parser.add_argument('--remote-folder', type=str, 
+    parser.add_argument('--remote-folder', '-r', type=str, 
                          help='Usar uma pasta específica do servidor (formato AAAA-MM). Exemplo: 2024-05')
-    parser.add_argument('--all-folders', action='store_true',
+    parser.add_argument('--all-folders', '-a', action='store_true',
                          help='Baixar de todas as pastas disponíveis do servidor. Sobrescreve --remote-folder')
-    parser.add_argument('--from-folder', type=str,
+    parser.add_argument('--from-folder', '-f', type=str,
                          help='Iniciar download/processamento a partir de uma pasta específica (formato AAAA-MM)')
-    parser.add_argument('--force-download', action='store_true',
+    parser.add_argument('--force-download', '-F', action='store_true',
                          help='Forçar download mesmo que arquivo já exista')
-    parser.add_argument('--criar-empresa-privada', action='store_true',
+    parser.add_argument('--criar-empresa-privada', '-E', action='store_true',
                          help='Criar subconjunto de empresas privadas (apenas para empresas)')
-    parser.add_argument('--criar-subset-uf', type=str, metavar='UF',
+    parser.add_argument('--criar-subset-uf', '-U', type=str, metavar='UF',
                          help='Criar subconjunto por UF (apenas para estabelecimentos). Ex: --criar-subset-uf SP')
-    parser.add_argument('--output-subfolder', type=str,
+    parser.add_argument('--output-subfolder', '-o', type=str,
                          help='Nome da subpasta onde salvar os arquivos parquet')
-    parser.add_argument('--source-zip-folder', type=str,
+    parser.add_argument('--source-zip-folder', '-z', type=str,
                          help='Pasta de origem dos arquivos ZIP (para step \'process\')')
-    parser.add_argument('--process-all-folders', action='store_true',
+    parser.add_argument('--process-all-folders', '-p', action='store_true',
                          help='Processar todas as pastas de data (formato AAAA-MM) em PATH_ZIP')
-    parser.add_argument('--delete-zips-after-extract', action='store_true',
+    parser.add_argument('--delete-zips-after-extract', '-d', action='store_true',
                          help='Deletar arquivos ZIP após extração bem-sucedida (economiza espaço)')
-    parser.add_argument('--cleanup-after-db', action='store_true',
+    parser.add_argument('--cleanup-after-db', '-c', action='store_true',
                          help='Deletar arquivos parquet após criação do banco DuckDB (economiza espaço)')
-    parser.add_argument('--cleanup-all-after-db', action='store_true',
+    parser.add_argument('--cleanup-all-after-db', '-C', action='store_true',
                          help='Deletar arquivos parquet E ZIP após criação do banco (máxima economia)')
-    parser.add_argument('--show-progress', action='store_true',
+    parser.add_argument('--show-progress', '-P', action='store_true',
                          help='Forçar exibição da barra de progresso (sobrescreve config)')
-    parser.add_argument('--hide-progress', action='store_true',
+    parser.add_argument('--hide-progress', '-H', action='store_true',
                          help='Forçar ocultação da barra de progresso (sobrescreve config)')
-    parser.add_argument('--show-pending', action='store_true',
+    parser.add_argument('--show-pending', '-S', action='store_true',
                          help='Forçar exibição da lista de arquivos pendentes (sobrescreve config)')
-    parser.add_argument('--hide-pending', action='store_true',
+    parser.add_argument('--hide-pending', '-W', action='store_true',
                          help='Forçar ocultação da lista de arquivos pendentes (sobrescreve config)')
 
     args = parser.parse_args()
