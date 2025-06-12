@@ -11,7 +11,6 @@ import os
 import zipfile
 import polars as pl
 import tempfile
-import shutil
 from typing import List, Type
 
 from ...Entity.Socio import Socio
@@ -57,27 +56,7 @@ class SocioProcessor(BaseProcessor):
         try:
             # Transformações específicas para sócios
             
-            # 1. Limpar e padronizar CNPJ básico
-            if 'cnpj_basico' in df.columns:
-                df = df.with_columns([
-                    pl.col('cnpj_basico')
-                    .cast(pl.Utf8, strict=False)        # Converter para string primeiro
-                    .str.replace_all(r'[^\d]', '')      # Remove não-dígitos
-                    .str.pad_start(8, '0')              # Garante 8 dígitos, preenchendo com zeros
-                    .cast(pl.Int64, strict=False)       # Converte para bigint (Int64)
-                    .alias('cnpj_basico')
-                ])
-            
-            # 2. Limpar CPF do representante legal
-            if 'representante_legal' in df.columns:
-                df = df.with_columns([
-                    pl.col('representante_legal')
-                    .str.replace_all(r'[^\d]', '')
-                    .str.replace_all(r'^0+', '')  # Remove zeros à esquerda
-                    .alias('representante_legal')
-                ])
-            
-            # 3. Normalizar nomes
+            # 1. Normalizar nomes
             name_columns = ['nome_socio', 'nome_representante']
             for col in name_columns:
                 if col in df.columns:
@@ -88,9 +67,8 @@ class SocioProcessor(BaseProcessor):
                         .alias(col)
                     ])
             
-            # 4. Tratar valores nulos específicos
+            # 2. Tratar valores nulos específicos
             null_replacements = {
-                'cnpj_cpf_socio': ['0', '00000000000', '00000000000000'],
                 'representante_legal': ['0', '00000000000'],
                 'qualificacao_socio': [0, 99],
                 'qualificacao_representante_legal': [0, 99]
@@ -104,18 +82,7 @@ class SocioProcessor(BaseProcessor):
                         .otherwise(pl.col(col))
                         .alias(col)
                     ])
-            
-            # 5. Validar comprimento de CPF/CNPJ
-            if 'cnpj_cpf_socio' in df.columns:
-                df = df.with_columns([
-                    pl.when(
-                        (pl.col('cnpj_cpf_socio').str.len_chars() != 11) &
-                        (pl.col('cnpj_cpf_socio').str.len_chars() != 14)
-                    )
-                    .then(None)
-                    .otherwise(pl.col('cnpj_cpf_socio'))
-                    .alias('cnpj_cpf_socio')
-                ])
+
             
             if 'representante_legal' in df.columns:
                 df = df.with_columns([
@@ -329,7 +296,6 @@ class SocioProcessor(BaseProcessor):
             'supports_chunking': True,
             'default_chunk_size': 500_000,
             'specific_transformations': [
-                'Limpeza de CPF/CNPJ',
                 'Normalização de nomes',
                 'Validação de comprimento de documentos',
                 'Tratamento de valores nulos específicos'

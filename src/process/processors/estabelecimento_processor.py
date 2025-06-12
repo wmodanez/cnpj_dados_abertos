@@ -16,8 +16,7 @@ import os
 import zipfile
 import polars as pl
 import tempfile
-import shutil
-from typing import List, Type
+from typing import List, Type, Optional
 
 from ...Entity.Estabelecimento import Estabelecimento
 from ...Entity.base import BaseEntity
@@ -64,17 +63,7 @@ class EstabelecimentoProcessor(BaseProcessor):
         try:
             # Transformações específicas para estabelecimentos
             
-            # 1. Limpar e padronizar CNPJ básico (manter como inteiro para JOINs eficientes)
-            if 'cnpj_basico' in df.columns:
-                df = df.with_columns([
-                    pl.col('cnpj_basico')
-                    .cast(pl.Utf8, strict=False)        # Temporário para limpeza
-                    .str.replace_all(r'[^\d]', '')      # Remove não-dígitos
-                    .cast(pl.Int64, strict=False)       # Converte para inteiro (eficiente para JOINs)
-                    .alias('cnpj_basico')
-                ])
-            
-            # 2. Criar CNPJ completo (14 dígitos) a partir das partes
+            # 1. Criar CNPJ completo (14 dígitos) a partir das partes
             if 'cnpj_basico' in df.columns and 'cnpj_ordem' in df.columns and 'cnpj_dv' in df.columns:
                 try:
                     # Criar colunas auxiliares temporárias para formar o CNPJ completo
@@ -99,7 +88,7 @@ class EstabelecimentoProcessor(BaseProcessor):
             else:
                 self.logger.warning("Colunas necessárias para CNPJ completo não encontradas")
             
-            # 3. Limpar e validar CEP
+            # 2. Limpar e validar CEP
             if 'cep' in df.columns:
                 df = df.with_columns([
                     pl.col('cep')
@@ -116,7 +105,7 @@ class EstabelecimentoProcessor(BaseProcessor):
                     .alias('cep')
                 ])
             
-            # 4. Normalizar UF
+            # 3. Normalizar UF
             if 'uf' in df.columns:
                 df = df.with_columns([
                     pl.col('uf')
@@ -139,7 +128,7 @@ class EstabelecimentoProcessor(BaseProcessor):
                     .alias('uf')
                 ])
             
-            # 5. Normalizar nome fantasia
+            # 4. Normalizar nome fantasia
             if 'nome_fantasia' in df.columns:
                 df = df.with_columns([
                     pl.col('nome_fantasia')
@@ -159,7 +148,7 @@ class EstabelecimentoProcessor(BaseProcessor):
                     .alias('nome_fantasia')
                 ])
             
-            # 6. Normalizar outras strings (removido 'pais')
+            # 5. Normalizar outras strings (removido 'pais')
             string_columns = ['nome_cidade_exterior']
             for col in string_columns:
                 if col in df.columns:
@@ -170,7 +159,7 @@ class EstabelecimentoProcessor(BaseProcessor):
                         .alias(col)
                     ])
             
-            # 7. Validar códigos situação e motivo (nomes corretos)
+            # 6. Validar códigos situação e motivo (nomes corretos)
             if 'codigo_situacao' in df.columns:
                 df = df.with_columns([
                     pl.when(
@@ -182,7 +171,7 @@ class EstabelecimentoProcessor(BaseProcessor):
                     .alias('codigo_situacao')
                 ])
             
-            # 8. Validar matriz/filial
+            # 7. Validar matriz/filial
             if 'matriz_filial' in df.columns:
                 df = df.with_columns([
                     pl.when(pl.col('matriz_filial').is_in([1, 2]))
@@ -191,7 +180,7 @@ class EstabelecimentoProcessor(BaseProcessor):
                     .alias('matriz_filial')
                 ])
             
-            # 9. Adicionar colunas calculadas
+            # 8. Adicionar colunas calculadas
             df = self._add_calculated_columns(df)
             
             self.logger.debug(f"Transformações específicas de estabelecimentos aplicadas. Linhas: {df.height}")
@@ -212,64 +201,14 @@ class EstabelecimentoProcessor(BaseProcessor):
             DataFrame com colunas adicionais
         """
         try:
-            # Situação cadastral descritiva
-            if 'codigo_situacao' in df.columns:
-                try:
-                    df = df.with_columns([
-                        pl.when(pl.col('codigo_situacao') == 1)
-                        .then(pl.lit('Nula'))
-                        .when(pl.col('codigo_situacao') == 2)
-                        .then(pl.lit('Ativa'))
-                        .when(pl.col('codigo_situacao') == 3)
-                        .then(pl.lit('Suspensa'))
-                        .when(pl.col('codigo_situacao') == 4)
-                        .then(pl.lit('Inapta'))
-                        .when(pl.col('codigo_situacao') == 8)
-                        .then(pl.lit('Baixada'))
-                        .otherwise(pl.lit('Outros'))
-                        .alias('situacao_descricao')
-                    ])
-                except Exception as e:
-                    self.logger.error(f"Erro ao criar situacao_descricao: {e}")
-            
-            # CNPJ formatado (XX.XXX.XXX/XXXX-XX)
-            if 'cnpj_completo' in df.columns:
-                try:
-                    df = df.with_columns([
-                        pl.when(pl.col('cnpj_completo').str.len_chars() == 14)
-                        .then(
-                            pl.col('cnpj_completo').str.slice(0, 2) + pl.lit(".") +
-                            pl.col('cnpj_completo').str.slice(2, 3) + pl.lit(".") +
-                            pl.col('cnpj_completo').str.slice(5, 3) + pl.lit("/") +
-                            pl.col('cnpj_completo').str.slice(8, 4) + pl.lit("-") +
-                            pl.col('cnpj_completo').str.slice(12, 2)
-                        )
-                        .otherwise(None)
-                        .alias('cnpj_formatado')
-                    ])
-                except Exception as e:
-                    self.logger.error(f"Erro ao criar cnpj_formatado: {e}")
-            
-            # CEP formatado (XXXXX-XXX)
-            if 'cep' in df.columns:
-                try:
-                    df = df.with_columns([
-                        pl.when(pl.col('cep').str.len_chars() == 8)
-                        .then(
-                            pl.col('cep').str.slice(0, 5) + pl.lit("-") +
-                            pl.col('cep').str.slice(5, 3)
-                        )
-                        .otherwise(None)
-                        .alias('cep_formatado')
-                    ])
-                except Exception as e:
-                    self.logger.error(f"Erro ao criar cep_formatado: {e}")
-            
             # Tipo de situação cadastral baseado em regras específicas
             if 'codigo_situacao' in df.columns and 'codigo_motivo' in df.columns:
                 try:
                     df = df.with_columns([
-                        pl.when(pl.col('codigo_situacao') == 2)
+                        pl.when(
+                            (pl.col('codigo_situacao') == 2) & 
+                            (pl.col('codigo_motivo') == 0)
+                        )
                         .then(pl.lit(1))  # Ativa
                         .when(
                             (pl.col('codigo_situacao') == 8) & 
@@ -281,7 +220,7 @@ class EstabelecimentoProcessor(BaseProcessor):
                             (pl.col('codigo_motivo') != 1)
                         )
                         .then(pl.lit(3))  # Outras Baixas
-                        .otherwise(None)  # NULL para demais casos
+                        .otherwise(pl.lit(0))  # Valor padrão para casos não cobertos pelas regras
                         .alias('tipo_situacao_cadastral')
                     ])
                     
@@ -454,7 +393,7 @@ class EstabelecimentoProcessor(BaseProcessor):
         output_dir: str, 
         zip_prefix: str, 
         chunk_size: int = 500_000,
-        uf_subset: str = None
+        uf_subset: Optional[str] = None
     ) -> int:
         """
         Processa arquivo grande em chunks com filtro por UF.
@@ -569,9 +508,6 @@ class EstabelecimentoProcessor(BaseProcessor):
             'output_format': 'Parquet particionado',
             'calculated_columns': [
                 'cnpj_completo',
-                'cnpj_formatado',
-                'cep_formatado',
-                'situacao_descricao',
                 'tipo_situacao_cadastral'
             ],
             'special_features': [

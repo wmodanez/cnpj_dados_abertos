@@ -56,124 +56,7 @@ class SimplesProcessor(BaseProcessor):
             DataFrame transformado
         """
         try:
-            # Transformações específicas para Simples Nacional
-            
-            # 1. Tratar valores nulos PRIMEIRO (antes de qualquer conversão)
-            null_replacements = {
-                'opcao_simples': ['', '0', 'NULL', 'null'],
-                'opcao_mei': ['', '0', 'NULL', 'null'],
-                'data_opcao_simples': ['0', '00000000', ''],
-                'data_exclusao_simples': ['0', '00000000', ''],
-                'data_opcao_mei': ['0', '00000000', ''],
-                'data_exclusao_mei': ['0', '00000000', '']
-            }
-            
-            for col, null_values in null_replacements.items():
-                if col in df.columns:
-                    col_dtype = df[col].dtype
-                    
-                    # Só aplicar se ainda for string
-                    if col_dtype == pl.Utf8:
-                        df = df.with_columns([
-                            pl.when(pl.col(col).is_in(null_values))
-                            .then(None)
-                            .otherwise(pl.col(col))
-                            .alias(col)
-                        ])
-                    # Para tipos numéricos, converter valores específicos para null
-                    elif col_dtype in [pl.Int64, pl.Int32, pl.Int8]:
-                        if col.startswith('data_'):
-                            # Para datas, 0 significa null
-                            df = df.with_columns([
-                                pl.when(pl.col(col) == 0)
-                                .then(None)
-                                .otherwise(pl.col(col))
-                                .alias(col)
-                            ])
-                        else:
-                            # Para opções, 0 é um valor válido, não converter para null
-                            pass
-            
-            # 2. Limpar e padronizar CNPJ básico
-            if 'cnpj_basico' in df.columns:
-                df = df.with_columns([
-                    pl.col('cnpj_basico')
-                    .cast(pl.Utf8, strict=False)        # Converter para string primeiro
-                    .str.replace_all(r'[^\d]', '')      # Remove não-dígitos
-                    .str.pad_start(8, '0')              # Garante 8 dígitos, preenchendo com zeros
-                    .cast(pl.Int64, strict=False)       # Converte para bigint (Int64)
-                    .alias('cnpj_basico')
-                ])
-            
-            # 3. Converter opções para 0/1 (melhor performance que S/N)
-            opcao_columns = [
-                'opcao_simples', 'opcao_mei', 'ultimo_evento'
-            ]
-            
-            for col in opcao_columns:
-                if col in df.columns:
-                    col_dtype = df[col].dtype
-                    # Só converter se ainda for string
-                    if col_dtype == pl.Utf8:
-                        df = df.with_columns([
-                            pl.col(col)
-                            .map_elements(self._normalize_opcao_to_int, return_dtype=pl.Int8)
-                            .alias(col)
-                        ])
-            
-            # 4. Converter datas do Simples Nacional (formato YYYYMMDD)
-            date_columns = [
-                'data_opcao_simples', 'data_exclusao_simples',
-                'data_opcao_mei', 'data_exclusao_mei'
-            ]
-            
-            for col in date_columns:
-                if col in df.columns:
-                    col_dtype = df[col].dtype
-                    
-                    # Só aplicar conversão se ainda não for data
-                    if col_dtype != pl.Date:
-                        # Usar uma abordagem mais direta para converter datas
-                        if col_dtype == pl.Utf8:
-                            # Para strings, primeiro limpar e validar
-                            df = df.with_columns([
-                                pl.col(col)
-                                .str.replace_all(r'[^\d]', '')  # Remove não-dígitos
-                                .map_elements(
-                                    self._convert_date_simples_to_date,
-                                    return_dtype=pl.Date
-                                )
-                                .alias(col)
-                            ])
-                        # Se for numérico (Int64, Int32), converter diretamente
-                        elif col_dtype in [pl.Int64, pl.Int32]:
-                            df = df.with_columns([
-                                pl.col(col)
-                                .map_elements(
-                                    self._convert_date_simples_to_date,
-                                    return_dtype=pl.Date
-                                )
-                                .alias(col)
-                            ])
-                        # Para outros tipos, tentar conversão via string
-                        else:
-                            df = df.with_columns([
-                                pl.col(col)
-                                .cast(pl.Utf8, strict=False)
-                                .map_elements(
-                                    self._convert_date_simples_to_date,
-                                    return_dtype=pl.Date
-                                )
-                                .alias(col)
-                            ])
-            
-            # 5. Validar consistência de datas
-            df = self._validate_date_consistency(df)
-            
-            # 6. Adicionar colunas calculadas úteis
-            df = self._add_calculated_columns(df)
-            
-            self.logger.debug(f"Transformações específicas do Simples aplicadas. Linhas: {df.height}")
+            self.logger.debug(f"Transformações específicas aplicadas. Linhas: {df.height}")
             return df
             
         except Exception as e:
@@ -218,174 +101,66 @@ class SimplesProcessor(BaseProcessor):
             return 'N'
         return None
     
-    def _convert_date_simples(self, date_str) -> Optional[str]:
+    def _normalize_opcao_sn(self, value) -> Optional[str]:
         """
-        Converte string de data no formato YYYYMMDD para formato ISO.
+        Normaliza valores de opção S/N.
         
         Args:
-            date_str: String da data ou valor numérico
+            value: Valor a ser normalizado
             
         Returns:
-            Data convertida em formato ISO (YYYY-MM-DD) ou None
+            'S', 'N' ou None
         """
-        if date_str is None:
+        if value is None:
             return None
             
-        # Converter para string se necessário
-        date_str = str(date_str).strip()
+        value_str = str(value).strip().upper()
         
-        if not date_str or date_str in ['0', '00000000', '', 'None', 'null', 'NULL']:
+        if value_str in ['S', 'SIM', 'YES', '1', 'TRUE']:
+            return 'S'
+        elif value_str in ['N', 'NAO', 'NÃO', 'NO', '0', 'FALSE']:
+            return 'N'
+        else:
             return None
-        
-        try:
-            # Garantir que tem 8 dígitos (completar com zeros à esquerda)
-            date_str = date_str.zfill(8)
-            
-            if len(date_str) != 8 or not date_str.isdigit():
-                return None
-            
-            year = int(date_str[:4])
-            month = int(date_str[4:6])
-            day = int(date_str[6:8])
-            
-            # Validações básicas
-            if year < 2006 or year > 2030:  # Simples Nacional criado em 2006
-                return None
-            if month < 1 or month > 12:
-                return None
-            if day < 1 or day > 31:
-                return None
-            
-            # Retornar string no formato ISO para o Polars converter
-            return f"{year:04d}-{month:02d}-{day:02d}"
-            
-        except Exception as e:
-            # Log do erro seria útil mas pode ser muito verboso
-            return None
-    
-    def _convert_date_simples_to_date(self, date_str):
-        """
-        Converte string/número de data no formato YYYYMMDD para objeto date do Python.
-        
-        Args:
-            date_str: String da data ou valor numérico
-            
-        Returns:
-            Objeto date do Python ou None
-        """
-        if date_str is None:
-            return None
-            
-        # Converter para string se necessário
-        date_str = str(date_str).strip()
-        
-        if not date_str or date_str in ['0', '00000000', '', 'None', 'null', 'NULL']:
-            return None
-        
-        try:
-            # Garantir que tem 8 dígitos (completar com zeros à esquerda)
-            date_str = date_str.zfill(8)
-            
-            if len(date_str) != 8 or not date_str.isdigit():
-                return None
-            
-            year = int(date_str[:4])
-            month = int(date_str[4:6])
-            day = int(date_str[6:8])
-            
-            # Validações básicas
-            if year < 2006 or year > 2030:  # Simples Nacional criado em 2006
-                return None
-            if month < 1 or month > 12:
-                return None
-            if day < 1 or day > 31:
-                return None
-            
-            # Retornar objeto date do Python
-            from datetime import date
-            return date(year, month, day)
-            
-        except Exception as e:
-            return None
-    
-    def _validate_date_consistency(self, df: pl.DataFrame) -> pl.DataFrame:
-        """
-        Valida consistência entre datas de opção e exclusão.
-        
-        Args:
-            df: DataFrame a ser validado
-            
-        Returns:
-            DataFrame com datas inconsistentes corrigidas
-        """
-        # Validar consistência Simples Nacional
-        if ('data_opcao_simples' in df.columns and 
-            'data_exclusao_simples' in df.columns):
-            df = df.with_columns([
-                pl.when(
-                    (pl.col('data_exclusao_simples').is_not_null()) &
-                    (pl.col('data_opcao_simples').is_not_null()) &
-                    (pl.col('data_exclusao_simples') <= pl.col('data_opcao_simples'))
-                )
-                .then(None)  # Remove data de exclusão inválida
-                .otherwise(pl.col('data_exclusao_simples'))
-                .alias('data_exclusao_simples')
-            ])
-        
-        # Validar consistência MEI
-        if ('data_opcao_mei' in df.columns and 
-            'data_exclusao_mei' in df.columns):
-            df = df.with_columns([
-                pl.when(
-                    (pl.col('data_exclusao_mei').is_not_null()) &
-                    (pl.col('data_opcao_mei').is_not_null()) &
-                    (pl.col('data_exclusao_mei') <= pl.col('data_opcao_mei'))
-                )
-                .then(None)  # Remove data de exclusão inválida
-                .otherwise(pl.col('data_exclusao_mei'))
-                .alias('data_exclusao_mei')
-            ])
-        
-        return df
     
     def _add_calculated_columns(self, df: pl.DataFrame) -> pl.DataFrame:
         """
-        Adiciona colunas calculadas úteis.
+        Adiciona colunas calculadas simples.
         
         Args:
-            df: DataFrame original
+            df: DataFrame de entrada
             
         Returns:
-            DataFrame com colunas adicionais
+            DataFrame com colunas calculadas adicionadas
         """
-        # Status do Simples Nacional baseado em opções (0/1)
-        if 'opcao_simples' in df.columns and 'data_exclusao_simples' in df.columns:
-            df = df.with_columns([
-                pl.when(
-                    (pl.col('opcao_simples') == 1) &  # Optou pelo Simples
-                    (pl.col('data_exclusao_simples').is_null())  # Sem data de exclusão
-                )
-                .then('Ativo no Simples')
-                .when(pl.col('opcao_simples') == 1)  # Optou mas foi excluído
-                .then('Excluído do Simples') 
-                .when(pl.col('opcao_simples') == 0)  # Não optou
-                .then('Não optante')
-                .otherwise('Status indefinido')
-                .alias('status_simples_descricao')
-            ])
-        
-        # Status do MEI baseado em opções (0/1)
-        if 'opcao_mei' in df.columns:
-            df = df.with_columns([
-                pl.when(pl.col('opcao_mei') == 1)
-                .then('Optante MEI')
-                .when(pl.col('opcao_mei') == 0)
-                .then('Não optante MEI')
-                .otherwise('MEI indefinido')
-                .alias('status_mei_descricao')
-            ])
-        
-        return df
+        try:
+            # Adicionar status simples baseado apenas na opção
+            if 'opcao_simples' in df.columns:
+                df = df.with_columns([
+                    pl.when(pl.col('opcao_simples') == 'S')
+                    .then(pl.lit('ATIVO'))
+                    .when(pl.col('opcao_simples') == 'N')
+                    .then(pl.lit('INATIVO'))
+                    .otherwise(pl.lit('INDEFINIDO'))
+                    .alias('status_simples')
+                ])
+            
+            # Adicionar status MEI baseado apenas na opção
+            if 'opcao_mei' in df.columns:
+                df = df.with_columns([
+                    pl.when(pl.col('opcao_mei') == 'S')
+                    .then(pl.lit('ATIVO'))
+                    .when(pl.col('opcao_mei') == 'N')
+                    .then(pl.lit('INATIVO'))
+                    .otherwise(pl.lit('INDEFINIDO'))
+                    .alias('status_mei')
+                ])
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao adicionar colunas calculadas: {str(e)}")
+            return df
     
     def process_single_zip_impl(
         self, 
@@ -584,17 +359,15 @@ class SimplesProcessor(BaseProcessor):
             'supports_chunking': True,
             'default_chunk_size': 500_000,
             'specific_transformations': [
-                'Normalização de opções S/N',
                 'Conversão de datas YYYYMMDD',
-                'Validação de CNPJ básico',
                 'Validação de consistência de datas',
                 'Cálculo de situação atual',
                 'Tratamento de valores nulos específicos'
             ],
             'output_format': 'Parquet particionado',
             'calculated_columns': [
-                'status_simples_descricao',
-                'status_mei_descricao'
+                'status_simples',
+                'status_mei'
             ]
         }
         

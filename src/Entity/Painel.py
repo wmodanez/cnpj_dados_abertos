@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Type
 import polars as pl
 import re
-from datetime import datetime
 import logging
 from .base import BaseEntity
 
@@ -72,9 +71,9 @@ class Painel(BaseEntity):
     # Dados do Estabelecimento (opcionais)
     matriz_filial: Optional[int] = None
     codigo_situacao: Optional[int] = None
-    data_situacao_cadastral: Optional[datetime] = None
+    data_situacao_cadastral: Optional[str] = None
     codigo_motivo: Optional[int] = None
-    data_inicio_atividades: Optional[datetime] = None
+    data_inicio_atividades: Optional[str] = None
     codigo_cnae: Optional[int] = None
     codigo_municipio: Optional[int] = None
     tipo_situacao_cadastral: Optional[int] = None
@@ -88,11 +87,11 @@ class Painel(BaseEntity):
     
     # Dados do Simples Nacional (left join - podem não existir)
     opcao_simples: Optional[str] = None
-    data_opcao_simples: Optional[datetime] = None
-    data_exclusao_simples: Optional[datetime] = None
+    data_opcao_simples: Optional[str] = None
+    data_exclusao_simples: Optional[str] = None
     opcao_mei: Optional[str] = None
-    data_opcao_mei: Optional[datetime] = None
-    data_exclusao_mei: Optional[datetime] = None
+    data_opcao_mei: Optional[str] = None
+    data_exclusao_mei: Optional[str] = None
     
     def __post_init__(self):
         """Executa processamento após inicialização."""
@@ -126,9 +125,9 @@ class Painel(BaseEntity):
             'cnpj_basico': pl.Int64,
             'matriz_filial': pl.Int32,
             'codigo_situacao': pl.Int32,
-            'data_situacao_cadastral': pl.Datetime,
+            'data_situacao_cadastral': pl.Utf8,
             'codigo_motivo': pl.Int32,
-            'data_inicio_atividades': pl.Datetime,
+            'data_inicio_atividades': pl.Utf8,
             'codigo_cnae': pl.Int32,
             'codigo_municipio': pl.Int32,
             'tipo_situacao_cadastral': pl.Int32,
@@ -142,11 +141,11 @@ class Painel(BaseEntity):
             
             # Dados do Simples Nacional
             'opcao_simples': pl.Utf8,
-            'data_opcao_simples': pl.Datetime,
-            'data_exclusao_simples': pl.Datetime,
+            'data_opcao_simples': pl.Utf8,
+            'data_exclusao_simples': pl.Utf8,
             'opcao_mei': pl.Utf8,
-            'data_opcao_mei': pl.Datetime,
-            'data_exclusao_mei': pl.Datetime
+            'data_opcao_mei': pl.Utf8,
+            'data_exclusao_mei': pl.Utf8
         }
     
     @classmethod
@@ -155,7 +154,6 @@ class Painel(BaseEntity):
         return [
             'normalize_cnpj_basico',
             'calculate_simples_status',
-            'validate_data_consistency',
             'normalize_empresa_fields'
         ]
     
@@ -209,28 +207,7 @@ class Painel(BaseEntity):
             self._validation_errors.append(f"Opção MEI deve ser 'S' ou 'N': {self.opcao_mei}")
             return False
         
-        # Validar datas
-        current_date = datetime.now()
-        
-        dates_to_validate = [
-            ('data_opcao_simples', self.data_opcao_simples),
-            ('data_exclusao_simples', self.data_exclusao_simples),
-            ('data_opcao_mei', self.data_opcao_mei),
-            ('data_exclusao_mei', self.data_exclusao_mei)
-        ]
-        
-        for field_name, date_value in dates_to_validate:
-            if date_value:
-                # Verificar se a data não é muito antiga (Simples Nacional criado em 2006)
-                if date_value.year < 2006:
-                    self._validation_errors.append(f"{field_name} anterior à criação do Simples Nacional (2006)")
-                    return False
-                
-                # Verificar se a data não é no futuro
-                if date_value > current_date:
-                    self._validation_errors.append(f"{field_name} no futuro")
-                    return False
-        
+        # REMOVIDO: Todas as validações de data foram removidas
         return True
     
     def _validate_empresa_data(self) -> bool:
@@ -249,18 +226,7 @@ class Painel(BaseEntity):
     
     def _validate_data_consistency(self) -> bool:
         """Valida consistência entre dados de estabelecimento e Simples."""
-        # Validar consistência entre datas do Simples
-        if self.data_opcao_simples and self.data_exclusao_simples:
-            if self.data_exclusao_simples <= self.data_opcao_simples:
-                self._validation_errors.append("Data de exclusão do Simples deve ser posterior à data de opção")
-                return False
-        
-        # Validar consistência entre datas do MEI
-        if self.data_opcao_mei and self.data_exclusao_mei:
-            if self.data_exclusao_mei <= self.data_opcao_mei:
-                self._validation_errors.append("Data de exclusão do MEI deve ser posterior à data de opção")
-                return False
-        
+        # REMOVIDO: Todas as validações de data foram removidas
         return True
     
     def _calculate_derived_fields(self):
@@ -400,21 +366,6 @@ class Painel(BaseEntity):
     def _transform_calculate_simples_status(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Transformação: calcular status do Simples e MEI."""
         # Esta transformação será feita no __post_init__
-        return data
-    
-    def _transform_validate_data_consistency(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transformação: validar e corrigir inconsistências."""
-        # Corrigir datas de exclusão inválidas
-        if (data.get('data_opcao_simples') and data.get('data_exclusao_simples')):
-            if data['data_exclusao_simples'] <= data['data_opcao_simples']:
-                data['data_exclusao_simples'] = None
-                logger.warning("Data de exclusão do Simples inválida corrigida")
-        
-        if (data.get('data_opcao_mei') and data.get('data_exclusao_mei')):
-            if data['data_exclusao_mei'] <= data['data_opcao_mei']:
-                data['data_exclusao_mei'] = None
-                logger.warning("Data de exclusão do MEI inválida corrigida")
-        
         return data
     
     def _transform_normalize_empresa_fields(self, data: Dict[str, Any]) -> Dict[str, Any]:

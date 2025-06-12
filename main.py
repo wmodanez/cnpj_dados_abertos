@@ -20,7 +20,7 @@ Exemplos de uso:
    python main.py --tipos empresas
 
 7. Baixa e processa apenas Empresas e salvando na subpasta 'apenas_empresas' (dentro de PATH_PARQUET):
-   python main.py --tipos empresas --output-subfolder apenas_empresa
+   python main.py --tipos empresas --output-subfolder apenas_empresas
 
 8. Como o exemplo 7, mas também cria o subconjunto 'empresa_privada' no diretório de saída:
    python main.py --tipos empresas --output-subfolder apenas_empresas --criar-empresa-privada
@@ -59,7 +59,7 @@ Exemplos de uso:
     python main.py --all-folders --from-folder 2023-06
 
 20. Processar todas as pastas locais no formato AAAA-MM a partir de 2023-03:
-    python main.py --step process --process-all-folders --from-folder 2023-03 --output-subfolder processados_desde_2023_03
+    python main.py --step process --process-all-folders --output-subfolder processados_desde_2023_03
 
 21. Baixar sequencialmente da pasta mais antiga até a mais atual, processando cada uma:
     python main.py --all-folders --from-folder 2022-01
@@ -460,6 +460,100 @@ def initialize_processors():
         logger.error(f"❌ Erro ao inicializar processadores: {e}")
         return False
 
+def check_parquet_completeness(output_parquet_path: str, tipos_processados: List[str]) -> tuple[bool, List[str]]:
+    """
+    Verifica se todos os parquets necessários foram criados com sucesso.
+    
+    Args:
+        output_parquet_path: Caminho onde os parquets devem estar
+        tipos_processados: Lista de tipos que deveriam ter sido processados
+        
+    Returns:
+        tuple: (sucesso_completo, tipos_faltando)
+    """
+    try:
+        logger.info("🔍 Verificando integridade dos arquivos parquet gerados...")
+        
+        # Mapeamento de tipos para nomes de diretórios
+        tipo_to_folder = {
+            'empresas': 'empresa',
+            'estabelecimentos': 'estabelecimento', 
+            'simples': 'simples',
+            'socios': 'socio'
+        }
+        
+        tipos_faltando = []
+        tipos_verificados = []
+        
+        for tipo in tipos_processados:
+            folder_name = tipo_to_folder.get(tipo, tipo)
+            parquet_path = os.path.join(output_parquet_path, folder_name)
+            
+            # Verificar se o diretório existe
+            if not os.path.exists(parquet_path):
+                logger.error(f"❌ Diretório não encontrado para {tipo}: {parquet_path}")
+                tipos_faltando.append(tipo)
+                continue
+            
+            # Verificar se há arquivos parquet no diretório
+            try:
+                parquet_files = [f for f in os.listdir(parquet_path) if f.endswith('.parquet')]
+                if not parquet_files:
+                    logger.error(f"❌ Nenhum arquivo parquet encontrado para {tipo} em: {parquet_path}")
+                    tipos_faltando.append(tipo)
+                    continue
+                
+                # Verificar se pelo menos um arquivo parquet é válido
+                valid_files = 0
+                total_size = 0
+                
+                for parquet_file in parquet_files:
+                    file_path = os.path.join(parquet_path, parquet_file)
+                    try:
+                        # Verificar tamanho do arquivo (arquivos muito pequenos são suspeitos)
+                        file_size = os.path.getsize(file_path)
+                        if file_size < 1024:  # Menor que 1KB é suspeito
+                            logger.warning(f"⚠️ Arquivo parquet muito pequeno: {parquet_file} ({file_size} bytes)")
+                            continue
+                        
+                        # Verificar se o arquivo parquet é válido
+                        import pyarrow.parquet as pq
+                        pq.read_metadata(file_path)
+                        valid_files += 1
+                        total_size += file_size
+                        
+                    except Exception as e:
+                        logger.warning(f"⚠️ Arquivo parquet corrompido ou inválido: {parquet_file} - {e}")
+                        continue
+                
+                if valid_files == 0:
+                    logger.error(f"❌ Nenhum arquivo parquet válido encontrado para {tipo}")
+                    tipos_faltando.append(tipo)
+                    continue
+                
+                # Log de sucesso
+                size_mb = total_size / (1024 * 1024)
+                logger.info(f"✅ {tipo}: {valid_files} arquivos válidos, {size_mb:.1f} MB")
+                tipos_verificados.append(tipo)
+                
+            except Exception as e:
+                logger.error(f"❌ Erro ao verificar diretório {tipo}: {e}")
+                tipos_faltando.append(tipo)
+        
+        # Resultado final
+        sucesso_completo = len(tipos_faltando) == 0
+        
+        if sucesso_completo:
+            logger.info(f"✅ Verificação completa: Todos os {len(tipos_verificados)} tipos processados com sucesso")
+        else:
+            logger.error(f"❌ Verificação falhou: {len(tipos_faltando)} tipo(s) com problemas: {', '.join(tipos_faltando)}")
+        
+        return sucesso_completo, tipos_faltando
+        
+    except Exception as e:
+        logger.error(f"❌ Erro durante verificação de integridade: {e}")
+        return False, tipos_processados
+
 def main():
     """Função principal de execução."""
     return asyncio.run(async_main())
@@ -572,7 +666,7 @@ async def async_main():
         print_error("Erro ao carregar variáveis de ambiente. Verifique o arquivo .env")
         logger.error("Variáveis de ambiente PATH_ZIP, PATH_UNZIP ou PATH_PARQUET não definidas")
         return False, ""
-    
+        
     if not initialize_processors():
         print_error("Falha ao inicializar nova arquitetura. Verifique os logs.")
         return False, ""
@@ -627,7 +721,7 @@ async def async_main():
                     logger.error(f"Erro ao obter pasta remota: {e}")
                     logger.error("Use --source-zip-folder para especificar os dados a processar")
                     return False, ""
-            
+
             source_zip_path = os.path.join(PATH_ZIP, latest_folder)
             output_subfolder = args.output_subfolder if args.output_subfolder else latest_folder
         
@@ -642,7 +736,7 @@ async def async_main():
             logger.error(f"Pasta de dados não encontrada: {source_zip_path}")
             logger.error("Execute primeiro o download e processamento dos dados ou use --source-zip-folder")
             return False, ""
-        
+
         # Processar painel
         painel_start_time = time.time()
         
@@ -652,7 +746,6 @@ async def async_main():
             output_parquet_path=output_parquet_path,
             uf_filter=args.painel_uf,
             situacao_filter=args.painel_situacao,
-            include_inactive=args.painel_incluir_inativos,
             output_filename=None  # Será gerado automaticamente
         )
         
@@ -685,15 +778,6 @@ async def async_main():
     
     # Se chegou até aqui após processamento bem-sucedido, usar pipeline otimizado
     if args.step == 'all':
-        print_header("Modo Completo: Download e Processamento Otimizado em Pipeline Único")
-        
-        # Configurar para forçar o download se necessário
-        if args.force_download:
-            os.environ['FORCE_DOWNLOAD'] = 'True'
-            logger.info("Download forçado ativado: sobrescreverá arquivos existentes.")
-        
-        # Obter pasta remota
-        tipos_desejados = args.tipos if args.tipos else []
         remote_folder_param = args.remote_folder if args.remote_folder else None
         from_folder_param = args.from_folder if args.from_folder else None
         
@@ -710,7 +794,7 @@ async def async_main():
                 logger.error("Não foi possível determinar a pasta remota mais recente")
                 return False, ""
             logger.info(f"Pasta remota mais recente: {latest_folder}")
-        
+
         # Definir caminhos
         source_zip_path = os.path.join(PATH_ZIP, latest_folder)
         output_subfolder = args.output_subfolder if args.output_subfolder else latest_folder
@@ -730,8 +814,9 @@ async def async_main():
             return False, ""
             
         zip_urls, _ = get_latest_month_zip_urls(base_url, latest_folder)
-        
+            
         # Filtrar URLs por tipos desejados
+        tipos_desejados = args.tipos if args.tipos else ['empresas', 'estabelecimentos', 'simples', 'socios']
         if tipos_desejados:
             zip_urls, ignored = _filter_urls_by_type(zip_urls, tuple(tipos_desejados))
             logger.info(f"Filtrados {ignored} URLs não desejadas para processamento. Restaram {len(zip_urls)} URLs.")
@@ -773,6 +858,7 @@ async def async_main():
         download_time = pipeline_time * 0.3  # Aproximadamente 30% do tempo em downloads
         process_time = pipeline_time * 0.7   # Aproximadamente 70% do tempo em processamento
         
+        # Verificar se houve problemas no pipeline
         if not process_results.get('all_ok', False):
             print_warning("Alguns erros ocorreram durante o pipeline. O banco de dados NÃO será criado.")
             total_time = time.time() - start_time
@@ -783,6 +869,25 @@ async def async_main():
             return False, ""
         else:
             print_success("Pipeline de download e processamento concluído com sucesso.")
+        
+        # Verificação adicional: confirmar que todos os parquets foram criados corretamente
+        print_section("Verificando integridade dos dados processados")
+        parquets_ok, tipos_faltando = check_parquet_completeness(output_parquet_path, tipos_a_processar)
+        
+        if not parquets_ok:
+            print_error(f"Arquivos parquet incompletos ou corrompidos detectados para: {', '.join(tipos_faltando)}")
+            print_error("O banco de dados DuckDB NÃO será criado devido a dados incompletos.")
+            logger.error("Verificação de integridade dos parquets falhou")
+            logger.error(f"Tipos com problemas: {', '.join(tipos_faltando)}")
+            
+            total_time = time.time() - start_time
+            logger.info("=" * 50)
+            logger.info(f"TEMPO TOTAL DE EXECUÇÃO: {format_elapsed_time(total_time)}")
+            logger.info("STATUS FINAL: FALHA - DADOS INCOMPLETOS")
+            logger.info("=" * 50)
+            return False, ""
+        else:
+            print_success("Verificação de integridade dos parquets concluída com sucesso.")
         
         # 2.5. Processamento do Painel (se solicitado)
         if args.processar_painel:
@@ -795,7 +900,6 @@ async def async_main():
                 output_parquet_path=output_parquet_path,
                 uf_filter=args.painel_uf,
                 situacao_filter=args.painel_situacao,
-                include_inactive=args.painel_incluir_inativos,
                 output_filename=None  # Será gerado automaticamente
             )
             
@@ -806,10 +910,14 @@ async def async_main():
             if painel_success:
                 print_success("Processamento do painel concluído com sucesso.")
             else:
-                print_warning("Falha no processamento do painel. Continuando com a criação do banco de dados.")
+                print_warning("Falha no processamento do painel.")
+                print_warning("⚠️ O painel consolidado não foi gerado, mas o banco de dados DuckDB será criado normalmente.")
+                logger.warning("Processamento do painel falhou, mas continuando com criação do banco")
+                logger.warning("O banco DuckDB será criado apenas com os dados das entidades individuais")
         
-        # 3. Criação do banco de dados
+        # 3. Criação do banco de dados (verificações essenciais já passaram)
         print_section("Etapa 3: Criação do banco de dados DuckDB")
+        logger.info("🎯 Verificações essenciais passaram - prosseguindo com criação do banco")
         db_start_time = time.time()
         
         try:
@@ -860,12 +968,12 @@ async def async_main():
             logger.info("STATUS FINAL: FALHA")
             logger.info("=" * 50)
             return False, ""
-    
+
     total_time = time.time() - start_time
     
     # Finalizar coleta de estatísticas
     global_stats.end_session()
-    
+
     # Resumo final
     print_header("Processamento concluído")
     logger.info("=" * 50)
@@ -899,7 +1007,7 @@ async def async_main():
 
 def process_painel_complete(source_zip_path: str, unzip_path: str, output_parquet_path: str, 
                           uf_filter: str | None = None, situacao_filter: int | None = None, 
-                          include_inactive: bool = True, output_filename: str | None = None) -> bool:
+                          output_filename: str | None = None) -> bool:
     """
     Processa dados do painel combinando estabelecimentos, simples e empresas.
     
@@ -909,7 +1017,6 @@ def process_painel_complete(source_zip_path: str, unzip_path: str, output_parque
         output_parquet_path: Caminho de saída
         uf_filter: Filtro por UF (opcional)
         situacao_filter: Filtro por situação cadastral (opcional)
-        include_inactive: Incluir estabelecimentos inativos
         output_filename: Nome do arquivo de saída (opcional)
         
     Returns:
@@ -923,18 +1030,18 @@ def process_painel_complete(source_zip_path: str, unzip_path: str, output_parque
         start_time = time.time()
         
         # Definir caminhos dos parquets das entidades individuais
-        estabelecimento_path = os.path.join(output_parquet_path, 'estabelecimentos')
+        estabelecimento_path = os.path.join(output_parquet_path, 'estabelecimento')
         simples_path = os.path.join(output_parquet_path, 'simples') 
-        empresa_path = os.path.join(output_parquet_path, 'empresas')
+        empresa_path = os.path.join(output_parquet_path, 'empresa')
         
         # Verificar se os parquets das entidades individuais existem
         missing_paths = []
         if not os.path.exists(estabelecimento_path) or not os.listdir(estabelecimento_path):
-            missing_paths.append('estabelecimentos')
+            missing_paths.append('estabelecimento')
         if not os.path.exists(simples_path) or not os.listdir(simples_path):
             missing_paths.append('simples')
         if not os.path.exists(empresa_path) or not os.listdir(empresa_path):
-            missing_paths.append('empresas')
+            missing_paths.append('empresa')
         
         if missing_paths:
             logger.error(f"Parquets não encontrados para: {', '.join(missing_paths)}")
@@ -952,7 +1059,6 @@ def process_painel_complete(source_zip_path: str, unzip_path: str, output_parque
             'skip_download': True,
             'skip_unzip': True,
             'skip_individual_processing': True,
-            'include_inactive': include_inactive
         }
         
         # Adicionar filtros se especificados
@@ -971,17 +1077,7 @@ def process_painel_complete(source_zip_path: str, unzip_path: str, output_parque
         
         # Processar dados do painel
         if not output_filename:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            filters = []
-            if uf_filter:
-                filters.append(f"uf_{uf_filter.lower()}")
-            if situacao_filter is not None:
-                filters.append(f"sit_{situacao_filter}")
-            if not include_inactive:
-                filters.append("apenas_ativos")
-            
-            filter_suffix = "_" + "_".join(filters) if filters else ""
-            output_filename = f"painel_dados_{timestamp}{filter_suffix}.parquet"
+            output_filename = "painel_dados.parquet"
         
         logger.info(f"Arquivo de saída: {output_filename}")
         
@@ -1191,12 +1287,20 @@ async def optimized_download_and_process_pipeline(
                         await process_file_immediately(destination_path, filename)
                         return
                     else:
-                        logger.warning(f"⚠️ Arquivo {filename} existe mas está corrompido. Fazendo novo download...")
+                        logger.error(f"❌ Arquivo {filename} baixado mas falhou na validação de integridade")
+                        failed_downloads.append((filename, "Falha na validação de integridade"))
                         # Remover arquivo corrompido
                         try:
                             os.remove(destination_path)
-                        except Exception as e:
-                            logger.warning(f"Erro ao remover arquivo corrompido {filename}: {e}")
+                        except Exception:
+                            pass
+                else:
+                    logger.warning(f"⚠️ Arquivo {filename} existe mas está corrompido. Fazendo novo download...")
+                    # Remover arquivo corrompido
+                    try:
+                        os.remove(destination_path)
+                    except Exception as e:
+                        logger.warning(f"Erro ao remover arquivo corrompido {filename}: {e}")
                 
                 # Fazer download
                 logger.info(f"📥 Baixando {filename}...")

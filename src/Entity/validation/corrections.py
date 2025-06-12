@@ -261,98 +261,27 @@ class EntityCorrections:
         return data, corrections
     
     def _apply_general_corrections(self, data: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
-        """Aplica correções gerais a todos os tipos de dados."""
-        corrections = []
+        """Aplica correções gerais para qualquer tipo de entidade."""
+        messages = []
         
-        # Remover espaços extras de strings
-        for field, value in data.items():
-            if isinstance(value, str):
-                original = value
-                corrected = value.strip()
-                
-                if corrected != original:
-                    data[field] = corrected
-                    corrections.append(f"Espaços removidos de {field}")
+        # Corrigir CNPJ básico
+        if 'cnpj_basico' in data and data['cnpj_basico'] is not None:
+            try:
+                cnpj = int(data['cnpj_basico'])
+                if not (10000000 <= cnpj <= 99999999):
+                    data['cnpj_basico'] = None
+                    messages.append("CNPJ básico inválido - removido")
+            except (ValueError, TypeError):
+                data['cnpj_basico'] = None
+                messages.append("CNPJ básico inválido - removido")
         
-        # Converter strings vazias para None
-        for field, value in data.items():
-            if value == '' or value == 'NULL' or value == 'null' or value == 'None':
-                data[field] = None
-                corrections.append(f"Valor vazio convertido para None em {field}")
+        # Corrigir strings vazias
+        for key, value in data.items():
+            if isinstance(value, str) and not value.strip():
+                data[key] = None
+                messages.append(f"Campo {key} vazio - removido")
         
-        # Corrigir valores numéricos em strings
-        for field, value in data.items():
-            if isinstance(value, str) and value.isdigit():
-                # Campos que devem ser numéricos
-                numeric_fields = [
-                    'natureza_juridica', 'qualificacao_responsavel', 'porte_empresa',
-                    'matriz_filial', 'codigo_situacao_cadastral', 'codigo_motivo_situacao_cadastral',
-                    'codigo_cnae', 'codigo_municipio', 'identificador_socio', 'qualificacao_socio',
-                    'qualificacao_representante_legal'
-                ]
-                
-                if field in numeric_fields:
-                    try:
-                        data[field] = int(value)
-                        corrections.append(f"{field} convertido para inteiro")
-                    except ValueError:
-                        pass
-        
-        # Corrigir datas em formato string
-        date_fields = [
-            'data_situacao_cadastral', 'data_inicio_atividades', 'data_entrada_sociedade',
-            'data_opcao_simples', 'data_exclusao_simples', 'data_opcao_mei', 'data_exclusao_mei'
-        ]
-        
-        for field in date_fields:
-            if field in data and isinstance(data[field], str):
-                corrected_date = self._parse_date_string(data[field])
-                if corrected_date:
-                    data[field] = corrected_date
-                    corrections.append(f"Data {field} convertida")
-        
-        return data, corrections
-    
-    def _parse_date_string(self, date_str: str) -> Optional[str]:
-        """
-        Tenta converter string de data para formato ISO.
-        
-        Args:
-            date_str: String com data
-            
-        Returns:
-            Optional[str]: Data em formato ISO ou None se inválida
-        """
-        if not date_str or date_str.lower() in ['null', 'none', '']:
-            return None
-        
-        # Padrões de data comuns
-        date_patterns = [
-            r'(\d{4})-(\d{2})-(\d{2})',  # YYYY-MM-DD
-            r'(\d{2})/(\d{2})/(\d{4})',  # DD/MM/YYYY
-            r'(\d{2})-(\d{2})-(\d{4})',  # DD-MM-YYYY
-            r'(\d{4})(\d{2})(\d{2})',    # YYYYMMDD
-        ]
-        
-        for pattern in date_patterns:
-            match = re.match(pattern, date_str.strip())
-            if match:
-                groups = match.groups()
-                
-                if len(groups[0]) == 4:  # Primeiro grupo é ano
-                    year, month, day = groups
-                else:  # Primeiro grupo é dia
-                    day, month, year = groups
-                
-                try:
-                    # Validar data
-                    from datetime import datetime
-                    datetime(int(year), int(month), int(day))
-                    return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-                except ValueError:
-                    continue
-        
-        return None
+        return data, messages
 
 
 class ValidationUtils:

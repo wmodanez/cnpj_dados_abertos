@@ -176,39 +176,84 @@ class BaseProcessor(ABC):
             Dict mapeando colunas antigas para nomes das entidades
         """
         entity_class = self.get_entity_class()
-        all_columns = entity_class.get_column_names()
-        
-        # Para empresas, o cpf_extraido é calculado, não vem do CSV
-        if hasattr(entity_class, '__name__') and entity_class.__name__ == 'Empresa':
-            entity_columns = [col for col in all_columns if col != 'cpf_extraido']
-        else:
-            entity_columns = all_columns
-            
         df_columns = df.columns
         
-        # ESPECIAL: Para estabelecimentos, mapear dos 30 campos do CSV para os desejados
-        # incluindo as colunas 2 e 3 necessárias para CNPJ completo
-        estabelecimento_mapping = {
-            'column_1': 'cnpj_basico',           # posição 1
-            'column_2': 'cnpj_ordem',            # posição 2 (ordem)
-            'column_3': 'cnpj_dv',               # posição 3 (dígitos verificadores)
-            'column_4': 'matriz_filial',         # posição 4  
-            'column_5': 'nome_fantasia',         # posição 5
-            'column_6': 'codigo_situacao',       # posição 6
-            'column_7': 'data_situacao_cadastral', # posição 7
-            'column_8': 'codigo_motivo',         # posição 8
-            'column_9': 'nome_cidade_exterior',  # posição 9
-            'column_11': 'data_inicio_atividades', # posição 11
-            'column_12': 'codigo_cnae',          # posição 12
-            'column_13': 'cnae_secundaria',      # posição 13
-            'column_20': 'uf',                   # posição 20
-            'column_21': 'codigo_municipio',     # posição 21
-            'column_19': 'cep',                  # posição 19
-        }
+        # Determinar tipo de entidade e aplicar mapeamento específico
+        entity_name = entity_class.__name__ if hasattr(entity_class, '__name__') else str(entity_class)
+        
+        if entity_name == 'Estabelecimento':
+            # Mapeamento para estabelecimentos (30 campos do CSV)
+            mapping_dict = {
+                'column_1': 'cnpj_basico',           # posição 1
+                'column_2': 'cnpj_ordem',            # posição 2 (ordem)
+                'column_3': 'cnpj_dv',               # posição 3 (dígitos verificadores)
+                'column_4': 'matriz_filial',         # posição 4  
+                'column_5': 'nome_fantasia',         # posição 5
+                'column_6': 'codigo_situacao',       # posição 6
+                'column_7': 'data_situacao_cadastral', # posição 7
+                'column_8': 'codigo_motivo',         # posição 8
+                'column_9': 'nome_cidade_exterior',  # posição 9
+                'column_11': 'data_inicio_atividades', # posição 11
+                'column_12': 'codigo_cnae',          # posição 12
+                'column_13': 'cnae_secundaria',      # posição 13
+                'column_20': 'uf',                   # posição 20
+                'column_21': 'codigo_municipio',     # posição 21
+                'column_19': 'cep',                  # posição 19
+            }
+        
+        elif entity_name == 'Empresa':
+            # Mapeamento para empresas (6 campos do CSV)
+            mapping_dict = {
+                'column_1': 'cnpj_basico',           # posição 1
+                'column_2': 'razao_social',          # posição 2
+                'column_3': 'natureza_juridica',     # posição 3
+                'column_4': 'qualificacao_responsavel', # posição 4
+                'column_5': 'capital_social',        # posição 5
+                'column_6': 'porte_empresa',         # posição 6
+                'column_7': 'ente_federativo_responsavel' # posição 7
+            }
+        
+        elif entity_name == 'Simples':
+            # Mapeamento para Simples Nacional (7 campos do CSV)
+            mapping_dict = {
+                'column_1': 'cnpj_basico',           # posição 1
+                'column_2': 'opcao_simples',         # posição 2
+                'column_3': 'data_opcao_simples',    # posição 3
+                'column_4': 'data_exclusao_simples', # posição 4
+                'column_5': 'opcao_mei',             # posição 5
+                'column_6': 'data_opcao_mei',        # posição 6
+                'column_7': 'data_exclusao_mei'      # posição 7
+            }
+        
+        elif entity_name == 'Socio':
+            # Mapeamento para sócios (11 campos do CSV)
+            mapping_dict = {
+                'column_1': 'cnpj_basico',           # posição 1
+                'column_2': 'identificador_socio',   # posição 2
+                'column_3': 'nome_socio',            # posição 3
+                'column_4': 'cnpj_cpf_socio',        # posição 4
+                'column_5': 'qualificacao_socio',    # posição 5
+                'column_6': 'data_entrada_sociedade', # posição 6
+                'column_7': 'cpf_representante_legal', # posição 7
+                'column_8': 'nome_representante_legal', # posição 8
+                'column_9': 'qualificacao_representante_legal', # posição 9
+                'column_10': 'faixa_etaria',         # posição 10
+                'column_11': 'pais'                  # posição 11
+            }
+        
+        else:
+            # Para entidades não reconhecidas, tentar mapeamento automático
+            self.logger.warning(f"Entidade não reconhecida: {entity_name}. Usando mapeamento automático.")
+            all_columns = entity_class.get_column_names()
+            mapping_dict = {}
+            for i, col_name in enumerate(all_columns, 1):
+                df_col = f'column_{i}'
+                if df_col in df_columns:
+                    mapping_dict[df_col] = col_name
         
         # Filtrar apenas colunas que existem no DataFrame
         mapping = {}
-        for df_col, entity_col in estabelecimento_mapping.items():
+        for df_col, entity_col in mapping_dict.items():
             if df_col in df_columns:
                 mapping[df_col] = entity_col
         
@@ -267,14 +312,8 @@ class BaseProcessor(ABC):
                     
                     # Só converter se o tipo atual for diferente do tipo alvo
                     if current_type != target_type:
-                        # ESPECIAL: Para campos de data, não converter automaticamente se são numéricos
-                        # Deixar isso para as transformações específicas de cada processador
-                        if target_type == pl.Date and current_type in [pl.Int64, pl.Int32]:
-                            # Pular conversão automática de data, será feita no processador específico
-                            continue
-                        
                         # Para conversões de Int64 -> Int32, fazer conversão direta
-                        elif current_type == pl.Int64 and target_type == pl.Int32:
+                        if current_type == pl.Int64 and target_type == pl.Int32:
                             conversions.append(
                                 pl.col(col_name).cast(target_type, strict=False).alias(col_name)
                             )
@@ -342,27 +381,27 @@ class BaseProcessor(ABC):
                             pl.col(field).str.strip_chars().str.to_uppercase().alias(field)
                         ])
             
-            elif transformation == 'convert_dates':
-                # Transformação de datas - verificar se já é datetime
-                date_columns = ['data_entrada_sociedade', 'data_situacao_cadastral', 'data_inicio_atividade']
-                for col in date_columns:
-                    if col in df.columns:
-                        # Verificar se a coluna já é do tipo datetime
-                        col_dtype = df[col].dtype
-                        if col_dtype == pl.Utf8:  # Só converter se for string
-                            df = df.with_columns([
-                                pl.col(col).str.strptime(pl.Date, "%Y%m%d", strict=False).alias(col)
-                            ])
-                        # Se já é datetime, manter como está
-            
             elif transformation == 'validate_cpf_cnpj':
                 # Limpeza de CPF/CNPJ
                 cpf_cnpj_columns = ['cnpj_cpf_socio', 'representante_legal', 'cnpj_basico']
                 for col in cpf_cnpj_columns:
                     if col in df.columns:
-                        df = df.with_columns([
-                            pl.col(col).str.replace_all(r'[^\d]', '').alias(col)
-                        ])
+                        # Verificar tipo da coluna antes de aplicar transformação de string
+                        col_dtype = df[col].dtype
+                        if col_dtype == pl.Utf8:  # Só aplicar se for string
+                            df = df.with_columns([
+                                pl.col(col).str.replace_all(r'[^\d]', '').alias(col)
+                            ])
+                        elif col_dtype in [pl.Int64, pl.Int32, pl.Int8, pl.UInt64, pl.UInt32, pl.UInt8]:
+                            # Se já é inteiro, converter para string, limpar e voltar para inteiro
+                            df = df.with_columns([
+                                pl.col(col)
+                                .cast(pl.Utf8, strict=False)
+                                .str.replace_all(r'[^\d]', '')
+                                .cast(pl.Int64, strict=False)
+                                .alias(col)
+                            ])
+                        # Se for outro tipo, manter como está
             
             return df
             
@@ -410,17 +449,18 @@ class BaseProcessor(ABC):
                         encoding=config.file.encoding,
                         has_header=False,
                         new_columns=column_names,
-                        infer_schema_length=1000,  # Permitir inferência de tipos
+                        infer_schema_length=0,  # ALTERADO: Não inferir schema automaticamente
                         ignore_errors=True,
                         quote_char='"',  # Definir aspas duplas como caractere de citação
                         null_values=["", "NULL", "null", "00000000"],
                         missing_utf8_is_empty_string=True,
-                        try_parse_dates=False,
-                        truncate_ragged_lines=True
+                        try_parse_dates=False,  # IMPORTANTE: Não fazer parse automático de datas
+                        truncate_ragged_lines=True,
+                        schema={col: pl.Utf8 for col in column_names}  # CORRIGIDO: Usar schema em vez de dtypes
                     )
                     
                     if isinstance(df, pl.DataFrame) and not df.is_empty():
-                        self.logger.debug(f"Arquivo {os.path.basename(data_path)} processado com separador '{sep}'")
+                        self.logger.debug(f"Arquivo {os.path.basename(data_path)} processado com separador '{sep}' - todas colunas como string")
                         return df
                         
                 except Exception as e:

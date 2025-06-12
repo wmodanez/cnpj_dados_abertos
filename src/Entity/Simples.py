@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Type
 import polars as pl
 import re
-from datetime import datetime
 import logging
 from .base import BaseEntity
 
@@ -33,11 +32,11 @@ class Simples(BaseEntity):
     
     cnpj_basico: int
     opcao_simples: Optional[str] = None
-    data_opcao_simples: Optional[datetime] = None
-    data_exclusao_simples: Optional[datetime] = None
+    data_opcao_simples: Optional[str] = None
+    data_exclusao_simples: Optional[str] = None
     opcao_mei: Optional[str] = None
-    data_opcao_mei: Optional[datetime] = None
-    data_exclusao_mei: Optional[datetime] = None
+    data_opcao_mei: Optional[str] = None
+    data_exclusao_mei: Optional[str] = None
     
     @classmethod
     def get_column_names(cls) -> List[str]:
@@ -53,19 +52,18 @@ class Simples(BaseEntity):
         return {
             'cnpj_basico': pl.Int64,
             'opcao_simples': pl.Utf8,
-            'data_opcao_simples': pl.Date,
-            'data_exclusao_simples': pl.Date,
+            'data_opcao_simples': pl.Utf8,
+            'data_exclusao_simples': pl.Utf8,
             'opcao_mei': pl.Utf8,
-            'data_opcao_mei': pl.Date,
-            'data_exclusao_mei': pl.Date
+            'data_opcao_mei': pl.Utf8,
+            'data_exclusao_mei': pl.Utf8
         }
     
     @classmethod
     def get_transformations(cls) -> List[str]:
         """Retorna lista de transformações aplicáveis."""
         return [
-            'normalize_opcoes',
-            'validate_date_consistency'
+            'normalize_opcoes'
         ]
     
     def validate(self) -> bool:
@@ -123,59 +121,12 @@ class Simples(BaseEntity):
     
     def _validate_dates(self) -> bool:
         """Valida datas."""
-        current_date = datetime.now()
-        
-        # Datas para validar
-        dates_to_validate = [
-            ('data_opcao_simples', self.data_opcao_simples),
-            ('data_exclusao_simples', self.data_exclusao_simples),
-            ('data_opcao_mei', self.data_opcao_mei),
-            ('data_exclusao_mei', self.data_exclusao_mei)
-        ]
-        
-        for field_name, date_value in dates_to_validate:
-            if date_value:
-                # Verificar se a data não é muito antiga (Simples Nacional criado em 2006)
-                if date_value.year < 2006:
-                    self._validation_errors.append(f"{field_name} anterior à criação do Simples Nacional (2006)")
-                    return False
-                
-                # Verificar se a data não é no futuro
-                if date_value > current_date:
-                    self._validation_errors.append(f"{field_name} no futuro")
-                    return False
-        
+        # REMOVIDO: Todas as validações de data foram removidas
         return True
     
     def _validate_date_consistency(self) -> bool:
         """Valida consistência entre datas."""
-        # Validar Simples Nacional
-        if self.data_opcao_simples and self.data_exclusao_simples:
-            if self.data_exclusao_simples <= self.data_opcao_simples:
-                self._validation_errors.append("Data de exclusão do Simples deve ser posterior à data de opção")
-                return False
-        
-        # Validar MEI
-        if self.data_opcao_mei and self.data_exclusao_mei:
-            if self.data_exclusao_mei <= self.data_opcao_mei:
-                self._validation_errors.append("Data de exclusão do MEI deve ser posterior à data de opção")
-                return False
-        
-        # Validar consistência entre opção e datas
-        if self.opcao_simples == 'S' and not self.data_opcao_simples:
-            logger.warning(f"CNPJ {self.cnpj_basico}: Empresa optante do Simples sem data de opção")
-        
-        if self.opcao_mei == 'S' and not self.data_opcao_mei:
-            logger.warning(f"CNPJ {self.cnpj_basico}: Empresa optante do MEI sem data de opção")
-        
-        # MEI e Simples podem ser mutuamente exclusivos em alguns casos
-        if (self.opcao_simples == 'S' and self.opcao_mei == 'S' and 
-            self.data_opcao_simples and self.data_opcao_mei):
-            # Verificar se as datas fazem sentido
-            diff_days = abs((self.data_opcao_simples - self.data_opcao_mei).days)
-            if diff_days < 30:
-                logger.warning(f"CNPJ {self.cnpj_basico}: Opção simultânea por Simples e MEI em datas próximas")
-        
+        # REMOVIDO: Todas as validações de data foram removidas
         return True
     
     def is_optante_simples(self) -> bool:
@@ -222,41 +173,7 @@ class Simples(BaseEntity):
         else:
             return "Optante (sem data de opção)"
     
-    def get_tempo_simples(self) -> Optional[int]:
-        """Retorna tempo em dias no Simples Nacional."""
-        if not self.data_opcao_simples:
-            return None
-        
-        end_date = self.data_exclusao_simples or datetime.now()
-        return (end_date - self.data_opcao_simples).days
-    
-    def get_tempo_mei(self) -> Optional[int]:
-        """Retorna tempo em dias no MEI."""
-        if not self.data_opcao_mei:
-            return None
-        
-        end_date = self.data_exclusao_mei or datetime.now()
-        return (end_date - self.data_opcao_mei).days
-    
     # Métodos de transformação
-    
-    def _transform_convert_dates(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transformação: converter datas."""
-        date_fields = [
-            'data_opcao_simples', 'data_exclusao_simples', 
-            'data_opcao_mei', 'data_exclusao_mei'
-        ]
-        
-        for field in date_fields:
-            if field in data and data[field]:
-                if isinstance(data[field], str):
-                    try:
-                        # Tentar converter string para datetime
-                        data[field] = datetime.fromisoformat(data[field].replace('Z', '+00:00'))
-                    except ValueError:
-                        data[field] = None
-        
-        return data
     
     def _transform_normalize_opcoes(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Transformação: normalizar opções S/N."""
@@ -278,21 +195,24 @@ class Simples(BaseEntity):
                     data[field] = None
         
         return data
-    
-    def _transform_validate_date_consistency(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transformação: validar consistência de datas."""
-        # Verificar se data de exclusão é posterior à data de opção (Simples)
-        if (data.get('data_opcao_simples') and data.get('data_exclusao_simples')):
-            if data['data_exclusao_simples'] <= data['data_opcao_simples']:
-                # Remover data de exclusão inválida
-                data['data_exclusao_simples'] = None
-                logger.warning("Data de exclusão do Simples inválida removida")
+
+    def get_processing_summary(self) -> Dict[str, Any]:
+        """
+        Retorna resumo do processamento para Simples Nacional.
         
-        # Verificar se data de exclusão é posterior à data de opção (MEI)
-        if (data.get('data_opcao_mei') and data.get('data_exclusao_mei')):
-            if data['data_exclusao_mei'] <= data['data_opcao_mei']:
-                # Remover data de exclusão inválida
-                data['data_exclusao_mei'] = None
-                logger.warning("Data de exclusão do MEI inválida removida")
+        Returns:
+            Dict com informações de resumo
+        """
+        base_summary = self.to_dict()
         
-        return data
+        # Adicionar informações específicas do Simples Nacional
+        simples_summary = {
+            **base_summary,
+            'entity_type': 'Simples Nacional',
+            'opcoes_ativas': {
+                'simples': self.opcao_simples == 'S',
+                'mei': self.opcao_mei == 'S'
+            }
+        }
+        
+        return simples_summary

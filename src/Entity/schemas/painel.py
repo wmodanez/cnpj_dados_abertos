@@ -7,7 +7,6 @@ que combina informações de estabelecimentos, empresas e Simples Nacional.
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
-from datetime import datetime
 
 
 class PainelSchema(BaseModel):
@@ -24,9 +23,9 @@ class PainelSchema(BaseModel):
     cnpj_basico: int = Field(..., ge=10000000, le=99999999, description="CNPJ básico (8 dígitos)")
     matriz_filial: Optional[int] = Field(None, ge=1, le=2, description="1=Matriz, 2=Filial")
     codigo_situacao: Optional[int] = Field(None, ge=1, le=8, description="Código da situação cadastral")
-    data_situacao_cadastral: Optional[datetime] = Field(None, description="Data da situação cadastral")
+    data_situacao_cadastral: Optional[str] = Field(None, description="Data da situação cadastral")
     codigo_motivo: Optional[int] = Field(None, description="Código do motivo da situação")
-    data_inicio_atividades: Optional[datetime] = Field(None, description="Data de início das atividades")
+    data_inicio_atividades: Optional[str] = Field(None, description="Data de início das atividades")
     codigo_cnae: Optional[int] = Field(None, description="Código CNAE principal")
     uf: Optional[str] = Field(None, min_length=2, max_length=2, description="Unidade Federativa")
     codigo_municipio: Optional[int] = Field(None, description="Código do município")
@@ -38,11 +37,11 @@ class PainelSchema(BaseModel):
     
     # Dados do Simples Nacional (left join)
     opcao_simples: Optional[str] = Field(None, pattern="^[SN]$", description="Opção pelo Simples Nacional")
-    data_opcao_simples: Optional[datetime] = Field(None, description="Data da opção pelo Simples")
-    data_exclusao_simples: Optional[datetime] = Field(None, description="Data de exclusão do Simples")
+    data_opcao_simples: Optional[str] = Field(None, description="Data da opção pelo Simples")
+    data_exclusao_simples: Optional[str] = Field(None, description="Data de exclusão do Simples")
     opcao_mei: Optional[str] = Field(None, pattern="^[SN]$", description="Opção pelo MEI")
-    data_opcao_mei: Optional[datetime] = Field(None, description="Data da opção pelo MEI")
-    data_exclusao_mei: Optional[datetime] = Field(None, description="Data de exclusão do MEI")
+    data_opcao_mei: Optional[str] = Field(None, description="Data da opção pelo MEI")
+    data_exclusao_mei: Optional[str] = Field(None, description="Data de exclusão do MEI")
     
     @field_validator('uf')
     @classmethod
@@ -62,26 +61,36 @@ class PainelSchema(BaseModel):
         
         return v.upper()
     
-    @field_validator('data_situacao_cadastral', 'data_inicio_atividades', 
-                     'data_opcao_simples', 'data_exclusao_simples',
-                     'data_opcao_mei', 'data_exclusao_mei')
+    @field_validator('opcao_simples', 'opcao_mei')
     @classmethod
-    def validate_dates(cls, v):
-        """Valida datas."""
-        if v is None:
-            return v
-        
-        # Verificar se não é muito antiga (Simples Nacional criado em 2006)
-        if v.year < 1900:
-            raise ValueError('Data muito antiga (anterior a 1900)')
-        
-        # Verificar se não é no futuro
-        if v > datetime.now():
-            raise ValueError('Data não pode ser no futuro')
-        
+    def validate_opcoes(cls, v):
+        """Valida opções S/N."""
+        if v is not None and v not in ['S', 'N']:
+            raise ValueError('Deve ser S ou N')
         return v
     
     class Config:
         """Configuração do schema."""
         from_attributes = True
-        arbitrary_types_allowed = True 
+        arbitrary_types_allowed = True
+        schema_extra = {
+            "example": {
+                "cnpj_basico": 12345678,
+                "matriz_filial": 1,
+                "codigo_situacao": 2,
+                "data_situacao_cadastral": "20200115",
+                "codigo_motivo": 0,
+                "data_inicio_atividades": "20150610",
+                "codigo_cnae": 6201500,
+                "codigo_municipio": 7107,
+                "tipo_situacao_cadastral": 1,
+                "natureza_juridica": 2062,
+                "porte_empresa": 2,
+                "opcao_simples": "S",
+                "data_opcao_simples": "20070101",
+                "data_exclusao_simples": None,
+                "opcao_mei": "N",
+                "data_opcao_mei": None,
+                "data_exclusao_mei": None
+            }
+        } 

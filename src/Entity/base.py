@@ -218,11 +218,6 @@ class BaseEntity(ABC):
         """
         data = self.to_dict(include_metadata=include_metadata)
         
-        # Converter datetime para string
-        for key, value in data.items():
-            if isinstance(value, datetime):
-                data[key] = value.isoformat()
-        
         return json.dumps(data, indent=indent, ensure_ascii=False)
     
     def is_valid(self) -> bool:

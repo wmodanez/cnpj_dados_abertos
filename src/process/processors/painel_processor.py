@@ -19,7 +19,6 @@ import logging
 import os
 import polars as pl
 from typing import List, Type, Optional, Dict, Any, Union
-from datetime import datetime
 from pathlib import Path
 
 from ...Entity.Painel import Painel
@@ -99,7 +98,6 @@ class PainelProcessor(BaseProcessor):
             'simples_path', 
             'empresa_path',
             'situacao_filter',
-            'include_inactive',
             'force_reprocess',
             'skip_download',
             'skip_unzip',
@@ -125,15 +123,10 @@ class PainelProcessor(BaseProcessor):
                     .alias('cnpj_basico')
                 ])
             
-            # 2. Aplicar filtros se especificados
+            # 2. Aplicar filtros se especificados explicitamente
             if self.situacao_filter:
                 df = df.filter(pl.col('codigo_situacao') == self.situacao_filter)
                 self.logger.info(f"Filtro situação aplicado: {self.situacao_filter}")
-            
-            # 3. Remover estabelecimentos inativos se solicitado
-            if not self.options.get('include_inactive', True):
-                df = df.filter(pl.col('codigo_situacao') == 2)  # Apenas ativos
-                self.logger.info("Estabelecimentos inativos removidos")
             
             self.logger.info(f"Transformações específicas aplicadas. Registros finais: {df.height}")
             return df
@@ -166,10 +159,8 @@ class PainelProcessor(BaseProcessor):
                 raise ValueError("Caminho de estabelecimentos não configurado")
             
             if os.path.isdir(self.estabelecimento_path):
-                # Carregar múltiplos arquivos parquet
                 estabelecimentos_df = pl.scan_parquet(f"{self.estabelecimento_path}/*.parquet").collect()
             else:
-                # Carregar arquivo único
                 estabelecimentos_df = pl.read_parquet(self.estabelecimento_path)
             
             self.logger.info(f"Estabelecimentos carregados: {estabelecimentos_df.height} registros")
@@ -181,10 +172,8 @@ class PainelProcessor(BaseProcessor):
                 raise ValueError("Caminho de dados do Simples não configurado")
             
             if os.path.isdir(self.simples_path):
-                # Carregar múltiplos arquivos parquet
                 simples_df = pl.scan_parquet(f"{self.simples_path}/*.parquet").collect()
             else:
-                # Carregar arquivo único
                 simples_df = pl.read_parquet(self.simples_path)
             
             self.logger.info(f"Dados do Simples carregados: {simples_df.height} registros")
@@ -196,15 +185,67 @@ class PainelProcessor(BaseProcessor):
                 raise ValueError("Caminho de dados de empresas não configurado")
             
             if os.path.isdir(self.empresa_path):
-                # Carregar múltiplos arquivos parquet
                 empresas_df = pl.scan_parquet(f"{self.empresa_path}/*.parquet").collect()
             else:
-                # Carregar arquivo único
                 empresas_df = pl.read_parquet(self.empresa_path)
             
             self.logger.info(f"Dados de empresas carregados: {empresas_df.height} registros")
             
-            # 4. Garantir que CNPJ básico está padronizado em todos (como bigint)
+            # 4. Obter campos necessários da entidade Painel
+            painel_columns = Painel.get_column_names()
+            self.logger.info(f"Campos esperados no painel: {len(painel_columns)} colunas")
+            
+            # 5. Selecionar apenas campos necessários de cada tabela
+            # Estabelecimentos: campos que existem na entidade Painel (incluindo codigo_municipio para JOIN)
+            estabelecimento_fields = [
+                'cnpj_basico', 'matriz_filial', 'codigo_situacao', 'data_situacao_cadastral',
+                'codigo_motivo', 'data_inicio_atividades', 'codigo_cnae', 'codigo_municipio',
+                'tipo_situacao_cadastral'
+            ]
+            
+            # Filtrar apenas campos que existem no DataFrame
+            estabelecimento_available = [col for col in estabelecimento_fields if col in estabelecimentos_df.columns]
+            # Garantir que cnpj_basico está sempre presente (sem duplicação)
+            if 'cnpj_basico' not in estabelecimento_available and 'cnpj_basico' in estabelecimentos_df.columns:
+                estabelecimento_available.insert(0, 'cnpj_basico')
+            estabelecimentos_df = estabelecimentos_df.select(estabelecimento_available)
+            
+            # Simples Nacional: TODOS os campos exceto cnpj_basico
+            simples_fields = [
+                'opcao_simples', 'data_opcao_simples', 'data_exclusao_simples',
+                'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei'
+            ]
+            
+            # Verificar quais campos existem no DataFrame e adicionar cnpj_basico para JOIN
+            self.logger.info(f"Campos disponíveis no Simples: {simples_df.columns}")
+            simples_available = ['cnpj_basico']  # Sempre incluir para JOIN
+            for col in simples_fields:
+                if col in simples_df.columns:
+                    simples_available.append(col)
+                    self.logger.info(f"Campo do Simples encontrado: {col}")
+                else:
+                    self.logger.warning(f"Campo do Simples NÃO encontrado: {col}")
+            simples_df = simples_df.select(simples_available)
+            
+            # Empresas: cnpj_basico + dois campos (natureza_juridica e porte_empresa)
+            empresa_fields = ['natureza_juridica', 'porte_empresa']
+            
+            # Verificar quais campos existem no DataFrame e adicionar cnpj_basico para JOIN
+            self.logger.info(f"Campos disponíveis nas Empresas: {empresas_df.columns}")
+            empresa_available = ['cnpj_basico']  # Sempre incluir para JOIN
+            for col in empresa_fields:
+                if col in empresas_df.columns:
+                    empresa_available.append(col)
+                    self.logger.info(f"Campo de Empresa encontrado: {col}")
+                else:
+                    self.logger.warning(f"Campo de Empresa NÃO encontrado: {col}")
+            empresas_df = empresas_df.select(empresa_available)
+            
+            self.logger.info(f"Selecionados: {len(estabelecimento_available)} campos de estabelecimentos")
+            self.logger.info(f"Selecionados: {len(simples_available)} campos do Simples")
+            self.logger.info(f"Selecionados: {len(empresa_available)} campos de empresas")
+            
+            # 6. Garantir que CNPJ básico está padronizado em todos (como bigint)
             estabelecimentos_df = estabelecimentos_df.with_columns([
                 pl.col('cnpj_basico').cast(pl.Int64).alias('cnpj_basico')
             ])
@@ -217,7 +258,7 @@ class PainelProcessor(BaseProcessor):
                 pl.col('cnpj_basico').cast(pl.Int64).alias('cnpj_basico')
             ])
             
-            # 5. Executar LEFT JOIN entre estabelecimentos e Simples Nacional
+            # 7. Executar LEFT JOIN entre estabelecimentos e Simples Nacional
             self.logger.info("Executando LEFT JOIN entre estabelecimentos e Simples Nacional")
             
             painel_df = estabelecimentos_df.join(
@@ -228,7 +269,7 @@ class PainelProcessor(BaseProcessor):
             
             self.logger.info(f"LEFT JOIN executado. Registros resultantes: {painel_df.height}")
             
-            # 6. Executar INNER JOIN com dados de empresas
+            # 8. Executar INNER JOIN com dados de empresas
             self.logger.info("Executando INNER JOIN com dados de empresas")
             
             painel_df = painel_df.join(
@@ -239,21 +280,16 @@ class PainelProcessor(BaseProcessor):
             
             self.logger.info(f"INNER JOIN executado. Registros finais: {painel_df.height}")
             
-            # 7. Carregar dados de municípios e executar LEFT JOIN
+            # 9. Carregar dados de municípios e executar LEFT JOIN
             self.logger.info("Carregando dados de municípios para JOIN")
             
             try:
-                # Carregar dados de municípios da pasta base
                 municipios_path = os.path.join(self.path_parquet, '..', 'base', 'municipio.parquet')
-                municipios_path = os.path.normpath(municipios_path)  # Normalizar o caminho
+                municipios_path = os.path.normpath(municipios_path)
                 
                 if os.path.exists(municipios_path):
                     municipios_df = pl.read_parquet(municipios_path)
                     self.logger.info(f"Municípios carregados: {municipios_df.height} registros")
-                    
-                    # Executar LEFT JOIN entre painel e municípios
-                    # Junta codigo_municipio (do estabelecimento) com cod_mn_dados_abertos (dos municípios)
-                    self.logger.info("Executando LEFT JOIN com dados de municípios")
                     
                     painel_df = painel_df.join(
                         municipios_df.select([
@@ -267,7 +303,6 @@ class PainelProcessor(BaseProcessor):
                     
                     self.logger.info(f"LEFT JOIN com municípios executado. Registros: {painel_df.height}")
                     
-                    # Verificar quantos estabelecimentos tiveram código IBGE encontrado
                     com_ibge = painel_df.filter(pl.col('codigo_ibge_municipio').is_not_null()).height
                     sem_ibge = painel_df.height - com_ibge
                     
@@ -282,26 +317,28 @@ class PainelProcessor(BaseProcessor):
                 self.logger.error(f"Erro ao processar dados de municípios: {str(e)}")
                 self.logger.warning("Continuando sem dados de código IBGE dos municípios")
             
-            # 8. Aplicar transformações específicas
+            # 10. Aplicar transformações específicas
             painel_df = self.apply_specific_transformations(painel_df)
             
-            # 9. Salvar resultado
+            # 11. Remover coluna codigo_municipio do resultado final (manter apenas codigo_ibge_municipio)
+            if 'codigo_municipio' in painel_df.columns:
+                painel_df = painel_df.drop('codigo_municipio')
+                self.logger.info("Coluna 'codigo_municipio' removida do resultado final")
+            
+            # 12. Salvar resultado
             if not output_filename:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_filename = f"painel_dados_{timestamp}.parquet"
+                output_filename = "painel_dados.parquet"
             
             output_path = os.path.join(self.path_parquet, output_filename)
             
-            # Criar diretório se não existir
             os.makedirs(self.path_parquet, exist_ok=True)
             
-            # Salvar
             painel_df.write_parquet(output_path, compression='snappy')
             
             self.logger.info(f"✓ Dados do Painel salvos: {output_path}")
             self.logger.info(f"✓ Total de registros: {painel_df.height}")
             
-            # 10. Relatório de estatísticas
+            # 13. Relatório de estatísticas
             self._generate_statistics_report(painel_df)
             
             return True
@@ -507,9 +544,9 @@ class PainelProcessor(BaseProcessor):
         try:
             # Verificar se há parquets já processados
             parquets_paths = {
-                'estabelecimentos': self.estabelecimento_path or os.path.join(self.path_parquet, 'estabelecimentos'),
+                'estabelecimento': self.estabelecimento_path or os.path.join(self.path_parquet, 'estabelecimento'),
                 'simples': self.simples_path or os.path.join(self.path_parquet, 'simples'),
-                'empresas': self.empresa_path or os.path.join(self.path_parquet, 'empresas')
+                'empresa': self.empresa_path or os.path.join(self.path_parquet, 'empresa')
             }
             
             parquets_existem = all(
@@ -679,9 +716,9 @@ class PainelProcessor(BaseProcessor):
             from .empresa_processor import EmpresaProcessor
             
             processadores = [
-                ('estabelecimentos', EstabelecimentoProcessor),
+                ('estabelecimento', EstabelecimentoProcessor),
                 ('simples', SimplesProcessor),
-                ('empresas', EmpresaProcessor)
+                ('empresa', EmpresaProcessor)
             ]
             
             for nome, ProcessorClass in processadores:
@@ -728,9 +765,9 @@ class PainelProcessor(BaseProcessor):
     def _get_zip_pattern(self, entidade: str) -> str:
         """Retorna o padrão de arquivo ZIP para uma entidade."""
         patterns = {
-            'estabelecimentos': '*Estabele*.zip',
+            'estabelecimento': '*Estabele*.zip',
             'simples': '*Simples*.zip',
-            'empresas': '*Empresas*.zip'
+            'empresa': '*Empresas*.zip'
         }
         return patterns.get(entidade, '*.zip')
     
@@ -744,17 +781,17 @@ class PainelProcessor(BaseProcessor):
         try:
             # Se caminhos já foram especificados, usar eles
             if not self.estabelecimento_path:
-                self.estabelecimento_path = os.path.join(self.path_parquet, 'estabelecimentos')
+                self.estabelecimento_path = os.path.join(self.path_parquet, 'estabelecimento')
             
             if not self.simples_path:
                 self.simples_path = os.path.join(self.path_parquet, 'simples')
             
             if not self.empresa_path:
-                self.empresa_path = os.path.join(self.path_parquet, 'empresas')
+                self.empresa_path = os.path.join(self.path_parquet, 'empresa')
             
             # Verificar se todos os caminhos existem
             caminhos = [self.estabelecimento_path, self.simples_path, self.empresa_path]
-            nomes = ['estabelecimentos', 'simples', 'empresas']
+            nomes = ['estabelecimento', 'simples', 'empresa']
             
             for caminho, nome in zip(caminhos, nomes):
                 if not self._tem_arquivos_parquet(caminho):
@@ -828,10 +865,7 @@ def exemplo_uso_parquets_existentes():
         # Pular etapas desnecessárias
         'skip_download': True,
         'skip_unzip': True,
-        'skip_individual_processing': True,
-        
-        # Filtros
-        'include_inactive': False  # Excluir inativos
+        'skip_individual_processing': True
     }
     
     processor = PainelProcessor(**config)
@@ -865,8 +899,7 @@ def exemplo_uso_flexivel():
         'force_reprocess': False,
         
         # Filtros aplicados apenas no painel final
-        'situacao_filter': None,  # Todas as situações
-        'include_inactive': True  # Incluir inativos
+        'situacao_filter': None  # Todas as situações
     }
     
     processor = PainelProcessor(**config)

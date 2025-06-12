@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Type
 import polars as pl
 import re
-from datetime import datetime
 import logging
 from .base import BaseEntity
 
@@ -46,10 +45,10 @@ class Estabelecimento(BaseEntity):
     matriz_filial: Optional[int] = None
     nome_fantasia: Optional[str] = None
     codigo_situacao: Optional[int] = None
-    data_situacao_cadastral: Optional[datetime] = None
+    data_situacao_cadastral: Optional[str] = None  # ALTERADO: De datetime para string
     codigo_motivo: Optional[int] = None
     nome_cidade_exterior: Optional[str] = None
-    data_inicio_atividades: Optional[datetime] = None
+    data_inicio_atividades: Optional[str] = None   # ALTERADO: De datetime para string
     codigo_cnae: Optional[int] = None
     cnae_secundaria: Optional[str] = None
     uf: Optional[str] = None
@@ -84,10 +83,10 @@ class Estabelecimento(BaseEntity):
             'matriz_filial': pl.Int32,
             'nome_fantasia': pl.Utf8,
             'codigo_situacao': pl.Int32,
-            'data_situacao_cadastral': pl.Datetime,
+            'data_situacao_cadastral': pl.Utf8,  # ALTERADO: Manter como string
             'codigo_motivo': pl.Int32,
             'nome_cidade_exterior': pl.Utf8,
-            'data_inicio_atividades': pl.Datetime,
+            'data_inicio_atividades': pl.Utf8,   # ALTERADO: Manter como string
             'codigo_cnae': pl.Int32,
             'cnae_secundaria': pl.Utf8,
             'uf': pl.Utf8,
@@ -100,12 +99,9 @@ class Estabelecimento(BaseEntity):
     def get_transformations(cls) -> List[str]:
         """Retorna lista de transformações aplicáveis."""
         return [
-            'create_cnpj_completo', 
-            'clean_cep', 
-            'convert_dates',
             'normalize_strings',
             'validate_cnpj_parts',
-            'clean_nome_fantasia'
+            'create_cnpj_completo'
         ]
     
     def validate(self) -> bool:
@@ -136,10 +132,6 @@ class Estabelecimento(BaseEntity):
         # Validar matriz/filial
         if self.matriz_filial is not None and not (1 <= self.matriz_filial <= 2):
             self._validation_errors.append("Matriz/filial deve ser 1 (Matriz) ou 2 (Filial)")
-            return False
-        
-        # Validar datas
-        if not self._validate_dates():
             return False
         
         return True
@@ -232,28 +224,7 @@ class Estabelecimento(BaseEntity):
     
     def _validate_dates(self) -> bool:
         """Valida datas."""
-        current_date = datetime.now()
-        
-        # Validar data de situação cadastral
-        if self.data_situacao_cadastral:
-            if self.data_situacao_cadastral.year < 1900:
-                self._validation_errors.append("Data de situação cadastral muito antiga")
-                return False
-            
-            if self.data_situacao_cadastral > current_date:
-                self._validation_errors.append("Data de situação cadastral no futuro")
-                return False
-        
-        # Validar data de início das atividades
-        if self.data_inicio_atividades:
-            if self.data_inicio_atividades.year < 1900:
-                self._validation_errors.append("Data de início das atividades muito antiga")
-                return False
-            
-            if self.data_inicio_atividades > current_date:
-                self._validation_errors.append("Data de início das atividades no futuro")
-                return False
-        
+        # REMOVIDO: Todas as validações de data foram removidas
         return True
     
     def _calculate_cnpj_completo(self) -> Optional[str]:
@@ -302,21 +273,6 @@ class Estabelecimento(BaseEntity):
         if 'cep' in data and data['cep']:
             cep = re.sub(r'[^\d]', '', str(data['cep']))
             data['cep'] = cep.zfill(8)[:8]
-        
-        return data
-    
-    def _transform_convert_dates(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transformação: converter datas."""
-        date_fields = ['data_situacao_cadastral', 'data_inicio_atividades']
-        
-        for field in date_fields:
-            if field in data and data[field]:
-                if isinstance(data[field], str):
-                    try:
-                        # Tentar converter string para datetime
-                        data[field] = datetime.fromisoformat(data[field].replace('Z', '+00:00'))
-                    except ValueError:
-                        data[field] = None
         
         return data
     

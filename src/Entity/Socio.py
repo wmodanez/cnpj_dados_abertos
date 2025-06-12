@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Type
 import polars as pl
 import re
-from datetime import datetime
 import logging
 from .base import BaseEntity
 
@@ -40,7 +39,7 @@ class Socio(BaseEntity):
     nome_socio: Optional[str] = None
     cnpj_cpf_socio: Optional[str] = None
     qualificacao_socio: Optional[int] = None
-    data_entrada_sociedade: Optional[datetime] = None
+    data_entrada_sociedade: Optional[str] = None
     pais: Optional[str] = None
     representante_legal: Optional[str] = None
     nome_representante: Optional[str] = None
@@ -61,15 +60,15 @@ class Socio(BaseEntity):
         """Retorna tipos das colunas da entidade."""
         return {
             'cnpj_basico': pl.Int64,
-            'identificador_socio': pl.Int32,
+            'identificador_socio': pl.Int64,
             'nome_socio': pl.Utf8,
             'cnpj_cpf_socio': pl.Utf8,
-            'qualificacao_socio': pl.Int32,
-            'data_entrada_sociedade': pl.Datetime,
+            'qualificacao_socio': pl.Int64,
+            'data_entrada_sociedade': pl.Utf8,
             'pais': pl.Utf8,
             'representante_legal': pl.Utf8,
             'nome_representante': pl.Utf8,
-            'qualificacao_representante_legal': pl.Int32,
+            'qualificacao_representante_legal': pl.Int64,
             'faixa_etaria': pl.Utf8
         }
     
@@ -77,7 +76,6 @@ class Socio(BaseEntity):
     def get_transformations(cls) -> List[str]:
         """Retorna lista de transformações aplicáveis."""
         return [
-            'convert_dates',
             'validate_cpf_cnpj',
             'normalize_names',
             'clean_representante_legal'
@@ -108,10 +106,6 @@ class Socio(BaseEntity):
         # Validar identificador do sócio
         if self.identificador_socio is not None and not (1 <= self.identificador_socio <= 9):
             self._validation_errors.append("Identificador do sócio deve estar entre 1 e 9")
-            return False
-        
-        # Validar data de entrada
-        if self.data_entrada_sociedade and not self._validate_data_entrada():
             return False
         
         # Validar nomes
@@ -198,21 +192,6 @@ class Socio(BaseEntity):
         
         return int(cnpj[13]) == second_digit
     
-    def _validate_data_entrada(self) -> bool:
-        """Valida data de entrada na sociedade."""
-        if not self.data_entrada_sociedade:
-            return True  # Data é opcional
-        
-        if self.data_entrada_sociedade.year < 1900:
-            self._validation_errors.append("Data de entrada muito antiga")
-            return False
-        
-        if self.data_entrada_sociedade > datetime.now():
-            self._validation_errors.append("Data de entrada no futuro")
-            return False
-        
-        return True
-    
     def _validate_names(self) -> bool:
         """Valida nomes."""
         # Nome do sócio não pode ser apenas números
@@ -263,19 +242,6 @@ class Socio(BaseEntity):
     
     # Métodos de transformação
     
-    def _transform_convert_dates(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Transformação: converter datas."""
-        if 'data_entrada_sociedade' in data and data['data_entrada_sociedade']:
-            if isinstance(data['data_entrada_sociedade'], str):
-                try:
-                    data['data_entrada_sociedade'] = datetime.fromisoformat(
-                        data['data_entrada_sociedade'].replace('Z', '+00:00')
-                    )
-                except ValueError:
-                    data['data_entrada_sociedade'] = None
-        
-        return data
-    
     def _transform_validate_cpf_cnpj(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Transformação: validar e corrigir CPF/CNPJ."""
         if 'cnpj_cpf_socio' in data and data['cnpj_cpf_socio']:
@@ -312,3 +278,8 @@ class Socio(BaseEntity):
             data['representante_legal'] = cpf.zfill(11)[:11]
         
         return data
+
+    def _validate_dates(self) -> bool:
+        """Valida datas."""
+        # REMOVIDO: Todas as validações de data foram removidas
+        return True

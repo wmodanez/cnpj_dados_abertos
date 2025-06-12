@@ -60,18 +60,7 @@ class EmpresaProcessor(BaseProcessor):
             DataFrame transformado
         """
         try:
-            # 1. Limpar e padronizar CNPJ básico (se ainda não foi processado)
-            if 'cnpj_basico' in df.columns:
-                df = df.with_columns([
-                    pl.col('cnpj_basico')
-                    .cast(pl.Utf8, strict=False)        # Converter para string primeiro
-                    .str.replace_all(r'[^\d]', '')      # Remove não-dígitos
-                    .str.pad_start(8, '0')              # Garante 8 dígitos, preenchendo com zeros
-                    .cast(pl.Int64, strict=False)       # Converte para bigint (Int64)
-                    .alias('cnpj_basico')
-                ])
-            
-            # 2. Extrair CPF da razão social (se ainda não foi processado)
+            # 1. Extrair CPF da razão social (se ainda não foi processado)
             if 'razao_social' in df.columns and 'cpf_extraido' not in df.columns:
                 df = df.with_columns([
                     pl.col('razao_social')
@@ -88,7 +77,7 @@ class EmpresaProcessor(BaseProcessor):
                     .alias('razao_social')
                 ])
             
-            # 3. Normalizar strings (apenas se ainda são strings)
+            # 2. Normalizar strings (apenas se ainda são strings)
             string_columns = ['razao_social', 'ente_federativo_responsavel']
             for col in string_columns:
                 if col in df.columns:
@@ -101,10 +90,7 @@ class EmpresaProcessor(BaseProcessor):
                             .alias(col)
                         ])
             
-            # 4. Capital social já foi processado pela entidade base, não reprocessar
-            # A transformação 'convert_capital_social' já converteu para Float64
-            
-            # 5. Validar CPF extraído
+            # 3. Validar CPF extraído
             if 'cpf_extraido' in df.columns:
                 invalid_cpfs = [
                     "00000000000", "11111111111", "22222222222", "33333333333",
@@ -123,7 +109,7 @@ class EmpresaProcessor(BaseProcessor):
                     .alias('cpf_extraido')
                 ])
             
-            # 6. Validar porte da empresa
+            # 4. Validar porte da empresa (apenas validação, sem conversão para texto)
             if 'porte_empresa' in df.columns:
                 df = df.with_columns([
                     pl.when(
@@ -134,64 +120,12 @@ class EmpresaProcessor(BaseProcessor):
                     .otherwise(pl.col('porte_empresa'))
                     .alias('porte_empresa')
                 ])
-            
-            # 7. Adicionar colunas calculadas
-            df = self._add_calculated_columns(df)
-            
+                        
             self.logger.debug(f"Transformações específicas de empresas aplicadas. Linhas: {df.height}")
             return df
             
         except Exception as e:
             self.logger.error(f"Erro ao aplicar transformações específicas: {str(e)}")
-            return df
-    
-    def _add_calculated_columns(self, df: pl.DataFrame) -> pl.DataFrame:
-        """
-        Adiciona colunas calculadas úteis.
-        
-        Args:
-            df: DataFrame original
-            
-        Returns:
-            DataFrame com colunas adicionais
-        """
-        try:
-            # Classificação por porte
-            if 'porte_empresa' in df.columns:
-                try:
-                    df = df.with_columns([
-                        pl.when(pl.col('porte_empresa') == 1)
-                        .then(pl.lit('Microempresa'))
-                        .when(pl.col('porte_empresa') == 2)
-                        .then(pl.lit('Pequena Empresa'))
-                        .when(pl.col('porte_empresa') == 3)
-                        .then(pl.lit('Empresa de Médio Porte'))
-                        .when(pl.col('porte_empresa') == 4)
-                        .then(pl.lit('Grande Empresa'))
-                        .when(pl.col('porte_empresa') == 5)
-                        .then(pl.lit('Empresa de Grande Porte'))
-                        .otherwise(pl.lit('Não Informado'))
-                        .alias('porte_descricao')
-                    ])
-                except Exception as e:
-                    self.logger.error(f"Erro ao criar porte_descricao: {e}")
-            
-            # Indicador de empresa privada (tem CPF extraído)
-            if 'cpf_extraido' in df.columns:
-                try:
-                    df = df.with_columns([
-                        pl.when(pl.col('cpf_extraido').is_not_null())
-                        .then(pl.lit(True))
-                        .otherwise(pl.lit(False))
-                        .alias('is_empresa_privada')
-                    ])
-                except Exception as e:
-                    self.logger.error(f"Erro ao criar is_empresa_privada: {e}")
-            
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"Erro geral em _add_calculated_columns: {e}")
             return df
     
     def create_private_subset(self, df: pl.DataFrame, output_path: str, zip_prefix: str) -> bool:
@@ -478,15 +412,13 @@ class EmpresaProcessor(BaseProcessor):
             'specific_transformations': [
                 'Extração de CPF da razão social',
                 'Limpeza da razão social',
-                'Conversão de capital social',
                 'Normalização de strings',
-                'Validação de CNPJ básico',
+                'Validação de porte da empresa',
                 'Validação de CPF extraído'
             ],
             'output_format': 'Parquet particionado',
             'calculated_columns': [
                 'cpf_extraido',
-                'porte_descricao',
                 'is_empresa_privada'
             ],
             'special_features': [
