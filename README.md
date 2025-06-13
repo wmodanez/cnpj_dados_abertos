@@ -1,8 +1,8 @@
 # Processador de Dados CNPJ 🏢
 
-> **🆕 Versão 3.2.0** - Sistema Completamente Otimizado com Atalhos e Versionamento Automático
+> **🆕 Versão 3.5.0** - Sistema Completamente Otimizado com Exportação para Parquet, Atalhos e Versionamento Automático
 > 
-> Esta é a versão 3.2.0 do sistema, que representa uma **evolução significativa** com **sistema completo de atalhos**, **versionamento automático baseado em git tags**, arquitetura moderna, **pipeline otimizado de processamento imediato**, eliminação total de duplicação de código e performance superior. O sistema anterior (v2.x) foi completamente reestruturado utilizando padrões de design modernos e infraestrutura unificada.
+> Esta é a versão 3.5.0 do sistema, que representa uma **evolução significativa** com **exportação de dados para parquet**, **sistema completo de atalhos**, **versionamento automático baseado em git tags**, arquitetura moderna, **pipeline otimizado de processamento imediato**, eliminação total de duplicação de código e performance superior. O sistema anterior (v2.x) foi completamente reestruturado utilizando padrões de design modernos e infraestrutura unificada.
 
 Este projeto automatiza o download, processamento e armazenamento dos dados públicos de CNPJ disponibilizados pela Receita Federal. Ele foi desenvolvido para ser eficiente, resiliente, modular e fácil de usar.
 
@@ -25,7 +25,16 @@ O sistema detecta automaticamente o sistema operacional e usa as APIs nativas ma
 
 Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, garantindo experiência consistente independente do sistema operacional.
 
-## 🚀 O que há de Novo na Versão 3.2.0
+## 🚀 O que há de Novo na Versão 3.5.0
+
+**📊 EXPORTAÇÃO PARA PARQUET (julho 2025):**
+- ✅ **Exportação otimizada para parquet**: Dados consolidados para painéis analíticos
+- ✅ **Processador de Painel**: Combinação inteligente de dados de Estabelecimento, Empresa e Simples Nacional
+- ✅ **Filtros avançados**: Filtragem por UF, situação cadastral e status do Simples Nacional
+- ✅ **Compressão eficiente**: Arquivos otimizados com compressão zstd para economia de espaço
+- ✅ **Exportação para CSV**: Conversão automática de parquet para CSV para compatibilidade
+- ✅ **Documentação completa**: Exemplos práticos em `exemplo_uso_painel.py`
+- ✅ **Performance excepcional**: Processamento otimizado com Polars para grandes volumes de dados
 
 **🎯 SISTEMA COMPLETO DE ATALHOS (junho 2025):**
 - ✅ **22 atalhos implementados** para todos os argumentos do sistema
@@ -93,6 +102,16 @@ Todas as funcionalidades foram testadas e validadas em múltiplas plataformas, g
   - [⚙️ Sistema de Versionamento](#️-sistema-de-versionamento)
   - [Gerenciamento de Cache](#gerenciamento-de-cache)
   - [O que o Script Faz](#-o-que-o-script-faz)
+</details>
+
+<details>
+  <summary>📊 Exportação para Painel</summary>
+  
+  - [Exportação para Parquet](#-exportação-para-parquet)
+  - [Processador de Painel](#processador-de-painel)
+  - [Filtros Avançados](#filtros-avançados)
+  - [Conversão para CSV](#conversão-para-csv)
+  - [Exemplo de Uso](exemplo_uso_painel.py)
 </details>
 
 <details>
@@ -575,6 +594,64 @@ python -m src.cache_manager cache-info
 python -m src.cache_manager clear-cache
 ```
 
+## 📊 Exportação para Parquet
+
+A versão 3.5.0 introduz um sistema completo de exportação para arquivos parquet, otimizados para análise de dados e uso em painéis analíticos. Esta funcionalidade permite consolidar dados de diferentes entidades (Estabelecimentos, Empresas e Simples Nacional) em uma única visão unificada.
+
+### Processador de Painel
+
+O sistema inclui um processador especializado (`PainelProcessor`) que combina dados de múltiplas fontes:
+
+- **Dados de Estabelecimento**: Informações cadastrais, situação, localização
+- **Dados de Empresa**: Porte, natureza jurídica, razão social
+- **Dados do Simples Nacional**: Status de optante, datas de opção/exclusão, MEI
+
+O processador realiza operações de JOIN otimizadas usando o framework Polars, garantindo performance mesmo com grandes volumes de dados.
+
+### Filtros Avançados
+
+O processador de painel suporta diversos filtros para personalizar os dados exportados:
+
+- **Filtro por UF**: Limitar dados a estados específicos
+- **Filtro de Situação Cadastral**: Filtrar por estabelecimentos ativos, inativos, etc.
+- **Filtro de Simples Nacional**: Filtrar por optantes ou não optantes
+- **Inclusão de Inativos**: Opção para incluir ou excluir estabelecimentos inativos
+
+### Conversão para CSV
+
+Os dados podem ser facilmente convertidos para CSV para compatibilidade com outras ferramentas:
+
+```python
+# Exportar para CSV
+processor.export_to_csv(
+    "data/exports/painel/painel_sp_ativos.parquet",
+    "data/exports/painel/painel_sp_ativos.csv",
+    delimiter=";"
+)
+```
+
+Para exemplos mais detalhados, consulte o arquivo [exemplo_uso_painel.py](exemplo_uso_painel.py).
+
+### Comandos via Interface Principal
+
+```bash
+# Processamento completo com painel consolidado
+python main.py --processar-painel
+
+# Painel para uma UF específica
+python main.py --processar-painel --painel-uf SP
+
+# Painel incluindo estabelecimentos inativos
+python main.py --processar-painel --painel-incluir-inativos
+
+# Painel com filtro de situação cadastral (2 = Ativo)
+python main.py --processar-painel --painel-situacao 2
+```
+
+## 📋 Fluxo do Processo
+
+O processador de dados CNPJ funciona através de um **sistema modular** controlado pelo argumento `--step`, permitindo executar etapas específicas ou o fluxo completo. Cada etapa é independente e pode ser executada separadamente, oferecendo flexibilidade total no processamento dos dados da Receita Federal.
+
 ## 📊 O que o Script Faz
 
 O script `main.py` orquestra um fluxo modular com **pipeline otimizado de processamento imediato** que pode ser executado em etapas:
@@ -623,157 +700,6 @@ O sistema agora utiliza um **pipeline revolucionário** que elimina a latência 
 |-------|-------------|-----------|
 | **Anterior** | ~12min 26s | Download ALL (6s) → Process ALL (9min 32s) = **12min 26s**
 | **Otimizado v3.1.4** | ~3min 43s | Download + Process IMMEDIATE → Database ⚡ **70% mais rápido** |
-
-## 📋 Fluxo do Processo
-
-O processador de dados CNPJ funciona através de um **sistema modular** controlado pelo argumento `--step`, permitindo executar etapas específicas ou o fluxo completo. Cada etapa é independente e pode ser executada separadamente, oferecendo flexibilidade total no processamento dos dados da Receita Federal.
-
-### Arquitetura do Fluxo
-
-<div align="center">
-
-```mermaid
-%%{init: {
-  "theme": "base",
-  "themeVariables": {
-    "fontFamily": "arial",
-    "fontSize": "10px"
-  },
-  "flowchart": {
-    "htmlLabels": true,
-    "curve": "basis"
-  }
-}}%%
-graph TD
-    A[Início: main.py] --> Args{Análise dos Argumentos}
-    Args --> Step{Qual --step?}
-    
-    %% DISTRIBUIÇÃO EM LOSANGO
-    Step -->|download| D_START[DOWNLOAD]
-    Step -->|process| P_START[PROCESS] 
-    Step -->|database| DB_START[DATABASE]
-    Step -->|all| D_START
-    
-    %% RAMO DOWNLOAD (ESQUERDO)
-    D_START --> D_Folder{--remote-folder?}
-    D_Folder -->|Especificada| D_Specific[Pasta Específica]
-    D_Folder -->|Auto| D_Latest[Pasta Mais Recente]
-    D_Specific --> D_Types{--tipos?}
-    D_Latest --> D_Types
-    D_Types -->|Filtrados| D_Filter[Tipos Selecionados]
-    D_Types -->|Todos| D_All[Todos os Tipos]
-    D_Filter --> D_Exec[Execução Download]
-    D_All --> D_Exec
-    D_Exec --> D_End{Só Download?}
-    D_End -->|Sim| Z[FIM]
-    D_End -->|Não| P_START
-    
-    %% RAMO PROCESS (CENTRO)
-    P_START --> P_Source{--source-zip-folder?}
-    P_Source -->|Custom| P_Custom[Pasta Custom]
-    P_Source -->|Auto| P_Default[Pasta Padrão]
-    P_Custom --> P_Output{--output-subfolder?}
-    P_Default --> P_Output
-    P_Output -->|Custom| P_SubFolder[Subfolder Custom]
-    P_Output -->|Auto| P_AutoFolder[Subfolder Auto]
-    P_SubFolder --> P_TypeFilter{--tipos?}
-    P_AutoFolder --> P_TypeFilter
-    P_TypeFilter -->|Filtrados| P_Selected[Tipos Selecionados]
-    P_TypeFilter -->|Todos| P_AllTypes[Todos os Tipos]
-    P_Selected --> P_Extract[Extração]
-    P_AllTypes --> P_Extract
-    P_Extract --> P_Transform[Transformações]
-    P_Transform --> P_Subsets{Subsets?}
-    P_Subsets -->|Empresa Privada| P_EmpPriv[Subset Empresas]
-    P_Subsets -->|UF| P_UF[Subset UF]
-    P_Subsets -->|Não| P_Parquet[Parquet Final]
-    P_EmpPriv --> P_Parquet
-    P_UF --> P_Parquet
-    P_Parquet --> P_End{Só Process?}
-    P_End -->|Sim| Z
-    P_End -->|Não| DB_START
-    
-    %% RAMO DATABASE (DIREITO)
-    DB_START --> DB_SubFolder{--output-subfolder?}
-    DB_SubFolder -->|Custom| DB_Custom[Subfolder Custom]
-    DB_SubFolder -->|Auto| DB_Latest[Subfolder Latest]
-    DB_Custom --> DB_Read[Leitura Parquets]
-    DB_Latest --> DB_Read
-    DB_Read --> DB_Create[Criação DuckDB]
-    DB_Create --> DB_Tables[Tabelas]
-    DB_Tables --> DB_Index[Índices]
-    DB_Index --> DB_Backup[Backup]
-    DB_Backup --> Z
-    
-    %% ESTILOS
-    classDef inicio fill:#e1f5fe,stroke:#0277bd,stroke-width:3px;
-    classDef etapa fill:#e3f2fd,stroke:#1976d2,stroke-width:2px;
-    classDef decisao fill:#fff3e0,stroke:#f57c00,stroke-width:2px;
-    classDef processo fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1px;
-    classDef subset fill:#e8f5e8,stroke:#388e3c,stroke-width:2px;
-    classDef fim fill:#ffebee,stroke:#d32f2f,stroke-width:4px;
-    
-    class A,Args inicio;
-    class Step etapa;
-    class D_START,P_START,DB_START etapa;
-    class D_Folder,D_Types,D_End,P_Source,P_Output,P_TypeFilter,P_Subsets,P_End,DB_SubFolder decisao;
-    class D_Specific,D_Latest,D_Filter,D_All,D_Exec,P_Custom,P_Default,P_SubFolder,P_AutoFolder,P_Selected,P_AllTypes,P_Extract,P_Transform,P_Parquet,DB_Custom,DB_Latest,DB_Read,DB_Create,DB_Tables,DB_Index,DB_Backup processo;
-    class P_EmpPriv,P_UF subset;
-    class Z fim;
-```
-
-</div>
-
-### Legenda do Fluxo
-
-| Elemento | Descrição | Detalhes |
-|----------|-----------|----------|
-| **🟦 Etapas Principais** | Pontos de entrada do sistema | `download`, `process`, `database`, `all` |
-| **🟨 Decisões** | Pontos de controle e parâmetros | `--remote-folder`, `--tipos`, `--source-zip-folder`, `--output-subfolder` |
-| **🟪 Processos** | Operações específicas executadas | Downloads, extrações, transformações, criação de tabelas |
-| **🟩 Subsets Opcionais** | Criação de dados especializados | `--criar-empresa-privada`, `--criar-subset-uf` |
-| **🔴 Fim** | Término da execução | Ponto final de todos os caminhos do fluxo |
-
-### Parâmetros Contemplados no Fluxo
-
-#### **Download (`--step download`)**
-- **`--remote-folder`**: Escolhe entre pasta específica ou mais recente
-- **`--tipos`**: Filtra tipos de dados a baixar (empresas, estabelecimentos, simples, sócios)
-
-#### **Process (`--step process`)**
-- **`--source-zip-folder`**: Define pasta de origem dos ZIPs
-- **`--output-subfolder`**: Especifica subpasta de destino dos Parquets
-- **`--tipos`**: Processa apenas tipos selecionados
-- **`--criar-empresa-privada`**: Cria subset de empresas privadas
-- **`--criar-subset-uf`**: Cria subset por UF especificada
-
-#### **Database (`--step database`)**
-- **`--output-subfolder`**: Define qual subpasta de Parquets usar para criar o DuckDB
-
-### Características do Fluxo
-
-- **🔄 Modularidade**: Cada etapa pode ser executada independentemente
-- **⚡ Paralelização**: Downloads assíncronos e processamento em múltiplas threads
-- **💾 Otimização de Memória**: Processamento sequencial de ZIPs para evitar sobrecarga
-- **🛡️ Resiliência**: Sistema de cache, retry automático e limpeza de recursos
-- **📊 Monitoramento**: Estatísticas em tempo real, métricas de performance e relatórios automáticos
-- **🏗️ Validação**: Sistema de entidades com validação automática de dados
-
-### Fluxo Modular Atual (`--step`)
-
-O fluxo de execução é controlado pelo argumento `--step`, permitindo executar partes específicas do processo:
-
-### Ferramentas Utilizadas
-
-*   **Processamento:** Sistema otimizado de DataFrames
-*   **Validação e Entidades:** 🆕 Pydantic 2.x, dataclasses, schemas declarativos
-*   **Download Assíncrono:** asyncio, aiohttp
-*   **Banco de Dados:** DuckDB
-*   **Manipulação de Arquivos:** zipfile, os, shutil
-*   **Linha de Comando:** argparse
-*   **Logging:** logging, RichHandler
-*   **Configuração:** python-dotenv
-*   **Utilitários:** NumPy, Rich (para progresso)
 
 ## ✨ Características
 
