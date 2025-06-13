@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 class EmpresaSchema(BaseModel):
     """Schema de validação para Empresa usando Pydantic"""
     
-    cnpj_basico: str = Field(..., min_length=8, max_length=8, pattern=r'^\d{8}$', 
-                             description="CNPJ básico com 8 dígitos")
+    cnpj_basico: int = Field(..., ge=10000000, le=99999999, 
+                             description="CNPJ básico (8 dígitos)")
     razao_social: str = Field(..., min_length=1, max_length=500, 
                              description="Razão social da empresa")
     natureza_juridica: Optional[int] = Field(None, ge=1, le=9999, 
@@ -28,26 +28,20 @@ class EmpresaSchema(BaseModel):
                                                       description="Ente federativo responsável")
     # cpf_extraido será adicionado durante o processamento como campo calculado
     
-    class Config:
-        # Permitir campos extras durante parsing
-        extra = "ignore"
-        # Validar na atribuição
-        validate_assignment = True
-        # Usar enum por valor
-        use_enum_values = True
-        # Schema para documentação
-        json_schema_extra = {
-            "example": {
-                "cnpj_basico": "12345678",
-                "razao_social": "EMPRESA EXEMPLO LTDA",
-                "natureza_juridica": 206,
-                "qualificacao_responsavel": 10,
-                "capital_social": 100000.00,
-                "porte_empresa": 2,
-                "ente_federativo_responsavel": "",
-                "cpf_extraido": None
-            }
-        }
+    @field_validator('cnpj_basico')
+    @classmethod
+    def validate_cnpj_basico(cls, v: int) -> int:
+        """Valida CNPJ básico."""
+        if not isinstance(v, int):
+            try:
+                v = int(v)
+            except (ValueError, TypeError):
+                raise ValueError('CNPJ básico deve ser um número inteiro')
+        
+        if not (10000000 <= v <= 99999999):
+            raise ValueError('CNPJ básico deve ter exatamente 8 dígitos')
+        
+        return v
     
     @field_validator('razao_social')
     @classmethod
@@ -77,3 +71,24 @@ class EmpresaSchema(BaseModel):
                 raise ValueError('Capital social inconsistente com porte da empresa')
         
         return self 
+
+    class Config:
+        # Permitir campos extras durante parsing
+        extra = "ignore"
+        # Validar na atribuição
+        validate_assignment = True
+        # Usar enum por valor
+        use_enum_values = True
+        # Schema para documentação
+        json_schema_extra = {
+            "example": {
+                "cnpj_basico": 12345678,
+                "razao_social": "EMPRESA EXEMPLO LTDA",
+                "natureza_juridica": 206,
+                "qualificacao_responsavel": 10,
+                "capital_social": 100000.00,
+                "porte_empresa": 2,
+                "ente_federativo_responsavel": "",
+                "cpf_extraido": None
+            }
+        } 

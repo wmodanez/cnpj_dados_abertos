@@ -20,6 +20,8 @@ import os
 import polars as pl
 from typing import List, Type, Optional, Dict, Any, Union
 from pathlib import Path
+import time
+import psutil
 
 from ...Entity.Painel import Painel
 from ...Entity.base import BaseEntity
@@ -123,7 +125,134 @@ class PainelProcessor(BaseProcessor):
                     .alias('cnpj_basico')
                 ])
             
-            # 2. Aplicar filtros se especificados explicitamente
+            # 2. Transformar campos 0/1 em Não/Sim
+            campos_01 = ['matriz_filial']
+            for campo in campos_01:
+                if campo in df.columns:
+                    df = df.with_columns([
+                        pl.when(pl.col(campo) == 1)
+                        .then(pl.lit('Sim'))
+                        .when(pl.col(campo) == 0)
+                        .then(pl.lit('Não'))
+                        .otherwise(pl.lit('Não informado'))
+                        .alias(campo)
+                    ])
+            
+            # 3. Transformar campos S/N em Sim/Não
+            campos_sn = ['opcao_simples', 'opcao_mei']
+            for campo in campos_sn:
+                if campo in df.columns:
+                    df = df.with_columns([
+                        pl.when(pl.col(campo) == 'S')
+                        .then(pl.lit('Sim'))
+                        .when(pl.col(campo) == 'N')
+                        .then(pl.lit('Não'))
+                        .otherwise(pl.lit('Não informado'))
+                        .alias(campo)
+                    ])
+            
+            # 4. Formatar campos de data para YYYYMMDD
+            campos_data = [
+                'data_opcao_simples', 'data_exclusao_simples',
+                'data_opcao_mei', 'data_exclusao_mei',
+                'data_situacao_cadastral', 'data_inicio_atividades'
+            ]
+            for campo in campos_data:
+                if campo in df.columns:
+                    df = df.with_columns([
+                        pl.col(campo)
+                        .str.replace_all(r'[^\d]', '')  # Remove caracteres não numéricos
+                        .str.pad_start(8, '0')  # Garante 8 dígitos
+                        .alias(campo)
+                    ])
+            
+            # 5. Adicionar descrições para códigos
+            # Porte da empresa
+            if 'porte_empresa' in df.columns:
+                df = df.with_columns([
+                    pl.when(pl.col('porte_empresa') == 1)
+                    .then(pl.lit('Micro'))
+                    .when(pl.col('porte_empresa') == 2)
+                    .then(pl.lit('Pequena'))
+                    .when(pl.col('porte_empresa') == 3)
+                    .then(pl.lit('Média'))
+                    .when(pl.col('porte_empresa') == 4)
+                    .then(pl.lit('Grande'))
+                    .when(pl.col('porte_empresa') == 5)
+                    .then(pl.lit('Demais'))
+                    .otherwise(pl.lit('Não informado'))
+                    .alias('porte_empresa_descricao')
+                ])
+            
+            # Natureza jurídica
+            if 'natureza_juridica' in df.columns:
+                df = df.with_columns([
+                    pl.when(pl.col('natureza_juridica') == 1)
+                    .then(pl.lit('Administração Pública'))
+                    .when(pl.col('natureza_juridica') == 2)
+                    .then(pl.lit('Entidade Empresarial'))
+                    .when(pl.col('natureza_juridica') == 3)
+                    .then(pl.lit('Entidade sem Fins Lucrativos'))
+                    .when(pl.col('natureza_juridica') == 4)
+                    .then(pl.lit('Pessoa Física'))
+                    .when(pl.col('natureza_juridica') == 5)
+                    .then(pl.lit('Organização Internacional'))
+                    .otherwise(pl.lit('Não informado'))
+                    .alias('natureza_juridica_descricao')
+                ])
+            
+            # Código motivo
+            if 'codigo_motivo' in df.columns:
+                df = df.with_columns([
+                    pl.when(pl.col('codigo_motivo') == 1)
+                    .then(pl.lit('Extinção por Encerramento'))
+                    .when(pl.col('codigo_motivo') == 2)
+                    .then(pl.lit('Incorporação'))
+                    .when(pl.col('codigo_motivo') == 3)
+                    .then(pl.lit('Fusão'))
+                    .when(pl.col('codigo_motivo') == 4)
+                    .then(pl.lit('Cisão'))
+                    .when(pl.col('codigo_motivo') == 5)
+                    .then(pl.lit('Encerramento de Falência'))
+                    .when(pl.col('codigo_motivo') == 6)
+                    .then(pl.lit('Encerramento de Liquidação'))
+                    .when(pl.col('codigo_motivo') == 7)
+                    .then(pl.lit('Cancelamento de Baixa'))
+                    .otherwise(pl.lit('Não informado'))
+                    .alias('codigo_motivo_descricao')
+                ])
+            
+            # Código situação
+            if 'codigo_situacao' in df.columns:
+                df = df.with_columns([
+                    pl.when(pl.col('codigo_situacao') == 1)
+                    .then(pl.lit('Nula'))
+                    .when(pl.col('codigo_situacao') == 2)
+                    .then(pl.lit('Ativa'))
+                    .when(pl.col('codigo_situacao') == 3)
+                    .then(pl.lit('Suspensa'))
+                    .when(pl.col('codigo_situacao') == 4)
+                    .then(pl.lit('Inapta'))
+                    .when(pl.col('codigo_situacao') == 8)
+                    .then(pl.lit('Baixada'))
+                    .otherwise(pl.lit('Não informado'))
+                    .alias('codigo_situacao_descricao')
+                ])
+            
+            # Tipo situação cadastral
+            if 'tipo_situacao_cadastral' in df.columns:
+                df = df.with_columns([
+                    pl.when(pl.col('tipo_situacao_cadastral') == 1)
+                    .then(pl.lit('Ativa'))
+                    .when(pl.col('tipo_situacao_cadastral') == 2)
+                    .then(pl.lit('Baixa Voluntária'))
+                    .when(pl.col('tipo_situacao_cadastral') == 3)
+                    .then(pl.lit('Outras Baixas'))
+                    .otherwise(pl.lit('Não informado'))
+                    .alias('tipo_situacao_cadastral_descricao')
+                ])
+            
+            # 6. Aplicar filtros se especificados explicitamente
             if self.situacao_filter:
                 df = df.filter(pl.col('codigo_situacao') == self.situacao_filter)
                 self.logger.info(f"Filtro situação aplicado: {self.situacao_filter}")
@@ -138,10 +267,7 @@ class PainelProcessor(BaseProcessor):
     def process_painel_data(self, output_filename: Optional[str] = None) -> bool:
         """
         Processa dados do painel fazendo os joins necessários.
-        
-        Pipeline de joins:
-        1. Estabelecimento LEFT JOIN Simples Nacional (por cnpj_basico)
-        2. Resultado INNER JOIN Empresa (por cnpj_basico)
+        Usa processamento lazy e em chunks para otimizar uso de memória.
         
         Args:
             output_filename: Nome do arquivo de saída (opcional)
@@ -149,202 +275,450 @@ class PainelProcessor(BaseProcessor):
         Returns:
             bool: True se processamento foi bem-sucedido
         """
+        start_time = time.time()
+        join_start_time = None
+        
         try:
-            self.logger.info("Iniciando processamento de dados do Painel")
+            self.logger.info("🔄 === INICIANDO PROCESSAMENTO DO PAINEL ===")
+            self.logger.info(f"📂 Diretório de saída: {os.path.abspath(self.path_parquet)}")
             
-            # 1. Carregar dados de estabelecimentos
-            self.logger.info(f"Carregando dados de estabelecimentos: {self.estabelecimento_path}")
+            # Validar caminhos de entrada
+            if not self.estabelecimento_path or not os.path.exists(self.estabelecimento_path):
+                raise ValueError(f"Caminho de estabelecimentos inválido: {self.estabelecimento_path}")
             
-            if not self.estabelecimento_path:
-                raise ValueError("Caminho de estabelecimentos não configurado")
+            if not self.simples_path or not os.path.exists(self.simples_path):
+                raise ValueError(f"Caminho do Simples Nacional inválido: {self.simples_path}")
             
-            if os.path.isdir(self.estabelecimento_path):
-                estabelecimentos_df = pl.scan_parquet(f"{self.estabelecimento_path}/*.parquet").collect()
-            else:
-                estabelecimentos_df = pl.read_parquet(self.estabelecimento_path)
+            if not self.empresa_path or not os.path.exists(self.empresa_path):
+                raise ValueError(f"Caminho de empresas inválido: {self.empresa_path}")
             
-            self.logger.info(f"Estabelecimentos carregados: {estabelecimentos_df.height} registros")
-            
-            # 2. Carregar dados do Simples Nacional
-            self.logger.info(f"Carregando dados do Simples Nacional: {self.simples_path}")
-            
-            if not self.simples_path:
-                raise ValueError("Caminho de dados do Simples não configurado")
-            
-            if os.path.isdir(self.simples_path):
-                simples_df = pl.scan_parquet(f"{self.simples_path}/*.parquet").collect()
-            else:
-                simples_df = pl.read_parquet(self.simples_path)
-            
-            self.logger.info(f"Dados do Simples carregados: {simples_df.height} registros")
-            
-            # 3. Carregar dados de empresas
-            self.logger.info(f"Carregando dados de empresas: {self.empresa_path}")
-            
-            if not self.empresa_path:
-                raise ValueError("Caminho de dados de empresas não configurado")
-            
-            if os.path.isdir(self.empresa_path):
-                empresas_df = pl.scan_parquet(f"{self.empresa_path}/*.parquet").collect()
-            else:
-                empresas_df = pl.read_parquet(self.empresa_path)
-            
-            self.logger.info(f"Dados de empresas carregados: {empresas_df.height} registros")
-            
-            # 4. Obter campos necessários da entidade Painel
-            painel_columns = Painel.get_column_names()
-            self.logger.info(f"Campos esperados no painel: {len(painel_columns)} colunas")
-            
-            # 5. Selecionar apenas campos necessários de cada tabela
-            # Estabelecimentos: campos que existem na entidade Painel (incluindo codigo_municipio para JOIN)
-            estabelecimento_fields = [
-                'cnpj_basico', 'matriz_filial', 'codigo_situacao', 'data_situacao_cadastral',
-                'codigo_motivo', 'data_inicio_atividades', 'codigo_cnae', 'codigo_municipio',
-                'tipo_situacao_cadastral'
-            ]
-            
-            # Filtrar apenas campos que existem no DataFrame
-            estabelecimento_available = [col for col in estabelecimento_fields if col in estabelecimentos_df.columns]
-            # Garantir que cnpj_basico está sempre presente (sem duplicação)
-            if 'cnpj_basico' not in estabelecimento_available and 'cnpj_basico' in estabelecimentos_df.columns:
-                estabelecimento_available.insert(0, 'cnpj_basico')
-            estabelecimentos_df = estabelecimentos_df.select(estabelecimento_available)
-            
-            # Simples Nacional: TODOS os campos exceto cnpj_basico
-            simples_fields = [
-                'opcao_simples', 'data_opcao_simples', 'data_exclusao_simples',
-                'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei'
-            ]
-            
-            # Verificar quais campos existem no DataFrame e adicionar cnpj_basico para JOIN
-            self.logger.info(f"Campos disponíveis no Simples: {simples_df.columns}")
-            simples_available = ['cnpj_basico']  # Sempre incluir para JOIN
-            for col in simples_fields:
-                if col in simples_df.columns:
-                    simples_available.append(col)
-                    self.logger.info(f"Campo do Simples encontrado: {col}")
-                else:
-                    self.logger.warning(f"Campo do Simples NÃO encontrado: {col}")
-            simples_df = simples_df.select(simples_available)
-            
-            # Empresas: cnpj_basico + dois campos (natureza_juridica e porte_empresa)
-            empresa_fields = ['natureza_juridica', 'porte_empresa']
-            
-            # Verificar quais campos existem no DataFrame e adicionar cnpj_basico para JOIN
-            self.logger.info(f"Campos disponíveis nas Empresas: {empresas_df.columns}")
-            empresa_available = ['cnpj_basico']  # Sempre incluir para JOIN
-            for col in empresa_fields:
-                if col in empresas_df.columns:
-                    empresa_available.append(col)
-                    self.logger.info(f"Campo de Empresa encontrado: {col}")
-                else:
-                    self.logger.warning(f"Campo de Empresa NÃO encontrado: {col}")
-            empresas_df = empresas_df.select(empresa_available)
-            
-            self.logger.info(f"Selecionados: {len(estabelecimento_available)} campos de estabelecimentos")
-            self.logger.info(f"Selecionados: {len(simples_available)} campos do Simples")
-            self.logger.info(f"Selecionados: {len(empresa_available)} campos de empresas")
-            
-            # 6. Garantir que CNPJ básico está padronizado em todos (como bigint)
-            estabelecimentos_df = estabelecimentos_df.with_columns([
-                pl.col('cnpj_basico').cast(pl.Int64).alias('cnpj_basico')
-            ])
-            
-            simples_df = simples_df.with_columns([
-                pl.col('cnpj_basico').cast(pl.Int64).alias('cnpj_basico')
-            ])
-            
-            empresas_df = empresas_df.with_columns([
-                pl.col('cnpj_basico').cast(pl.Int64).alias('cnpj_basico')
-            ])
-            
-            # 7. Executar LEFT JOIN entre estabelecimentos e Simples Nacional
-            self.logger.info("Executando LEFT JOIN entre estabelecimentos e Simples Nacional")
-            
-            painel_df = estabelecimentos_df.join(
-                simples_df,
-                on='cnpj_basico',
-                how='left'
-            )
-            
-            self.logger.info(f"LEFT JOIN executado. Registros resultantes: {painel_df.height}")
-            
-            # 8. Executar INNER JOIN com dados de empresas
-            self.logger.info("Executando INNER JOIN com dados de empresas")
-            
-            painel_df = painel_df.join(
-                empresas_df,
-                on='cnpj_basico',
-                how='inner'
-            )
-            
-            self.logger.info(f"INNER JOIN executado. Registros finais: {painel_df.height}")
-            
-            # 9. Carregar dados de municípios e executar LEFT JOIN
-            self.logger.info("Carregando dados de municípios para JOIN")
+            # 1. Criar scans lazy para os DataFrames
+            self.logger.info("🔍 Iniciando scans lazy dos dados...")
             
             try:
-                municipios_path = os.path.join(self.path_parquet, '..', 'base', 'municipio.parquet')
-                municipios_path = os.path.normpath(municipios_path)
+                # Estabelecimentos
+                estabelecimentos_scan = (
+                    pl.scan_parquet(f"{self.estabelecimento_path}/*.parquet")
+                    if os.path.isdir(self.estabelecimento_path)
+                    else pl.scan_parquet(self.estabelecimento_path)
+                )
                 
-                if os.path.exists(municipios_path):
-                    municipios_df = pl.read_parquet(municipios_path)
-                    self.logger.info(f"Municípios carregados: {municipios_df.height} registros")
+                # Simples
+                simples_scan = (
+                    pl.scan_parquet(f"{self.simples_path}/*.parquet")
+                    if os.path.isdir(self.simples_path)
+                    else pl.scan_parquet(self.simples_path)
+                )
+                
+                # Empresas
+                empresas_scan = (
+                    pl.scan_parquet(f"{self.empresa_path}/*.parquet")
+                    if os.path.isdir(self.empresa_path)
+                    else pl.scan_parquet(self.empresa_path)
+                )
+                
+                # Contar registros sem carregar tudo
+                estabelecimentos_count = estabelecimentos_scan.select(pl.count()).collect().item()
+                simples_count = simples_scan.select(pl.count()).collect().item()
+                empresas_count = empresas_scan.select(pl.count()).collect().item()
+                
+                self.logger.info(f"✓ Scans criados:")
+                self.logger.info(f"  └─ Estabelecimentos: {estabelecimentos_count:,} registros")
+                self.logger.info(f"  └─ Simples Nacional: {simples_count:,} registros")
+                self.logger.info(f"  └─ Empresas: {empresas_count:,} registros")
+                
+            except Exception as e:
+                self.logger.error(f"❌ Erro ao criar scans: {str(e)}")
+                raise
+            
+            # 2. Otimizar consultas selecionando apenas colunas necessárias
+            colunas_estabelecimentos = ['cnpj_basico', 'matriz_filial', 'codigo_situacao', 
+                                      'data_situacao_cadastral', 'codigo_motivo', 
+                                      'data_inicio_atividades', 'codigo_cnae', 'tipo_situacao_cadastral',
+                                      'codigo_municipio']
+            
+            colunas_simples = ['cnpj_basico', 'opcao_simples', 'data_opcao_simples',
+                              'data_exclusao_simples', 'opcao_mei', 'data_opcao_mei',
+                              'data_exclusao_mei']
+            
+            colunas_empresas = ['cnpj_basico', 'natureza_juridica', 'porte_empresa']
+            
+            # 3. Aplicar transformações em cada dataset separadamente
+            self.logger.info("🔄 Aplicando transformações nos datasets...")
+            
+            # Transformações em estabelecimentos
+            self.logger.info("  └─ Transformando estabelecimentos...")
+            
+            # Verificar se o campo tipo_situacao_cadastral existe e, se não, calculá-lo
+            try:
+                # Verificar se o campo existe nos dados
+                colunas_disponiveis = estabelecimentos_scan.collect().limit(1).columns
+                
+                if 'tipo_situacao_cadastral' not in colunas_disponiveis:
+                    self.logger.info("  └─ Campo tipo_situacao_cadastral não encontrado, calculando...")
                     
-                    painel_df = painel_df.join(
-                        municipios_df.select([
-                            pl.col('cod_mn_dados_abertos'),
-                            pl.col('codigo').alias('codigo_ibge_municipio')
-                        ]),
-                        left_on='codigo_municipio',
-                        right_on='cod_mn_dados_abertos',
+                    # Calcular o campo tipo_situacao_cadastral baseado nas regras de negócio
+                    estabelecimentos_scan = estabelecimentos_scan.with_columns([
+                        pl.when(
+                            (pl.col('codigo_situacao') == 2) & 
+                            (pl.col('codigo_motivo') == 0)
+                        )
+                        .then(pl.lit(1))  # Ativa
+                        .when(
+                            (pl.col('codigo_situacao') == 8) & 
+                            (pl.col('codigo_motivo') == 1)
+                        )
+                        .then(pl.lit(2))  # Baixa Voluntária
+                        .when(
+                            (pl.col('codigo_situacao') == 8) & 
+                            (pl.col('codigo_motivo') != 1)
+                        )
+                        .then(pl.lit(3))  # Outras Baixas
+                        .otherwise(pl.lit(0))  # Valor padrão para casos não cobertos pelas regras
+                        .alias('tipo_situacao_cadastral')
+                    ])
+                    
+                    self.logger.info("  └─ Campo tipo_situacao_cadastral calculado com sucesso")
+                else:
+                    self.logger.info("  └─ Campo tipo_situacao_cadastral já existe nos dados")
+                
+            except Exception as e:
+                self.logger.warning(f"  └─ Erro ao verificar/calcular tipo_situacao_cadastral: {str(e)}")
+            
+            # Agora selecionar as colunas e aplicar transformações
+            estabelecimentos_scan = (
+                estabelecimentos_scan
+                .select(colunas_estabelecimentos)
+                .with_columns([
+                    pl.when(pl.col('matriz_filial') == 1)
+                    .then(pl.lit('Matriz'))
+                    .when(pl.col('matriz_filial') == 2)
+                    .then(pl.lit('Filial'))
+                    .otherwise(pl.lit('Não informado'))
+                    .alias('descricao_matriz_filial'),
+                    
+                    pl.when(pl.col('codigo_situacao') == 1).then(pl.lit('Nula'))
+                    .when(pl.col('codigo_situacao') == 2).then(pl.lit('Ativa'))
+                    .when(pl.col('codigo_situacao') == 3).then(pl.lit('Suspensa'))
+                    .when(pl.col('codigo_situacao') == 4).then(pl.lit('Inapta'))
+                    .when(pl.col('codigo_situacao') == 8).then(pl.lit('Baixada'))
+                    .otherwise(pl.lit('Não informado'))
+                    .alias('descricao_situacao'),
+                    
+                    pl.when(pl.col('tipo_situacao_cadastral') == 1).then(pl.lit('Ativa'))
+                    .when(pl.col('tipo_situacao_cadastral') == 2).then(pl.lit('Baixa Voluntária'))
+                    .when(pl.col('tipo_situacao_cadastral') == 3).then(pl.lit('Outras Baixas'))
+                    .otherwise(pl.lit('Outras Situações'))
+                    .alias('descricao_tipo_situacao')
+                ])
+            )
+            
+            # Adicionar mapeamento de motivo usando a tabela de domínio
+            try:
+                motivo_df = pl.read_parquet(os.path.join(os.path.dirname(self.path_parquet), "base", "motivo.parquet"))
+                self.logger.info(f"  └─ Tabela de motivos carregada: {len(motivo_df)} registros")
+                
+                # Adicionar coluna com descrição usando join com a tabela de motivos
+                estabelecimentos_scan = estabelecimentos_scan.with_columns([
+                    pl.col('codigo_motivo').cast(pl.Int32).alias('codigo_motivo_join')
+                ])
+                
+                # Criar um LazyFrame da tabela de motivos com apenas as colunas necessárias
+                motivo_scan = pl.scan_parquet(os.path.join(os.path.dirname(self.path_parquet), "base", "motivo.parquet")).select([
+                    pl.col('codigo').alias('codigo_motivo_join'),
+                    pl.col('descricao').alias('codigo_motivo_descricao')
+                ])
+                
+                # Join com a tabela de motivos
+                estabelecimentos_scan = estabelecimentos_scan.join(
+                    motivo_scan,
+                    on='codigo_motivo_join',
+                    how='left'
+                ).drop('codigo_motivo_join')
+                
+                # Preencher valores nulos com "Não informado"
+                estabelecimentos_scan = estabelecimentos_scan.with_columns([
+                    pl.col('codigo_motivo_descricao').fill_null('Não informado').alias('descricao_motivo')
+                ]).drop('codigo_motivo_descricao')
+                
+                self.logger.info("  └─ Descrições de motivos adicionadas via join")
+            except Exception as e:
+                self.logger.warning(f"  └─ Não foi possível carregar tabela de motivos: {str(e)}")
+                # Fallback para o mapeamento simplificado anterior
+                estabelecimentos_scan = estabelecimentos_scan.with_columns([
+                    pl.when(pl.col('codigo_motivo') == 1).then(pl.lit('Extinção por Encerramento'))
+                    .when(pl.col('codigo_motivo') == 2).then(pl.lit('Incorporação'))
+                    .when(pl.col('codigo_motivo') == 3).then(pl.lit('Fusão'))
+                    .when(pl.col('codigo_motivo') == 4).then(pl.lit('Cisão'))
+                    .when(pl.col('codigo_motivo') == 5).then(pl.lit('Encerramento de Falência'))
+                    .when(pl.col('codigo_motivo') == 6).then(pl.lit('Encerramento de Liquidação'))
+                    .when(pl.col('codigo_motivo') == 7).then(pl.lit('Cancelamento de Baixa'))
+                    .otherwise(pl.lit('Não informado'))
+                    .alias('codigo_motivo_descricao')
+                ])
+            
+            # Transformações em simples
+            self.logger.info("  └─ Transformando dados do Simples Nacional...")
+            simples_scan = (
+                simples_scan
+                .select(colunas_simples)
+                .with_columns([
+                    pl.when(pl.col('opcao_simples') == 'S')
+                    .then(pl.lit('Sim'))
+                    .when(pl.col('opcao_simples') == 'N')
+                    .then(pl.lit('Não'))
+                    .otherwise(pl.lit('Não informado'))
+                    .alias('opcao_simples'),
+                    
+                    pl.when(pl.col('opcao_mei') == 'S')
+                    .then(pl.lit('Sim'))
+                    .when(pl.col('opcao_mei') == 'N')
+                    .then(pl.lit('Não'))
+                    .otherwise(pl.lit('Não informado'))
+                    .alias('opcao_mei')
+                ])
+            )
+            
+            # Transformações em empresas
+            self.logger.info("  └─ Transformando dados de empresas...")
+            
+            # Carregar tabelas de domínio
+            try:
+                natureza_juridica_df = pl.read_parquet(os.path.join(os.path.dirname(self.path_parquet), "base", "natureza_juridica.parquet"))
+                self.logger.info(f"  └─ Tabela de natureza jurídica carregada: {len(natureza_juridica_df)} registros")
+                
+                # Criar um LazyFrame da tabela de natureza jurídica com apenas as colunas necessárias
+                natureza_scan = pl.scan_parquet(os.path.join(os.path.dirname(self.path_parquet), "base", "natureza_juridica.parquet")).select([
+                    pl.col('codigo').alias('natureza_juridica_join'),
+                    pl.col('descricao').alias('descricao_natureza_juridica')
+                ])
+                
+                # Preparar empresas para o join
+                empresas_scan = (
+                    empresas_scan
+                    .select(colunas_empresas)
+                    .with_columns([
+                        pl.col('natureza_juridica').cast(pl.Int32).alias('natureza_juridica_join'),
+                        
+                        # Adicionar descrição do porte
+                        pl.when(pl.col('porte_empresa') == 1).then(pl.lit('Micro'))
+                        .when(pl.col('porte_empresa') == 2).then(pl.lit('Pequena'))
+                        .when(pl.col('porte_empresa') == 3).then(pl.lit('Média'))
+                        .when(pl.col('porte_empresa') == 4).then(pl.lit('Grande'))
+                        .when(pl.col('porte_empresa') == 5).then(pl.lit('Demais'))
+                        .otherwise(pl.lit('Não informado'))
+                        .alias('descricao_porte')
+                    ])
+                )
+                
+                # Join com a tabela de natureza jurídica
+                empresas_scan = empresas_scan.join(
+                    natureza_scan,
+                    on='natureza_juridica_join',
+                    how='left'
+                ).drop('natureza_juridica_join')
+                
+                # Preencher valores nulos com "Não informado"
+                empresas_scan = empresas_scan.with_columns([
+                    pl.col('descricao_natureza_juridica').fill_null('Não informado')
+                ])
+                
+                self.logger.info("  └─ Descrições de natureza jurídica adicionadas via join")
+            except Exception as e:
+                self.logger.warning(f"  └─ Não foi possível carregar tabela de natureza jurídica: {str(e)}")
+                # Fallback para o mapeamento simplificado anterior
+                empresas_scan = (
+                    empresas_scan
+                    .select(colunas_empresas)
+                    .with_columns([
+                        # Descrição do porte
+                        pl.when(pl.col('porte_empresa') == 1).then(pl.lit('Micro'))
+                        .when(pl.col('porte_empresa') == 2).then(pl.lit('Pequena'))
+                        .when(pl.col('porte_empresa') == 3).then(pl.lit('Média'))
+                        .when(pl.col('porte_empresa') == 4).then(pl.lit('Grande'))
+                        .when(pl.col('porte_empresa') == 5).then(pl.lit('Demais'))
+                        .otherwise(pl.lit('Não informado'))
+                        .alias('descricao_porte'),
+                        
+                        # Descrição da natureza jurídica
+                        pl.when(pl.col('natureza_juridica') == 1).then(pl.lit('Administração Pública'))
+                        .when(pl.col('natureza_juridica') == 2).then(pl.lit('Entidade Empresarial'))
+                        .when(pl.col('natureza_juridica') == 3).then(pl.lit('Entidade sem Fins Lucrativos'))
+                        .when(pl.col('natureza_juridica') == 4).then(pl.lit('Pessoa Física'))
+                        .when(pl.col('natureza_juridica') == 5).then(pl.lit('Organização Internacional'))
+                        .otherwise(pl.lit('Não informado'))
+                        .alias('descricao_natureza_juridica')
+                    ])
+                )
+            
+            # 4. Executar JOINs com os dados já transformados
+            join_start_time = time.time()
+            self.logger.info("⚡ Executando JOINs otimizados...")
+            
+            try:
+                # Primeiro JOIN (estabelecimentos com simples)
+                self.logger.info("  └─ LEFT JOIN: estabelecimentos + simples")
+                self.logger.info("     └─ Iniciando JOIN...")
+                
+                try:
+                    painel_scan = estabelecimentos_scan.join(
+                        simples_scan,
+                        on='cnpj_basico',
                         how='left'
                     )
+                    self.logger.info("     └─ JOIN estabelecimentos + simples concluído")
+                except Exception as e:
+                    self.logger.error(f"❌ Erro no JOIN estabelecimentos + simples: {str(e)}")
+                    raise
+                
+                # Segundo JOIN (resultado anterior com empresas)
+                self.logger.info("  └─ INNER JOIN: resultado anterior + empresas")
+                self.logger.info("     └─ Iniciando JOIN...")
+                
+                try:
+                    painel_scan = painel_scan.join(
+                        empresas_scan,
+                        on='cnpj_basico',
+                        how='inner'
+                    )
+                    self.logger.info("     └─ JOIN com empresas concluído")
+                except Exception as e:
+                    self.logger.error(f"❌ Erro no JOIN com empresas: {str(e)}")
+                    raise
+                
+                # 5. Salvar o DataFrame completo
+                if not output_filename:
+                    output_filename = "painel_dados.parquet"
+                
+                # Usar a pasta raiz do parquet ao invés da subpasta do mês
+                output_path = os.path.join(os.path.dirname(self.path_parquet), output_filename)
+                output_path_abs = os.path.abspath(output_path)
+                
+                # Garantir que a pasta existe
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                
+                save_start = time.time()
+                self.logger.info(f"💾 Iniciando gravação dos dados transformados...")
+                
+                try:
+                    # Reordenar colunas para aproximar códigos e descrições
+                    colunas_para_selecionar = [
+                        # Dados principais
+                        'cnpj_basico',
+                        
+                        # Matriz/Filial
+                        'matriz_filial', 'descricao_matriz_filial',
+                        
+                        # Situação cadastral
+                        'codigo_situacao', 'descricao_situacao',
+                        'tipo_situacao_cadastral', 'descricao_tipo_situacao',
+                        
+                        # Motivo
+                        'codigo_motivo', 'descricao_motivo',
+                        
+                        # Datas
+                        'data_situacao_cadastral', 'data_inicio_atividades',
+                        
+                        # CNAE
+                        'codigo_cnae',
+                        
+                        # Natureza jurídica
+                        'natureza_juridica', 'descricao_natureza_juridica',
+                        
+                        # Porte
+                        'porte_empresa', 'descricao_porte',
+                        
+                        # Simples Nacional
+                        'opcao_simples', 'data_opcao_simples', 'data_exclusao_simples',
+                        'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei',
+                        
+                        # Localização
+                        'codigo_municipio'
+                    ]
                     
-                    self.logger.info(f"LEFT JOIN com municípios executado. Registros: {painel_df.height}")
+                    # Verificar quais colunas existem no DataFrame usando collect_schema().names()
+                    colunas_disponiveis = set(painel_scan.collect_schema().names())
+                    colunas_finais = [col for col in colunas_para_selecionar if col in colunas_disponiveis]
                     
-                    com_ibge = painel_df.filter(pl.col('codigo_ibge_municipio').is_not_null()).height
-                    sem_ibge = painel_df.height - com_ibge
+                    self.logger.info(f"  └─ Selecionando {len(colunas_finais)} colunas para o resultado final")
                     
-                    self.logger.info(f"Estabelecimentos com código IBGE: {com_ibge:,} ({(com_ibge/painel_df.height)*100:.1f}%)")
-                    self.logger.info(f"Estabelecimentos sem código IBGE: {sem_ibge:,} ({(sem_ibge/painel_df.height)*100:.1f}%)")
+                    painel_scan = painel_scan.select(colunas_finais)
                     
-                else:
-                    self.logger.warning(f"Arquivo de municípios não encontrado: {municipios_path}")
-                    self.logger.warning("Continuando sem dados de código IBGE dos municípios")
+                    # Usar sink_parquet para salvar diretamente sem coletar tudo na memória
+                    self.logger.info(f"  └─ Salvando arquivo: {output_path_abs}")
                     
+                    # Configurar opções de escrita otimizadas
+                    write_options = {
+                        "compression": "zstd",  # Compressão eficiente
+                        "statistics": True,     # Coletar estatísticas
+                        "row_group_size": 100000  # Tamanho do grupo de linhas
+                    }
+                    
+                    # Salvar usando sink_parquet
+                    (
+                        painel_scan
+                        .sink_parquet(
+                            output_path,
+                            **write_options
+                        )
+                    )
+                    
+                    self.logger.info("  └─ Arquivo salvo com sucesso")
+                    
+                    save_time = time.time() - save_start
+                    total_time = time.time() - start_time
+                    
+                    # Verificar arquivo final
+                    if not os.path.exists(output_path):
+                        raise FileNotFoundError(f"Arquivo não foi criado: {output_path}")
+                    
+                    file_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
+                    
+                    # Contar registros sem carregar todo o arquivo
+                    total_rows = pl.scan_parquet(output_path).select(pl.count()).collect().item()
+                    
+                    self.logger.info("\n=== 🎉 PROCESSAMENTO DO PAINEL CONCLUÍDO COM SUCESSO ===")
+                    self.logger.info(f"📂 Arquivo salvo em: {output_path_abs}")
+                    self.logger.info(f"📊 Tamanho do arquivo: {file_size:.1f}MB")
+                    self.logger.info(f"📈 Total de registros: {total_rows:,}")
+                    
+                    self.logger.info("\n⏱️  Tempos de processamento:")
+                    self.logger.info(f"  └─ Processamento e JOINs: {save_start - join_start_time:.1f}s")
+                    self.logger.info(f"  └─ Salvamento: {save_time:.1f}s")
+                    self.logger.info(f"  └─ TEMPO TOTAL: {total_time:.1f}s ({total_time/60:.1f}min)")
+                    self.logger.info("================================================")
+                    
+                    return True
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Erro ao salvar dados: {str(e)}")
+                    self.logger.error("Detalhes do erro:", exc_info=True)
+                    raise
+                
             except Exception as e:
-                self.logger.error(f"Erro ao processar dados de municípios: {str(e)}")
-                self.logger.warning("Continuando sem dados de código IBGE dos municípios")
-            
-            # 10. Aplicar transformações específicas
-            painel_df = self.apply_specific_transformations(painel_df)
-            
-            # 11. Remover coluna codigo_municipio do resultado final (manter apenas codigo_ibge_municipio)
-            if 'codigo_municipio' in painel_df.columns:
-                painel_df = painel_df.drop('codigo_municipio')
-                self.logger.info("Coluna 'codigo_municipio' removida do resultado final")
-            
-            # 12. Salvar resultado
-            if not output_filename:
-                output_filename = "painel_dados.parquet"
-            
-            output_path = os.path.join(self.path_parquet, output_filename)
-            
-            os.makedirs(self.path_parquet, exist_ok=True)
-            
-            painel_df.write_parquet(output_path, compression='snappy')
-            
-            self.logger.info(f"✓ Dados do Painel salvos: {output_path}")
-            self.logger.info(f"✓ Total de registros: {painel_df.height}")
-            
-            # 13. Relatório de estatísticas
-            self._generate_statistics_report(painel_df)
-            
-            return True
+                total_time = time.time() - start_time
+                join_time = time.time() - join_start_time if join_start_time else 0
+                
+                self.logger.error("\n=== ❌ ERRO NO PROCESSAMENTO DO PAINEL ===")
+                self.logger.error(f"Erro: {str(e)}")
+                self.logger.error(f"Tempo decorrido até o erro: {total_time:.1f}s")
+                if join_start_time:
+                    self.logger.error(f"Tempo em operações de JOIN: {join_time:.1f}s")
+                self.logger.error("Stacktrace completo:", exc_info=True)
+                self.logger.error("==========================================")
+                return False
             
         except Exception as e:
-            self.logger.error(f"Erro no processamento do Painel: {str(e)}")
+            total_time = time.time() - start_time
+            join_time = time.time() - join_start_time if join_start_time else 0
+            
+            self.logger.error("\n=== ❌ ERRO NO PROCESSAMENTO DO PAINEL ===")
+            self.logger.error(f"Erro: {str(e)}")
+            self.logger.error(f"Tempo decorrido até o erro: {total_time:.1f}s")
+            if join_start_time:
+                self.logger.error(f"Tempo em operações de JOIN: {join_time:.1f}s")
+            self.logger.error("Stacktrace:", exc_info=True)
+            self.logger.error("==========================================")
             return False
     
     def _generate_statistics_report(self, df: pl.DataFrame):
