@@ -597,34 +597,20 @@ class PainelProcessor(BaseProcessor):
                         municipios_df = pl.read_parquet(municipio_path)
                         self.logger.info(f"     └─ Municípios carregados: {len(municipios_df)} registros")
                         
-                        # Criar scan dos municípios com apenas as colunas necessárias
+                        # Criar scan dos municípios com renomeação para facilitar o JOIN
                         municipios_scan = pl.scan_parquet(municipio_path).select([
-                            pl.col('cod_mn_dados_abertos'),                          # Campo para JOIN com codigo_municipio
-                            pl.col('codigo').alias('codigo_ibge_municipio')         # Código IBGE (7 dígitos) para exportação
+                            pl.col('cod_mn_dados_abertos').alias('codigo_municipio'),  # Renomear para fazer JOIN
+                            pl.col('codigo').alias('codigo_ibge_municipio')            # Código IBGE (7 dígitos) para exportação
                         ])
                         
                         # Executar LEFT JOIN com municípios
                         painel_scan = painel_scan.join(
                             municipios_scan,
-                            left_on='codigo_municipio',
-                            right_on='cod_mn_dados_abertos',
+                            on='codigo_municipio',
                             how='left'
-                        ).drop('cod_mn_dados_abertos')  # Remover coluna auxiliar do JOIN
+                        )
                         
                         self.logger.info("     └─ LEFT JOIN com municípios executado")
-                        
-                        # Verificar quantos registros têm código IBGE
-                        # Fazer uma amostra pequena para estatísticas
-                        sample_df = painel_scan.limit(100000).collect()
-                        if 'codigo_ibge_municipio' in sample_df.columns:
-                            total_sample = len(sample_df)
-                            com_ibge = sample_df.filter(pl.col('codigo_ibge_municipio').is_not_null()).height
-                            sem_ibge = total_sample - com_ibge
-                            pct_com_ibge = (com_ibge / total_sample) * 100 if total_sample > 0 else 0
-                            pct_sem_ibge = (sem_ibge / total_sample) * 100 if total_sample > 0 else 0
-                            
-                            self.logger.info(f"     └─ Estabelecimentos com código IBGE: {com_ibge:,} ({pct_com_ibge:.1f}%)")
-                            self.logger.info(f"     └─ Estabelecimentos sem código IBGE: {sem_ibge:,} ({pct_sem_ibge:.1f}%)")
                         
                     else:
                         self.logger.warning(f"     └─ Arquivo de municípios não encontrado: {municipio_path}")
@@ -638,8 +624,8 @@ class PainelProcessor(BaseProcessor):
                 if not output_filename:
                     output_filename = "painel_dados.parquet"
                 
-                # Usar a pasta raiz do parquet ao invés da subpasta do mês
-                output_path = os.path.join(os.path.dirname(self.path_parquet), output_filename)
+                # Salvar na pasta raiz do parquet
+                output_path = os.path.join(self.path_parquet, output_filename)
                 output_path_abs = os.path.abspath(output_path)
                 
                 # Garantir que a pasta existe
@@ -684,13 +670,23 @@ class PainelProcessor(BaseProcessor):
                         'codigo_ibge_municipio'
                     ]
                     
-                    # Verificar quais colunas existem no DataFrame usando collect_schema().names()
-                    colunas_disponiveis = set(painel_scan.collect_schema().names())
-                    colunas_finais = [col for col in colunas_para_selecionar if col in colunas_disponiveis]
+                    # Selecionar colunas diretamente (vai falhar se não existir, mas isso é melhor que travar)
+                    self.logger.info(f"  └─ Selecionando colunas para o resultado final...")
                     
-                    self.logger.info(f"  └─ Selecionando {len(colunas_finais)} colunas para o resultado final")
-                    
-                    painel_scan = painel_scan.select(colunas_finais)
+                    try:
+                        painel_scan = painel_scan.select(colunas_para_selecionar)
+                        self.logger.info(f"  └─ {len(colunas_para_selecionar)} colunas selecionadas com sucesso")
+                    except Exception as e:
+                        self.logger.warning(f"  └─ Erro ao selecionar algumas colunas: {str(e)}")
+                        # Fallback: selecionar apenas colunas básicas se houver erro
+                        colunas_basicas = [
+                            'cnpj_basico', 'matriz_filial', 'codigo_situacao', 'data_situacao_cadastral',
+                            'codigo_motivo', 'data_inicio_atividades', 'codigo_cnae', 'natureza_juridica',
+                            'porte_empresa', 'opcao_simples', 'data_opcao_simples', 'data_exclusao_simples',
+                            'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei'
+                        ]
+                        painel_scan = painel_scan.select(colunas_basicas)
+                        self.logger.info(f"  └─ Usando seleção de fallback com {len(colunas_basicas)} colunas básicas")
                     
                     # Usar sink_parquet para salvar diretamente sem coletar tudo na memória
                     self.logger.info(f"  └─ Salvando arquivo: {output_path_abs}")
@@ -702,14 +698,13 @@ class PainelProcessor(BaseProcessor):
                         "row_group_size": 100000  # Tamanho do grupo de linhas
                     }
                     
-                    # Salvar usando sink_parquet
-                    (
-                        painel_scan
-                        .sink_parquet(
-                            output_path,
-                            **write_options
-                        )
-                    )
+                    # Coletar dados em um DataFrame em memória
+                    df = painel_scan.collect()
+                    self.logger.info(f"  └─ Dados coletados: {df.shape[0]:,} linhas x {df.shape[1]} colunas")
+                    
+                    # Salvar o DataFrame para o arquivo parquet
+                    self.logger.info("  └─ Salvando arquivo parquet...")
+                    df.write_parquet(output_path, **write_options)
                     
                     self.logger.info("  └─ Arquivo salvo com sucesso")
                     
