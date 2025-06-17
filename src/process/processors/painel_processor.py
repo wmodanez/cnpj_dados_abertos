@@ -586,6 +586,54 @@ class PainelProcessor(BaseProcessor):
                     self.logger.error(f"❌ Erro no JOIN com empresas: {str(e)}")
                     raise
                 
+                # Terceiro JOIN (resultado anterior com municípios)
+                self.logger.info("  └─ LEFT JOIN: resultado anterior + municípios")
+                self.logger.info("     └─ Carregando dados de municípios...")
+                
+                try:
+                    # Carregar dados de municípios
+                    municipio_path = os.path.join(os.path.dirname(self.path_parquet), "base", "municipio.parquet")
+                    if os.path.exists(municipio_path):
+                        municipios_df = pl.read_parquet(municipio_path)
+                        self.logger.info(f"     └─ Municípios carregados: {len(municipios_df)} registros")
+                        
+                        # Criar scan dos municípios com apenas as colunas necessárias
+                        municipios_scan = pl.scan_parquet(municipio_path).select([
+                            pl.col('cod_mn_dados_abertos'),                          # Campo para JOIN com codigo_municipio
+                            pl.col('codigo').alias('codigo_ibge_municipio')         # Código IBGE (7 dígitos) para exportação
+                        ])
+                        
+                        # Executar LEFT JOIN com municípios
+                        painel_scan = painel_scan.join(
+                            municipios_scan,
+                            left_on='codigo_municipio',
+                            right_on='cod_mn_dados_abertos',
+                            how='left'
+                        ).drop('cod_mn_dados_abertos')  # Remover coluna auxiliar do JOIN
+                        
+                        self.logger.info("     └─ LEFT JOIN com municípios executado")
+                        
+                        # Verificar quantos registros têm código IBGE
+                        # Fazer uma amostra pequena para estatísticas
+                        sample_df = painel_scan.limit(100000).collect()
+                        if 'codigo_ibge_municipio' in sample_df.columns:
+                            total_sample = len(sample_df)
+                            com_ibge = sample_df.filter(pl.col('codigo_ibge_municipio').is_not_null()).height
+                            sem_ibge = total_sample - com_ibge
+                            pct_com_ibge = (com_ibge / total_sample) * 100 if total_sample > 0 else 0
+                            pct_sem_ibge = (sem_ibge / total_sample) * 100 if total_sample > 0 else 0
+                            
+                            self.logger.info(f"     └─ Estabelecimentos com código IBGE: {com_ibge:,} ({pct_com_ibge:.1f}%)")
+                            self.logger.info(f"     └─ Estabelecimentos sem código IBGE: {sem_ibge:,} ({pct_sem_ibge:.1f}%)")
+                        
+                    else:
+                        self.logger.warning(f"     └─ Arquivo de municípios não encontrado: {municipio_path}")
+                        self.logger.warning("     └─ Continuando sem código IBGE dos municípios")
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Erro no JOIN com municípios: {str(e)}")
+                    self.logger.warning("⚠️ Continuando processamento sem código IBGE dos municípios")
+                
                 # 5. Salvar o DataFrame completo
                 if not output_filename:
                     output_filename = "painel_dados.parquet"
@@ -632,8 +680,8 @@ class PainelProcessor(BaseProcessor):
                         'opcao_simples', 'data_opcao_simples', 'data_exclusao_simples',
                         'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei',
                         
-                        # Localização
-                        'codigo_municipio'
+                        # Localização (código IBGE do município)
+                        'codigo_ibge_municipio'
                     ]
                     
                     # Verificar quais colunas existem no DataFrame usando collect_schema().names()
