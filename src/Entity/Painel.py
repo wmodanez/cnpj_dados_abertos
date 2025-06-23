@@ -50,7 +50,10 @@ class Painel(BaseEntity):
         tipo_situacao_cadastral: Tipo de situação cadastral (1=Ativa, 2=Baixa Voluntária, 3=Outras Baixas)
         
         # Dados do Município (left join por codigo_municipio)
-        codigo_ibge_municipio: Código IBGE do município (7 dígitos)
+        codigo_ibge: Código IBGE do município (7 dígitos)
+        nome_municipio: Nome do município
+        uf: Unidade Federativa (estado)
+        sigla_uf: Sigla da UF (ex: SP, GO, MG)
         
         # Dados da Empresa (inner join por cnpj_basico)
         natureza_juridica: Código da natureza jurídica
@@ -79,7 +82,10 @@ class Painel(BaseEntity):
     tipo_situacao_cadastral: Optional[int] = None
     
     # Dados do Município (left join por codigo_municipio)
-    codigo_ibge_municipio: Optional[int] = None
+    codigo_ibge: Optional[int] = None
+    nome_municipio: Optional[str] = None
+    uf: Optional[str] = None
+    sigla_uf: Optional[str] = None
     
     # Dados da Empresa (inner join)
     natureza_juridica: Optional[int] = None
@@ -107,7 +113,7 @@ class Painel(BaseEntity):
             'tipo_situacao_cadastral',
             
             # Dados do Município
-            'codigo_ibge_municipio',
+            'codigo_ibge', 'nome_municipio', 'uf', 'sigla_uf',
             
             # Dados da Empresa
             'natureza_juridica', 'porte_empresa',
@@ -133,7 +139,10 @@ class Painel(BaseEntity):
             'tipo_situacao_cadastral': pl.Int32,
             
             # Dados do Município
-            'codigo_ibge_municipio': pl.Int32,
+            'codigo_ibge': pl.Int32,
+            'nome_municipio': pl.Utf8,
+            'uf': pl.Utf8,
+            'sigla_uf': pl.Utf8,
             
             # Dados da Empresa
             'natureza_juridica': pl.Int32,

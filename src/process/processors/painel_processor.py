@@ -600,7 +600,10 @@ class PainelProcessor(BaseProcessor):
                         # Criar scan dos municípios com renomeação para facilitar o JOIN
                         municipios_scan = pl.scan_parquet(municipio_path).select([
                             pl.col('cod_mn_dados_abertos').alias('codigo_municipio'),  # Renomear para fazer JOIN
-                            pl.col('codigo').alias('codigo_ibge_municipio')            # Código IBGE (7 dígitos) para exportação
+                            pl.col('codigo').alias('codigo_ibge'),                     # Código IBGE (7 dígitos) para exportação
+                            pl.col('nome').alias('nome_municipio'),                    # Nome do município
+                            pl.col('uf').alias('uf'),                                  # UF do município
+                            pl.col('sigla_uf').alias('sigla_uf')                       # Sigla da UF
                         ])
                         
                         # Executar LEFT JOIN com municípios
@@ -666,8 +669,8 @@ class PainelProcessor(BaseProcessor):
                         'opcao_simples', 'data_opcao_simples', 'data_exclusao_simples',
                         'opcao_mei', 'data_opcao_mei', 'data_exclusao_mei',
                         
-                        # Localização (código IBGE do município)
-                        'codigo_ibge_municipio'
+                        # Localização
+                        'codigo_ibge', 'nome_municipio', 'uf', 'sigla_uf'
                     ]
                     
                     # Selecionar colunas diretamente (vai falhar se não existir, mas isso é melhor que travar)
@@ -698,13 +701,50 @@ class PainelProcessor(BaseProcessor):
                         "row_group_size": 100000  # Tamanho do grupo de linhas
                     }
                     
-                    # Coletar dados em um DataFrame em memória
-                    df = painel_scan.collect()
-                    self.logger.info(f"  └─ Dados coletados: {df.shape[0]:,} linhas x {df.shape[1]} colunas")
-                    
-                    # Salvar o DataFrame para o arquivo parquet
-                    self.logger.info("  └─ Salvando arquivo parquet...")
-                    df.write_parquet(output_path, **write_options)
+                    # Usar sink_parquet para salvar diretamente sem carregar tudo na memória
+                    self.logger.info("  └─ Salvando arquivo parquet diretamente (sem carregar na memória)...")
+                    try:
+                        painel_scan.sink_parquet(output_path, **write_options)
+                    except Exception as e:
+                        self.logger.error(f"❌ Erro ao salvar com sink_parquet: {str(e)}")
+                        self.logger.info("  └─ Tentando salvamento alternativo com collect em chunks...")
+                        
+                        # Método alternativo: processar em chunks
+                        chunk_size = 1_000_000  # 1 milhão de registros por chunk
+                        
+                        # Primeiro, contar total de registros
+                        total_rows = painel_scan.select(pl.count()).collect().item()
+                        self.logger.info(f"  └─ Total de registros a processar: {total_rows:,}")
+                        
+                        # Processar em chunks
+                        num_chunks = (total_rows + chunk_size - 1) // chunk_size
+                        self.logger.info(f"  └─ Processando em {num_chunks} chunks de {chunk_size:,} registros")
+                        
+                        first_chunk = True
+                        for i in range(num_chunks):
+                            offset = i * chunk_size
+                            self.logger.info(f"  └─ Processando chunk {i+1}/{num_chunks} (offset: {offset:,})")
+                            
+                            chunk_df = painel_scan.slice(offset, chunk_size).collect()
+                            
+                            if first_chunk:
+                                # Primeiro chunk: criar arquivo
+                                chunk_df.write_parquet(output_path, **write_options)
+                                first_chunk = False
+                            else:
+                                # Chunks subsequentes: anexar ao arquivo existente
+                                existing_df = pl.read_parquet(output_path)
+                                combined_df = pl.concat([existing_df, chunk_df])
+                                combined_df.write_parquet(output_path, **write_options)
+                                del combined_df, existing_df  # Liberar memória
+                            
+                            del chunk_df  # Liberar memória do chunk
+                            
+                        self.logger.info("  └─ Salvamento em chunks concluído")
+                        
+                        # Forçar coleta de lixo
+                        import gc
+                        gc.collect()
                     
                     self.logger.info("  └─ Arquivo salvo com sucesso")
                     
@@ -717,13 +757,19 @@ class PainelProcessor(BaseProcessor):
                     
                     file_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
                     
-                    # Contar registros sem carregar todo o arquivo
-                    total_rows = pl.scan_parquet(output_path).select(pl.count()).collect().item()
-                    
                     self.logger.info("\n=== 🎉 PROCESSAMENTO DO PAINEL CONCLUÍDO COM SUCESSO ===")
                     self.logger.info(f"📂 Arquivo salvo em: {output_path_abs}")
                     self.logger.info(f"📊 Tamanho do arquivo: {file_size:.1f}MB")
-                    self.logger.info(f"📈 Total de registros: {total_rows:,}")
+                    
+                    # Contar registros apenas se arquivo não for muito grande (para evitar problemas de memória)
+                    if file_size < 1000:  # Menos de 1GB
+                        try:
+                            total_rows = pl.scan_parquet(output_path).select(pl.count()).collect().item()
+                            self.logger.info(f"📈 Total de registros: {total_rows:,}")
+                        except Exception as e:
+                            self.logger.warning(f"Não foi possível contar registros: {str(e)}")
+                    else:
+                        self.logger.info("📈 Arquivo muito grande - contagem de registros pulada para evitar problemas de memória")
                     
                     self.logger.info("\n⏱️  Tempos de processamento:")
                     self.logger.info(f"  └─ Processamento e JOINs: {save_start - join_start_time:.1f}s")

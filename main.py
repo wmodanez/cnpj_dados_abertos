@@ -1,262 +1,120 @@
 """
-Exemplos de uso:
+EXEMPLOS DE USO DO PROCESSADOR CNPJ:
 
-1. Execução padrão (Baixa todos os tipos na pasta mais recente e salva em subpasta com nome da data baixada):
+=== EXECUÇÃO BÁSICA ===
+1. Processamento completo padrão (baixa e processa todos os tipos da pasta mais recente):
    python main.py
 
-2. Baixa e processa apenas Empresas e Sócios (salva em subpasta com nome da data baixada):
-   python main.py --tipos empresas socios
+2. Processar apenas tipos específicos:
+   python main.py --tipos empresas estabelecimentos
 
-3. Baixa e processa todos os tipos (salva em subpasta com nome da data baixada):
-   python main.py
+3. Usar pasta remota específica:
+   python main.py --remote-folder 2024-05
 
-4. Pular o download e processar todos os tipos da pasta ZIP '../dados-abertos-zip/2023-05', salvando Parquet na subpasta 'meu_processamento_manual' (dentro de PATH_PARQUET):
-   python main.py --step process --source-zip-folder ../dados-abertos-zip/2023-05 --output-subfolder meu_processamento_manual
+4. Processar com economia de espaço (remove ZIPs após extração):
+   python main.py --delete-zips-after-extract
 
-5. Pular o download, processar apenas Simples e Sócios da pasta ZIP 'D:/MeusDownloads/CNPJ_ZIPs/2023-01', salvando Parquet na subpasta 'simples_socios' (dentro de PATH_PARQUET):
-   python main.py --step process --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs/2023-01" --output-subfolder simples_socios --tipos simples socios
+=== PROCESSAMENTO POR ETAPAS ===
+5. Apenas download:
+   python main.py --step download
 
-6. Baixa e processa apenas Empresas (salva em subpasta com nome da data baixada):
-   python main.py --tipos empresas
+6. Apenas processamento (usando ZIPs já baixados):
+   python main.py --step process --source-zip-folder dados-abertos-zip/2024-05
 
-7. Baixa e processa apenas Empresas e salvando na subpasta 'apenas_empresas' (dentro de PATH_PARQUET):
-   python main.py --tipos empresas --output-subfolder apenas_empresas
+7. Apenas criação do banco DuckDB:
+   python main.py --step database --output-subfolder processados_2024_05
 
-8. Como o exemplo 7, mas também cria o subconjunto 'empresa_privada' no diretório de saída:
-   python main.py --tipos empresas --output-subfolder apenas_empresas --criar-empresa-privada
+8. Apenas processamento do painel:
+   python main.py --step painel --remote-folder 2024-05 --no-backup
 
-9. Pular download E processamento, criando apenas o arquivo DuckDB a partir dos Parquets existentes na subpasta 'processamento_anterior' (dentro de PATH_PARQUET):
-    python main.py --step database --output-subfolder processamento_anterior
+=== CONTROLE DE PASTAS ===
+9. Salvar em subpasta específica:
+   python main.py --output-subfolder meu_processamento
 
-10. Pular download, processar, e depois criar o DuckDB, usando a pasta de origem 'meus_zips/2023-05' e salvando na subpasta 'resultado':
-    python main.py --step process --source-zip-folder meus_zips/2023-05 --output-subfolder resultado
+10. Salvar na pasta raiz do parquet:
+    python main.py --output-subfolder .
 
-11. Processar apenas estabelecimentos, criando também um subset para São Paulo (SP) na saída 'parquet/process_sp/estabelecimentos_sp':
-    python main.py --tipos estabelecimentos --output-subfolder process_sp --criar-subset-uf SP
+11. Processar de pasta ZIP específica:
+    python main.py --step process --source-zip-folder "D:/MeusDownloads/CNPJ_ZIPs/2024-01"
 
-12. Baixar e processar dados de uma pasta remota específica (2023-05) em vez da pasta mais recente:
-    python main.py --remote-folder 2023-05
-
-13. Baixar arquivos de TODOS os diretórios remotos disponíveis (salvando em subpastas separadas):
-    python main.py --all-folders --step download
-
-14. Processar dados de uma pasta baixada anteriormente (aponta diretamente para a subpasta com arquivos):
-    python main.py --step process --source-zip-folder pasta_zips/2023-05 --output-subfolder processados_2023_05
-
-15. Baixar arquivos forçando download mesmo que já existam localmente ou no cache:
-    python main.py --remote-folder 2023-05 --force-download
-
-16. Processar todas as pastas no formato AAAA-MM encontradas dentro de PATH_ZIP (útil após download com --all-folders):
-    python main.py --step process --process-all-folders --output-subfolder processados_completos
-
-17. Baixar arquivos de todas as pastas remotas a partir de 2023-01 até a mais atual:
-    python main.py --all-folders --from-folder 2023-01 --step download
-
-18. Baixar e processar arquivos de todas as pastas remotas desde a mais antiga até a mais atual:
-    python main.py --all-folders
-
-19. Baixar e processar arquivos a partir de uma pasta específica (2023-06) até a mais atual:
-    python main.py --all-folders --from-folder 2023-06
-
-20. Processar todas as pastas locais no formato AAAA-MM a partir de 2023-03:
-    python main.py --step process --process-all-folders --output-subfolder processados_desde_2023_03
-
-21. Baixar sequencialmente da pasta mais antiga até a mais atual, processando cada uma:
-    python main.py --all-folders --from-folder 2022-01
-
-22. Processar dados deletando os ZIPs após extração para economizar espaço:
-    python main.py --tipos empresas --delete-zips-after-extract
-
-23. Baixar e processar dados de 2023-01 até atual, deletando ZIPs após processamento:
-    python main.py --all-folders --from-folder 2023-01 --delete-zips-after-extract
-
-24. Processar todas as pastas locais deletando ZIPs para economizar espaço:
-    python main.py --step process --process-all-folders --output-subfolder economizando_espaco --delete-zips-after-extract
-
-25. Processamento conservador de espaço - apenas estabelecimentos com deleção de ZIPs:
-    python main.py --tipos estabelecimentos --delete-zips-after-extract --output-subfolder estabelecimentos_sem_zips
-
-EXEMPLOS COM CONTROLE DE INTERFACE VISUAL:
-
-26. Download em modo silencioso (sem barras de progresso nem lista de pendentes):
-    python main.py --quiet
-
-27. Download com interface completa (barras de progresso + lista de pendentes):
-    python main.py --verbose-ui
-
-28. Download ocultando apenas as barras de progresso:
-    python main.py --hide-progress
-
-29. Download mostrando apenas as barras de progresso (oculta lista de pendentes):
-    python main.py --show-progress --hide-pending
-
-30. Processamento em modo verboso com todas as informações visuais:
-    python main.py --step process --source-zip-folder ../dados/2023-05 --output-subfolder teste --verbose-ui
-
-31. Download de todas as pastas em modo silencioso para logs limpos:
-    python main.py --all-folders --quiet
-
-32. Processamento mostrando lista de arquivos pendentes mas sem barras de progresso:
-    python main.py --tipos empresas --show-pending --hide-progress
-
-33. Download forçado com interface mínima (apenas lista de pendentes):
-    python main.py --force-download --hide-progress --show-pending
-
-34. Processamento de múltiplas pastas em modo silencioso:
-    python main.py --step process --process-all-folders --output-subfolder batch_silent --quiet
-
-35. Download de pasta específica com barras de progresso ativadas:
-    python main.py --remote-folder 2024-01 --show-progress
-
-EXEMPLOS COM LIMPEZA DE ARQUIVOS:
-
-36. Processar dados e criar banco DuckDB, removendo arquivos parquet após criação:
-    python main.py --step all --tipos empresas --cleanup-after-db
-
-37. Processar dados e criar banco DuckDB, removendo arquivos parquet E ZIP após criação:
-    python main.py --step all --tipos empresas --cleanup-all-after-db
-
-38. Criar banco DuckDB a partir de parquets existentes e remover os parquets:
-    python main.py --step database --output-subfolder processados_2023_05 --cleanup-after-db
-
-39. Download, processamento e banco completo com limpeza total (economiza máximo espaço):
-    python main.py --all-folders --from-folder 2023-01 --cleanup-all-after-db
-
-40. Processamento conservador com deleção de ZIPs durante extração e limpeza final:
-    python main.py --tipos estabelecimentos --delete-zips-after-extract --cleanup-after-db
-
-EXEMPLOS COM PROCESSAMENTO DO PAINEL CONSOLIDADO (NOVO):
-
-41. Processamento completo com painel consolidado (TODOS OS DADOS - SEM FILTROS):
+=== PROCESSAMENTO DO PAINEL CONSOLIDADO ===
+12. Painel completo sem filtros:
     python main.py --processar-painel
 
-42. Painel completo incluindo estabelecimentos inativos (TODOS OS DADOS):
-    python main.py --processar-painel --painel-incluir-inativos
+13. Painel filtrado por UF:
+    python main.py --processar-painel --painel-uf SP
 
-43. Painel filtrado apenas para São Paulo com estabelecimentos ativos:
-    python main.py --processar-painel --painel-uf SP --painel-situacao 2
+14. Painel filtrado por situação (2=Ativa):
+    python main.py --processar-painel --painel-situacao 2
 
-44. Painel de Goiás incluindo estabelecimentos inativos:
-    python main.py --processar-painel --painel-uf GO --painel-incluir-inativos
+15. Painel com filtros combinados:
+    python main.py --processar-painel --painel-uf GO --painel-situacao 2
 
-45. Processamento de tipos específicos + painel para Minas Gerais:
-    python main.py --tipos empresas estabelecimentos simples --processar-painel --painel-uf MG
+16. Processamento exclusivo do painel (usando dados já processados):
+    python main.py --step painel --remote-folder 2024-05 --no-backup
 
-46. Painel de pasta remota específica com filtro de situação:
-    python main.py --remote-folder 2024-01 --processar-painel --painel-situacao 2
+17. Painel na pasta raiz:
+    python main.py --step painel --remote-folder 2024-05 --output-subfolder . --no-backup
 
-47. Painel completo com todos os filtros (SP, ativos, sem inativos):
-    python main.py --processar-painel --painel-uf SP --painel-situacao 2
+=== SUBCONJUNTOS E FILTROS ===
+18. Criar subconjunto de empresas privadas:
+    python main.py --tipos empresas --criar-empresa-privada
 
-48. Painel para estabelecimentos suspensos de todas as UFs:
-    python main.py --processar-painel --painel-situacao 3 --painel-incluir-inativos
+19. Criar subconjunto por UF (estabelecimentos):
+    python main.py --tipos estabelecimentos --criar-subset-uf SP
 
-49. Pipeline completo: download + processamento + painel + banco (economia máxima):
+=== ECONOMIA DE ESPAÇO ===
+20. Remover arquivos parquet após criar banco:
+    python main.py --cleanup-after-db
+
+21. Remover arquivos parquet E ZIP após criar banco (máxima economia):
+    python main.py --cleanup-all-after-db
+
+22. Pipeline com economia máxima:
+    python main.py --delete-zips-after-extract --cleanup-all-after-db
+
+=== CONTROLE DE INTERFACE ===
+23. Modo silencioso:
+    python main.py --quiet
+
+24. Forçar download mesmo se arquivo existir:
+    python main.py --force-download
+
+25. Processamento em modo verboso:
+    python main.py --verbose-ui
+
+=== PROCESSAMENTO MÚLTIPLO ===
+26. Baixar de todas as pastas disponíveis:
+    python main.py --all-folders --step download
+
+27. Processar múltiplas pastas a partir de uma data:
+    python main.py --all-folders --from-folder 2023-01
+
+28. Processar todas as pastas locais:
+    python main.py --step process --process-all-folders
+
+=== EXEMPLOS AVANÇADOS ===
+29. Pipeline completo com painel e economia máxima:
     python main.py --processar-painel --painel-uf SP --cleanup-all-after-db
 
-50. Pipeline completo com painel de TODOS OS DADOS + economia máxima:
-    python main.py --processar-painel --cleanup-all-after-db
+30. Processamento conservador de espaço:
+    python main.py --tipos estabelecimentos --delete-zips-after-extract --cleanup-after-db
 
-51. Painel em modo silencioso para processamento em lote:
-    python main.py --processar-painel --painel-uf GO --quiet
-
-52. Painel COMPLETO em modo silencioso (automação):
-    python main.py --processar-painel --quiet
-
-53. Painel com dados de múltiplas pastas remotas:
-    python main.py --all-folders --from-folder 2023-01 --processar-painel --painel-uf SP
-
-54. Painel de TODOS OS DADOS com múltiplas pastas remotas:
-    python main.py --all-folders --from-folder 2023-01 --processar-painel
-
-EXEMPLOS COM STEP 'PAINEL' (PROCESSAMENTO EXCLUSIVO DO PAINEL):
-
-55. Processar apenas o painel com dados da pasta mais recente:
-    python main.py --step painel
-
-56. Processar apenas o painel de uma pasta específica:
-    python main.py --step painel --source-zip-folder dados-abertos-zip/2024-01
-
-57. Processar apenas o painel filtrado por UF:
-    python main.py --step painel --painel-uf GO
-
-58. Processar apenas o painel com filtros combinados:
-    python main.py --step painel --painel-uf SP --painel-situacao 2
-
-59. Processar apenas o painel incluindo inativos:
-    python main.py --step painel --painel-incluir-inativos
-
-60. Processar apenas o painel de pasta específica com filtros:
-    python main.py --step painel --source-zip-folder dados-abertos-zip/2023-12 --painel-uf MG --painel-situacao 2
-
-61. Processar apenas o painel em modo silencioso:
-    python main.py --step painel --painel-uf GO --quiet
-
-62. Processar apenas o painel salvando em subpasta específica:
-    python main.py --step painel --output-subfolder painel_personalizado
-
-NOTA: O download sempre salvará os arquivos em uma subpasta com o nome da pasta remota.
-      Exemplo: se --remote-folder=2023-05, os arquivos serão salvos em PATH_ZIP/2023-05/.
-      Ao usar --source-zip-folder, aponte diretamente para o diretório que contém os arquivos ZIP.
-      
-NOVO COMPORTAMENTO:
-      - --from-folder especifica a pasta inicial para download/processamento sequencial
-      - Sem --from-folder + --all-folders: baixa/processa da mais antiga até a mais atual
-      - --process-all-folders agora suporta --from-folder para processamento sequencial local
-      - --delete-zips-after-extract deleta arquivos ZIP após extração bem-sucedida (economiza espaço)
-      - --cleanup-after-db deleta arquivos parquet após criação do banco DuckDB (economiza espaço)
-      - --cleanup-all-after-db deleta arquivos parquet E ZIP após criação do banco (máxima economia)
-      - A deleção só ocorre após verificação de que as operações foram realizadas com sucesso
-
-CONTROLE DE INTERFACE VISUAL:
-      - --quiet (-q): Modo silencioso - desativa barras de progresso e lista de pendentes
-      - --verbose-ui (-v): Modo verboso - ativa barras de progresso e lista de pendentes
-      - --show-progress (-B): Força exibição de barras de progresso
-      - --hide-progress (-H): Força ocultação de barras de progresso
-      - --show-pending (-S): Força exibição da lista de arquivos pendentes
-      - --hide-pending (-W): Força ocultação da lista de arquivos pendentes
-      - Argumentos específicos têm prioridade sobre modos gerais (quiet/verbose-ui)
-      - Modo silencioso tem prioridade máxima sobre todos os outros argumentos
-
-PROCESSAMENTO DO PAINEL CONSOLIDADO:
-      - --processar-painel: Ativa o processamento do painel (combina estabelecimentos + simples + empresas)
-      - --painel-uf UF: Filtra painel por UF específica (ex: SP, GO, MG) 
-      - --painel-situacao CODIGO: Filtra por situação cadastral (1=Nula, 2=Ativa, 3=Suspensa, 4=Inapta, 8=Baixada)
-      - --painel-incluir-inativos: Inclui estabelecimentos inativos no painel (padrão é só ativos)
-      - O painel é processado após o processamento individual das entidades
-      - Requer que os parquets de empresas, estabelecimentos e simples já existam
-      - Gera arquivo painel_dados_TIMESTAMP_filtros.parquet com estatísticas automáticas
-
-STEP 'PAINEL' (NOVO):
-      - --step painel: Processa APENAS o painel usando dados já processados
-      - Funciona com --source-zip-folder para especificar pasta de dados
-      - Ou detecta automaticamente a pasta mais recente se não especificada
-      - Todos os filtros do painel (--painel-uf, --painel-situacao, --painel-incluir-inativos) funcionam
-      - Mais rápido que --step all quando só precisa do painel
-
-# 40. Painel de Goiás incluindo estabelecimentos inativos:
-python main.py --processar-painel --painel-uf GO --painel-incluir-inativos
-
-# 41. Processamento de tipos específicos + painel para Minas Gerais:
-python main.py -t empresas estabelecimentos simples --processar-painel --painel-uf MG
-
-# 42. Painel de pasta remota específica com filtro de situação:
-python main.py -r 2024-01 --processar-painel --painel-situacao 2
-
-# 43. Painel completo com todos os filtros (SP, ativos, sem inativos):
-python main.py --processar-painel --painel-uf SP --painel-situacao 2
-
-# 44. Painel para estabelecimentos suspensos de todas as UFs:
-python main.py --processar-painel --painel-situacao 3 --painel-incluir-inativos
-
-# 45. Pipeline completo: download + processamento + painel + banco (economia máxima):
-python main.py --processar-painel --painel-uf SP -C
-
-# 46. Painel em modo silencioso para processamento em lote:
-python main.py --processar-painel --painel-uf GO -q
-
-# 47. Painel com dados de múltiplas pastas remotas:
-python main.py -a -f 2023-01 --processar-painel --painel-uf SP
+PARÂMETROS PRINCIPAIS:
+- --tipos: Especifica quais dados processar (empresas, estabelecimentos, simples, socios)
+- --step: Define a etapa (download, process, database, painel, all)
+- --remote-folder: Usa pasta remota específica (formato AAAA-MM)
+- --output-subfolder: Define subpasta de saída (use "." para pasta raiz)
+- --source-zip-folder: Especifica pasta com ZIPs para processamento
+- --no-backup: Não faz backup final (útil com --step painel)
+- --processar-painel: Ativa processamento do painel consolidado
+- --painel-uf: Filtra painel por UF
+- --painel-situacao: Filtra painel por situação cadastral
+- --delete-zips-after-extract: Remove ZIPs após extração
+- --cleanup-after-db: Remove parquets após criar banco
+- --cleanup-all-after-db: Remove parquets E ZIPs após criar banco
+- --quiet: Modo silencioso
+- --force-download: Força download mesmo se arquivo existir
 """
 import argparse
 import asyncio
@@ -599,7 +457,7 @@ async def async_main():
     parser.add_argument('--criar-subset-uf', '-U', type=str, metavar='UF',
                          help='Criar subconjunto por UF (apenas para estabelecimentos). Ex: --criar-subset-uf SP')
     parser.add_argument('--output-subfolder', '-o', type=str,
-                         help='Nome da subpasta onde salvar os arquivos parquet')
+                         help='Nome da subpasta onde salvar os arquivos parquet. Use "." para pasta raiz')
     parser.add_argument('--source-zip-folder', '-z', type=str,
                          help='Pasta de origem dos arquivos ZIP (para step \'process\')')
     parser.add_argument('--process-all-folders', '-p', action='store_true',
@@ -626,6 +484,8 @@ async def async_main():
                          help='Filtrar painel por situação cadastral (1=Nula, 2=Ativa, 3=Suspensa, 4=Inapta, 8=Baixada)')
     parser.add_argument('--painel-incluir-inativos', action='store_true',
                          help='Incluir estabelecimentos inativos no painel')
+    parser.add_argument('--no-backup', action='store_true',
+                         help='Não fazer backup final dos arquivos para PATH_REMOTE_PARQUET')
 
     args = parser.parse_args()
     
@@ -701,7 +561,6 @@ async def async_main():
             
             # Extrair nome da pasta para usar como output
             folder_name = os.path.basename(source_zip_path.rstrip('/\\'))
-            output_subfolder = args.output_subfolder if args.output_subfolder else folder_name
         else:
             # Tentar determinar a pasta mais recente ou usar --remote-folder
             if args.remote_folder:
@@ -723,10 +582,17 @@ async def async_main():
                     return False, ""
 
             source_zip_path = os.path.join(PATH_ZIP, latest_folder)
-            output_subfolder = args.output_subfolder if args.output_subfolder else latest_folder
         
         # Definir pasta de saída
-        output_parquet_path = os.path.join(PATH_PARQUET, output_subfolder)
+        if args.output_subfolder == ".":
+            # Usar "." para pasta raiz
+            output_parquet_path = PATH_PARQUET
+        elif args.output_subfolder:
+            # Usar subpasta especificada
+            output_parquet_path = os.path.join(PATH_PARQUET, args.output_subfolder)
+        else:
+            # Padrão: usar nome da pasta remota
+            output_parquet_path = os.path.join(PATH_PARQUET, latest_folder)
         
         logger.info(f"Processando painel com dados de: {source_zip_path}")
         logger.info(f"Salvando painel em: {output_parquet_path}")
@@ -746,7 +612,8 @@ async def async_main():
             output_parquet_path=output_parquet_path,
             uf_filter=args.painel_uf,
             situacao_filter=args.painel_situacao,
-            output_filename=None  # Será gerado automaticamente
+            output_filename=None,  # Será gerado automaticamente
+            remote_folder=args.remote_folder  # Passar o remote_folder
         )
         
         painel_time = time.time() - painel_start_time
@@ -764,7 +631,7 @@ async def async_main():
             global_stats.end_session()
             global_stats.print_detailed_report()
             
-            return True, output_subfolder
+            return True, args.output_subfolder if args.output_subfolder else "painel"
         else:
             print_error("Falha no processamento exclusivo do painel")
             
@@ -797,8 +664,16 @@ async def async_main():
 
         # Definir caminhos
         source_zip_path = os.path.join(PATH_ZIP, latest_folder)
-        output_subfolder = args.output_subfolder if args.output_subfolder else latest_folder
-        output_parquet_path = os.path.join(PATH_PARQUET, output_subfolder)
+        # Definir pasta de saída
+        if args.output_subfolder == ".":
+            # Usar "." para pasta raiz
+            output_parquet_path = PATH_PARQUET
+        elif args.output_subfolder:
+            # Usar subpasta especificada
+            output_parquet_path = os.path.join(PATH_PARQUET, args.output_subfolder)
+        else:
+            # Padrão: usar nome da pasta remota
+            output_parquet_path = os.path.join(PATH_PARQUET, latest_folder)
         os.makedirs(source_zip_path, exist_ok=True)
         os.makedirs(output_parquet_path, exist_ok=True)
         
@@ -900,7 +775,8 @@ async def async_main():
                 output_parquet_path=output_parquet_path,
                 uf_filter=args.painel_uf,
                 situacao_filter=args.painel_situacao,
-                output_filename=None  # Será gerado automaticamente
+                output_filename=None,  # Será gerado automaticamente
+                remote_folder=latest_folder  # Usar latest_folder aqui
             )
             
             painel_time = time.time() - painel_start_time
@@ -922,7 +798,9 @@ async def async_main():
         
         try:
             logger.info(f"Criando arquivo DuckDB em: {output_parquet_path}")
-            db_success = create_duckdb_file(output_parquet_path, FILE_DB_PARQUET, PATH_REMOTE_PARQUET)
+            # Determinar se deve fazer backup baseado no parâmetro --no-backup
+            backup_path = None if args.no_backup else PATH_REMOTE_PARQUET
+            db_success = create_duckdb_file(output_parquet_path, FILE_DB_PARQUET, backup_path)
             db_time = time.time() - db_start_time
             
             if db_success:
@@ -1007,7 +885,7 @@ async def async_main():
 
 def process_painel_complete(source_zip_path: str, unzip_path: str, output_parquet_path: str, 
                           uf_filter: str | None = None, situacao_filter: int | None = None, 
-                          output_filename: str | None = None) -> bool:
+                          output_filename: str | None = None, remote_folder: str | None = None) -> bool:
     """
     Processa dados do painel combinando estabelecimentos, simples e empresas.
     
@@ -1030,9 +908,27 @@ def process_painel_complete(source_zip_path: str, unzip_path: str, output_parque
         start_time = time.time()
         
         # Definir caminhos dos parquets das entidades individuais
-        estabelecimento_path = os.path.join(output_parquet_path, 'estabelecimento')
-        simples_path = os.path.join(output_parquet_path, 'simples') 
-        empresa_path = os.path.join(output_parquet_path, 'empresa')
+        # Se especificado remote_folder, buscar dados na pasta remota
+        if remote_folder:
+            # Obter PATH_PARQUET do contexto global
+            import os
+            from pathlib import Path
+            
+            # Obter pasta parquet do contexto
+            current_dir = Path(__file__).parent
+            parquet_base = current_dir / "parquet"
+            source_data_path = os.path.join(str(parquet_base), remote_folder)
+        else:
+            source_data_path = output_parquet_path
+            
+        estabelecimento_path = os.path.join(source_data_path, 'estabelecimento')
+        simples_path = os.path.join(source_data_path, 'simples') 
+        empresa_path = os.path.join(source_data_path, 'empresa')
+        
+        logger.info(f"Procurando dados em:")
+        logger.info(f"  📁 Estabelecimentos: {estabelecimento_path}")
+        logger.info(f"  📁 Simples: {simples_path}")
+        logger.info(f"  📁 Empresas: {empresa_path}")
         
         # Verificar se os parquets das entidades individuais existem
         missing_paths = []

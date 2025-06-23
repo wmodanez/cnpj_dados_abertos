@@ -1,3 +1,268 @@
+# Processador de Painel - Guia Completo
+
+O Processador de Painel combina dados de **Estabelecimentos**, **Simples Nacional** e **Empresas** em um único arquivo consolidado, criando uma visão completa para análise e exportação.
+
+## ✨ Novidades Implementadas
+
+### 1. Caminho de Saída Simplificado
+- **ANTES**: Os arquivos eram salvos em `parquet/{pasta-remota}/`
+- **AGORA**: Os arquivos são salvos diretamente em `parquet/` (pasta raiz)
+- Use `--output-subfolder` apenas se quiser uma subpasta específica
+
+### 2. Parâmetro `--no-backup`
+- **NOVO**: Adicionado parâmetro `--no-backup` para não fazer backup final
+- **USO**: `python main.py --step painel --no-backup`
+- **EFEITO**: Não copia arquivos para `PATH_REMOTE_PARQUET` (destino/)
+
+## 🚀 Comandos para Executar Apenas o Painel
+
+### Comando Básico (Dados já baixados)
+```bash
+python main.py --step painel
+```
+
+### Especificar Pasta de Dados
+```bash
+python main.py --step painel --source-zip-folder dados-abertos-zip/2024-01
+```
+
+### Com Filtros por UF
+```bash
+python main.py --step painel --painel-uf GO
+```
+
+### Com Filtros por Situação Cadastral
+```bash
+python main.py --step painel --painel-situacao 2
+```
+**Códigos de Situação:**
+- `1` = Nula
+- `2` = Ativa
+- `3` = Suspensa
+- `4` = Inapta
+- `8` = Baixada
+
+### Filtros Combinados
+```bash
+python main.py --step painel --painel-uf SP --painel-situacao 2
+```
+
+### Sem Backup Final
+```bash
+python main.py --step painel --no-backup
+```
+
+### Salvar em Subpasta Específica
+```bash
+python main.py --step painel --output-subfolder meu_painel_personalizado
+```
+
+### Controle de Pasta de Saída
+```bash
+# Comportamento padrão: salva em parquet/{pasta-remota}/
+python main.py --step painel --no-backup
+
+# Forçar salvar na pasta raiz: parquet/
+python main.py --step painel --no-backup --output-subfolder .
+
+# Salvar em subpasta personalizada: parquet/minha_pasta/
+python main.py --step painel --no-backup --output-subfolder minha_pasta
+```
+
+### Modo Silencioso
+```bash
+python main.py --step painel --quiet
+```
+
+## 📋 Exemplos Completos
+
+### 1. Processamento Simples (Comportamento Padrão)
+```bash
+# Processa dados da pasta mais recente, salva em parquet/{pasta-remota}/
+python main.py --step painel --no-backup
+```
+
+### 2. Painel de São Paulo (Apenas Ativos)
+```bash
+# Estabelecimentos ativos de SP, sem backup
+python main.py --step painel --painel-uf SP --painel-situacao 2 --no-backup
+```
+
+### 3. Painel de Pasta Específica
+```bash
+# Dados de janeiro/2024, salva em subpasta personalizada
+python main.py --step painel --source-zip-folder dados-abertos-zip/2024-01 --output-subfolder painel_jan2024 --no-backup
+```
+
+### 4. Painel Completo com Todos os Filtros
+```bash
+# Goiás, estabelecimentos ativos, modo silencioso, sem backup
+python main.py --step painel --painel-uf GO --painel-situacao 2 --quiet --no-backup
+```
+
+## 📁 Estrutura de Arquivos Esperada
+
+**ANTES do processamento (dados já baixados):**
+```
+parquet/
+├── base/
+│   ├── municipio.parquet
+│   ├── motivo.parquet
+│   └── natureza_juridica.parquet
+├── estabelecimento/
+│   └── *.parquet
+├── simples/
+│   └── *.parquet
+└── empresa/
+    └── *.parquet
+```
+
+**APÓS o processamento:**
+```
+parquet/
+├── base/
+├── estabelecimento/
+├── simples/
+├── empresa/
+└── painel_dados.parquet  ← NOVO ARQUIVO GERADO
+```
+
+## ⚙️ Pré-requisitos
+
+1. **Dados já processados**: Execute primeiro o processamento das entidades individuais:
+   ```bash
+   python main.py --tipos empresas estabelecimentos simples
+   ```
+
+2. **Estrutura de pastas**: Certifique-se de que as pastas `estabelecimento/`, `simples/` e `empresa/` existem dentro de `parquet/`
+
+3. **Dados de base**: Os arquivos `municipio.parquet`, `motivo.parquet` e `natureza_juridica.parquet` devem estar em `parquet/base/`
+
+## 🔧 Solucionando Problemas
+
+### Erro: "Parquets não encontrados"
+```bash
+# Execute primeiro o processamento das entidades
+python main.py --tipos empresas estabelecimentos simples
+```
+
+### Erro: "Pasta de dados não encontrada"
+```bash
+# Verifique se a pasta existe ou especifique o caminho correto
+python main.py --step painel --source-zip-folder dados-abertos-zip/2024-01
+```
+
+### Painel muito grande
+```bash
+# Use filtros para reduzir o tamanho
+python main.py --step painel --painel-uf SP --painel-situacao 2
+```
+
+## 📊 Campos do Painel Gerado
+
+O arquivo `painel_dados.parquet` contém:
+
+### Dados Principais
+- `cnpj_basico`: CNPJ básico (8 dígitos)
+
+### Matriz/Filial
+- `matriz_filial`: Código (1=Matriz, 2=Filial)
+- `descricao_matriz_filial`: Descrição legível
+
+### Situação Cadastral
+- `codigo_situacao`: Código da situação
+- `descricao_situacao`: Descrição da situação
+- `tipo_situacao_cadastral`: Tipo da situação
+- `descricao_tipo_situacao`: Descrição do tipo
+
+### Motivo
+- `codigo_motivo`: Código do motivo
+- `descricao_motivo`: Descrição do motivo
+
+### Datas
+- `data_situacao_cadastral`: Data da situação (YYYYMMDD)
+- `data_inicio_atividades`: Data de início (YYYYMMDD)
+
+### Atividade
+- `codigo_cnae`: Código CNAE principal
+
+### Empresa
+- `natureza_juridica`: Código da natureza jurídica
+- `descricao_natureza_juridica`: Descrição da natureza
+- `porte_empresa`: Código do porte
+- `descricao_porte`: Descrição do porte
+
+### Simples Nacional
+- `opcao_simples`: Optante pelo Simples (Sim/Não)
+- `data_opcao_simples`: Data da opção (YYYYMMDD)
+- `data_exclusao_simples`: Data da exclusão (YYYYMMDD)
+
+### MEI
+- `opcao_mei`: Optante pelo MEI (Sim/Não)
+- `data_opcao_mei`: Data da opção (YYYYMMDD)
+- `data_exclusao_mei`: Data da exclusão (YYYYMMDD)
+
+### Localização
+- `codigo_ibge`: Código IBGE do município (7 dígitos)
+- `nome_municipio`: Nome do município
+- `uf`: Unidade Federativa (estado)
+- `sigla_uf`: Sigla da UF (ex: SP, GO, MG)
+
+## 🎯 Casos de Uso
+
+### 1. Análise de Empresas Ativas por Estado
+```bash
+python main.py --step painel --painel-uf MG --painel-situacao 2 --no-backup
+```
+
+### 2. Relatório de Optantes pelo Simples Nacional
+```bash
+python main.py --step painel --no-backup
+# Depois filtrar por opcao_simples = 'Sim' na análise
+```
+
+### 3. Dados para Business Intelligence
+```bash
+python main.py --step painel --output-subfolder bi_export --no-backup
+```
+
+### 4. Backup de Dados Específicos
+```bash
+# COM backup (salva também em destino/)
+python main.py --step painel --painel-uf GO --output-subfolder painel_go
+```
+
+## 📈 Performance
+
+- **Processamento Lazy**: Usa Polars LazyFrames para otimizar memória
+- **JOINs Otimizados**: Left join otimizado entre as entidades
+- **Compressão Eficiente**: Arquivos salvos com compressão ZSTD
+- **Chunks Automáticos**: Processa arquivos grandes em partes se necessário
+
+## 🔍 Logs e Monitoramento
+
+O processamento gera logs detalhados mostrando:
+- Número de registros de cada entidade
+- Tempo de cada operação (JOINs, transformações, salvamento)
+- Tamanho do arquivo final
+- Estatísticas de performance
+
+**Exemplo de saída:**
+```
+🔄 === INICIANDO PROCESSAMENTO DO PAINEL ===
+✓ Scans criados:
+  └─ Estabelecimentos: 52,991,787 registros
+  └─ Simples Nacional: 15,234,567 registros
+  └─ Empresas: 45,123,456 registros
+⚡ Executando JOINs otimizados...
+💾 Iniciando gravação dos dados transformados...
+🎉 PROCESSAMENTO DO PAINEL CONCLUÍDO COM SUCESSO
+📂 Arquivo salvo em: /caminho/parquet/painel_dados.parquet
+📊 Tamanho do arquivo: 1.2GB
+📈 Total de registros: 45,123,456
+⏱️  TEMPO TOTAL: 234.5s (3.9min)
+```
+
 # Processador de Painel - Sistema Completo
 
 ## Visão Geral

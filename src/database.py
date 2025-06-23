@@ -31,7 +31,7 @@ def verify_parquet_file(file_path):
         return False
 
 
-def create_duckdb_file(path_parquet_folder: str, file_db_parquet: str, path_remote_parquet: str) -> bool:
+def create_duckdb_file(path_parquet_folder: str, file_db_parquet: str, path_remote_parquet: str | None = None) -> bool:
     """Cria um arquivo DuckDB a partir dos arquivos parquet."""
     logger.info(f"Iniciando criação do banco de dados DuckDB em {path_parquet_folder}...")
 
